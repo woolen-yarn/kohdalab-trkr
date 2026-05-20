@@ -9,7 +9,7 @@ Quick Start (日本語)
 -------------------
 
 新しい PC で GUI 測定を始めるための標準手順です。Windows PowerShell を使います。
-ここでは標準の置き場所を `C:\jupKernel\kohdalab-trkr` とします。別の場所に置く
+ここでは標準の置き場所を `C:\pythonKernel\kohdalab-trkr` とします。別の場所に置く
 場合は、以降の `$repo` と folder path だけ読み替えてください。
 
 ### 1. 事前準備: Git をインストールして GitHub にログイン
@@ -64,17 +64,17 @@ https://docs.astral.sh/uv/getting-started/installation/
 ### 3. GitHub repo を取得
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\jupKernel
-Set-Location C:\jupKernel
+New-Item -ItemType Directory -Force -Path C:\pythonKernel
+Set-Location C:\pythonKernel
 git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
-`C:\jupKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
+`C:\pythonKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
 
 ```powershell
-New-Item -ItemType Directory -Force -Path $HOME\jupKernel
-Set-Location $HOME\jupKernel
+New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
+Set-Location $HOME\pythonKernel
 ```
 
 すでに zip や USB で repo folder を持ってきた場合は、その folder に移動すれば OK です。
@@ -152,7 +152,7 @@ PowerShell で repo の場所を指定して、GUI 起動用の `.bat` とデス
 repo を別の場所に置いた場合は、最初の `$repo` だけ変更してください。
 
 ```powershell
-$repo = "C:\jupKernel\kohdalab-trkr"
+$repo = "C:\pythonKernel\kohdalab-trkr"
 $bat = Join-Path $repo "start_kohdalab_gui.bat"
 
 @"
@@ -176,7 +176,7 @@ Quick Start (English)
 
 This is the standard setup path for starting GUI measurements on a new PC. The
 commands assume Windows PowerShell. The standard location used below is
-`C:\jupKernel\kohdalab-trkr`; if you use another folder, replace `$repo` and the
+`C:\pythonKernel\kohdalab-trkr`; if you use another folder, replace `$repo` and the
 folder paths accordingly.
 
 ### 1. Prerequisite: install Git and sign in to GitHub
@@ -230,18 +230,18 @@ https://docs.astral.sh/uv/getting-started/installation/
 ### 3. Clone the GitHub repository
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\jupKernel
-Set-Location C:\jupKernel
+New-Item -ItemType Directory -Force -Path C:\pythonKernel
+Set-Location C:\pythonKernel
 git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
-If creating `C:\jupKernel` fails because of permissions, replace only the first
+If creating `C:\pythonKernel` fails because of permissions, replace only the first
 two lines with:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path $HOME\jupKernel
-Set-Location $HOME\jupKernel
+New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
+Set-Location $HOME\pythonKernel
 ```
 
 If the repository was copied by zip or USB storage, just open PowerShell in
@@ -326,7 +326,7 @@ shortcut. If the repository is in another folder, change only the first `$repo`
 line.
 
 ```powershell
-$repo = "C:\jupKernel\kohdalab-trkr"
+$repo = "C:\pythonKernel\kohdalab-trkr"
 $bat = Join-Path $repo "start_kohdalab_gui.bat"
 
 @"
