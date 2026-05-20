@@ -8,12 +8,42 @@ For practical examples, see `docs/api_usage.md`.
 Quick Start (日本語)
 -------------------
 
-新しい PC で GUI 測定を始める最短手順です。Windows PowerShell を想定しています。
-標準では `C:\pythonKernel\kohdalab-trkr` に置きます。
+新しい PC で GUI 測定を始めるための標準手順です。Windows PowerShell を使います。
+ここでは標準の置き場所を `C:\jupKernel\kohdalab-trkr` とします。別の場所に置く
+場合は、以降の `$repo` と folder path だけ読み替えてください。
 
-### 1. uv をインストール
+### 1. 事前準備: Git をインストールして GitHub にログイン
 
-公式 installer:
+Git は Windows のコマンドライン package manager で入れます。
+
+```powershell
+winget install --id Git.Git -e --source winget
+```
+
+インストール後、新しい PowerShell を開いて確認します。
+
+```powershell
+git --version
+```
+
+commit する PC では、名前とメールアドレスも一度だけ設定します。
+
+```powershell
+git config --global user.name "Your Name"
+git config --global user.email "your-email@example.com"
+```
+
+GitHub へのログインは、private repo に初めてアクセスすると Git Credential Manager
+がブラウザログインを出します。先に確認したい場合は、次のコマンドを実行して、
+ログイン画面が出たら GitHub アカウントで認証してください。
+
+```powershell
+git ls-remote https://github.com/Kohdalab/kohdalab-trkr.git
+```
+
+### 2. 事前準備: uv をインストール
+
+uv は Python 環境を作るために使います。
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -31,25 +61,25 @@ uv の公式 install docs:
 https://docs.astral.sh/uv/getting-started/installation/
 ```
 
-### 2. GitHub repo を取得
+### 3. GitHub repo を取得
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\pythonKernel
-Set-Location C:\pythonKernel
+New-Item -ItemType Directory -Force -Path C:\jupKernel
+Set-Location C:\jupKernel
 git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
-`C:\pythonKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
+`C:\jupKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
 
 ```powershell
-New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
-Set-Location $HOME\pythonKernel
+New-Item -ItemType Directory -Force -Path $HOME\jupKernel
+Set-Location $HOME\jupKernel
 ```
 
 すでに zip や USB で repo folder を持ってきた場合は、その folder に移動すれば OK です。
 
-### 3. 依存環境を作成
+### 4. 依存環境を作成
 
 GUI と notebook も使う通常セットアップ:
 
@@ -63,7 +93,9 @@ uv sync --all-extras
 uv sync --all-extras --group dev
 ```
 
-### 4. 実機 PC に必要な外部 driver を確認
+uv を使う場合は、基本的に `.venv` を手動で activate せず、`uv run ...` で起動します。
+
+### 5. 実機 PC に必要な外部 driver を確認
 
 Python package とは別に、実機 PC 側に以下が必要です。
 
@@ -72,7 +104,7 @@ Python package とは別に、実機 PC 側に以下が必要です。
 - Windows の Device Manager で COM port が見えること
 - lock-in の GPIB/VISA resource が見えること
 
-### 5. GUI を起動
+### 6. GUI を起動
 
 ```powershell
 uv run kohdalab-gui
@@ -89,7 +121,7 @@ GUI が起動したら:
 
 実機確認 checklist は `docs/hardware_smoke_test_ja.md` を使ってください。
 
-### 6. CLI / notebook も使えます
+### 7. CLI / notebook も使えます
 
 CLI:
 
@@ -114,16 +146,70 @@ maintained notebooks:
 
 GUI は安全のため `auto_connect=False` で、先に明示接続してから測定します。CLI と notebook は既定で `auto_connect=True` なので、必要 device を自動接続しに行きます。
 
+### 8. デスクトップショートカットを作成
+
+PowerShell で repo の場所を指定して、GUI 起動用の `.bat` とデスクトップショートカットを作ります。
+repo を別の場所に置いた場合は、最初の `$repo` だけ変更してください。
+
+```powershell
+$repo = "C:\jupKernel\kohdalab-trkr"
+$bat = Join-Path $repo "start_kohdalab_gui.bat"
+
+@"
+@echo off
+cd /d "$repo"
+uv run kohdalab-gui
+pause
+"@ | Set-Content -Encoding ASCII -Path $bat
+
+$ws = New-Object -ComObject WScript.Shell
+$shortcut = $ws.CreateShortcut("$env:USERPROFILE\Desktop\KohdaLab TRKR.lnk")
+$shortcut.TargetPath = $bat
+$shortcut.WorkingDirectory = $repo
+$shortcut.Save()
+```
+
+作成後は、デスクトップの `KohdaLab TRKR` をダブルクリックすると GUI が起動します。
+
 Quick Start (English)
 ---------------------
 
-This is the shortest path for starting GUI measurements on a new PC. The
-commands assume Windows PowerShell. The standard location is
-`C:\pythonKernel\kohdalab-trkr`.
+This is the standard setup path for starting GUI measurements on a new PC. The
+commands assume Windows PowerShell. The standard location used below is
+`C:\jupKernel\kohdalab-trkr`; if you use another folder, replace `$repo` and the
+folder paths accordingly.
 
-### 1. Install uv
+### 1. Prerequisite: install Git and sign in to GitHub
 
-Official installer:
+Install Git from the command line with Windows Package Manager.
+
+```powershell
+winget install --id Git.Git -e --source winget
+```
+
+Open a new PowerShell and verify the install:
+
+```powershell
+git --version
+```
+
+On PCs that will create commits, set the Git identity once:
+
+```powershell
+git config --global user.name "Your Name"
+git config --global user.email "your-email@example.com"
+```
+
+Git Credential Manager opens a browser sign-in the first time Git needs access
+to a private GitHub repository. To trigger that check before cloning, run:
+
+```powershell
+git ls-remote https://github.com/Kohdalab/kohdalab-trkr.git
+```
+
+### 2. Prerequisite: install uv
+
+uv is used to create and run the Python environment.
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
@@ -141,27 +227,27 @@ Official uv installation docs:
 https://docs.astral.sh/uv/getting-started/installation/
 ```
 
-### 2. Clone the GitHub repository
+### 3. Clone the GitHub repository
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\pythonKernel
-Set-Location C:\pythonKernel
+New-Item -ItemType Directory -Force -Path C:\jupKernel
+Set-Location C:\jupKernel
 git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
-If creating `C:\pythonKernel` fails because of permissions, replace only the
-first two lines with:
+If creating `C:\jupKernel` fails because of permissions, replace only the first
+two lines with:
 
 ```powershell
-New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
-Set-Location $HOME\pythonKernel
+New-Item -ItemType Directory -Force -Path $HOME\jupKernel
+Set-Location $HOME\jupKernel
 ```
 
 If the repository was copied by zip or USB storage, just open PowerShell in
 that folder instead.
 
-### 3. Create the Python environment
+### 4. Create the Python environment
 
 Standard setup for GUI and notebooks:
 
@@ -175,7 +261,10 @@ For development and tests:
 uv sync --all-extras --group dev
 ```
 
-### 4. Install hardware drivers on the instrument PC
+When using uv, usually do not activate `.venv` manually. Start commands with
+`uv run ...` instead.
+
+### 5. Install hardware drivers on the instrument PC
 
 Python dependencies are not enough for real hardware. The instrument PC also
 needs:
@@ -185,7 +274,7 @@ needs:
 - visible COM ports in Windows Device Manager
 - visible GPIB/VISA resources for the lock-in
 
-### 5. Start the GUI
+### 6. Start the GUI
 
 ```powershell
 uv run kohdalab-gui
@@ -203,7 +292,7 @@ After the GUI opens:
 
 Use `docs/hardware_smoke_test.md` for the hardware verification checklist.
 
-### 6. CLI and notebooks are also available
+### 7. CLI and notebooks are also available
 
 CLI:
 
@@ -229,6 +318,32 @@ Maintained notebooks:
 The GUI uses `auto_connect=False` for safety, so devices must be explicitly
 connected before a measurement starts. CLI and notebooks use
 `auto_connect=True` by default and may connect required devices automatically.
+
+### 8. Create a desktop shortcut
+
+Run this in PowerShell to create a GUI launcher `.bat` file and a desktop
+shortcut. If the repository is in another folder, change only the first `$repo`
+line.
+
+```powershell
+$repo = "C:\jupKernel\kohdalab-trkr"
+$bat = Join-Path $repo "start_kohdalab_gui.bat"
+
+@"
+@echo off
+cd /d "$repo"
+uv run kohdalab-gui
+pause
+"@ | Set-Content -Encoding ASCII -Path $bat
+
+$ws = New-Object -ComObject WScript.Shell
+$shortcut = $ws.CreateShortcut("$env:USERPROFILE\Desktop\KohdaLab TRKR.lnk")
+$shortcut.TargetPath = $bat
+$shortcut.WorkingDirectory = $repo
+$shortcut.Save()
+```
+
+After this, double-click `KohdaLab TRKR` on the desktop to start the GUI.
 
 Layering
 --------
