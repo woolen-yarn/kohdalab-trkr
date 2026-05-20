@@ -20,7 +20,7 @@ talks to instruments directly.
 For same-PC access:
 
 ```powershell
-uv run kohdalab-web --config src\kohdalab\config\trkr_config_kikuchi.json
+uv run kohdalab-web --config config\kikuchi.json
 ```
 
 After a config has been loaded once, later launches can omit `--config` and
@@ -107,7 +107,7 @@ rather than treating the repo sample config as the only editable profile.
 
 ```text
 C:\jupKernel\kohdalab\configs\
+  default.json
   kikuchi.json
   sato.json
-  tanaka_agap.json
 ```

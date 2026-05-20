@@ -25,8 +25,8 @@ from kohdalab.api.devices import (
 from kohdalab.interfaces.lockin import list_visa_resources
 
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config" / "trkr_config_kikuchi.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.json"
 LOCKIN_MODELS = ["SR7265", "SR830", "LI5640", "SR5210"]
 
 

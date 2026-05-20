@@ -24,7 +24,7 @@ apps / notebooks / CLI / future web UI
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("src/kohdalab/config/trkr_config_kikuchi.json")
+config = load_config("config/kikuchi.json")
 experiment = Experiment(config)
 experiment.connect_all()
 status = experiment.read_live_status()
@@ -57,8 +57,8 @@ standalone の `api.measurements.run_*()` も残しています。session が渡
 
 主な config profile:
 
-- `src/kohdalab/config/trkr_config_kikuchi.json`: CONEXCC / TRA12CC
-- `src/kohdalab/config/trkr_config_kikuchi_agap.json`: CONEXAGAP / AG-M100D shared COM port
+- `config/kikuchi.json`: CONEXCC / TRA12CC
+- `config/default.json`: CONEXAGAP / AG-M100D shared COM port
 
 normalized config の主な key:
 

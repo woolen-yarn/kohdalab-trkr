@@ -94,7 +94,7 @@ GUI が起動したら:
 CLI:
 
 ```powershell
-uv run kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
+uv run kohdalab-cli --config config\kikuchi.json trkr
 ```
 
 Notebook:
@@ -208,7 +208,7 @@ Use `docs/hardware_smoke_test.md` for the hardware verification checklist.
 CLI:
 
 ```powershell
-uv run kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
+uv run kohdalab-cli --config config\kikuchi.json trkr
 ```
 
 Notebook:
@@ -280,7 +280,7 @@ Python API
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("src/kohdalab/config/trkr_config_kikuchi.json")
+config = load_config("config/kikuchi.json")
 experiment = Experiment(config)
 experiment.connect_all()
 status = experiment.read_live_status()
@@ -300,7 +300,7 @@ For post-change hardware verification, use `docs/hardware_smoke_test.md`.
 For occasional remote browser operation, use `docs/web_ui.md`.
 
 ```powershell
-uv run kohdalab-web --config src\kohdalab\config\trkr_config_kikuchi.json
+uv run kohdalab-web --config config\kikuchi.json
 ```
 
 After a config has been loaded once, `uv run kohdalab-web` reopens the last
@@ -311,19 +311,19 @@ Keep `kohdalab-gui` and `kohdalab-web` as alternate entry points; do not run
 both against the same instruments at the same time.
 
 ```powershell
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json signal-monitor
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr --axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json strkr --fast-axis t --slow-axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr-2d --fast-axis x --slow-axis y
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json move-abs --axis x --coordinate measurement --value 10
+kohdalab-cli --config config\kikuchi.json signal-monitor
+kohdalab-cli --config config\kikuchi.json trkr
+kohdalab-cli --config config\kikuchi.json srkr --axis x
+kohdalab-cli --config config\kikuchi.json strkr --fast-axis t --slow-axis x
+kohdalab-cli --config config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
+kohdalab-cli --config config\kikuchi.json move-abs --axis x --coordinate measurement --value 10
 ```
 
 If the package script is not installed, run the module directly:
 
 ```powershell
 $env:PYTHONPATH='src'
-uv run python -m kohdalab.api.cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
+uv run python -m kohdalab.api.cli --config config\kikuchi.json trkr
 ```
 
 The CLI prints start/status/point progress, writes measurement rows to the

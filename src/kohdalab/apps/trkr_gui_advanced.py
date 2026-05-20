@@ -83,9 +83,9 @@ from kohdalab.api.measurement_rows import output_rows
 from kohdalab.apps.trkr_gui_snapshot import format_snapshot_value
 from kohdalab.interfaces.lockin import list_visa_resources
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-CONFIG_DIR = PACKAGE_ROOT / "config"
-DEFAULT_CONFIG_PATH = CONFIG_DIR / "trkr_config_kikuchi.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+CONFIG_DIR = PROJECT_ROOT / "config"
+DEFAULT_CONFIG_PATH = CONFIG_DIR / "default.json"
 LOCKIN_MODELS = ["SR7265", "SR830", "LI5640", "SR5210"]
 
 

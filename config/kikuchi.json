@@ -1,6 +1,6 @@
 {
   "profile": {
-    "name": "kikuchi_conexcc",
+    "name": "kikuchi",
     "description": "TRKR/SRKR setup using CONEXCC scanners."
   },
   "instruments": {
@@ -40,13 +40,16 @@
       "coordinate": "measurement",
       "zero": {
         "t_ps": -122.0,
-        "x_um": 61.5756,
-        "y_um": 477.0136
+        "x_um": 61.576,
+        "y_um": 477.014
       },
       "targets": {
         "t": 0.0,
         "x": 0.0,
-        "y": 0.0
+        "y": 0.0,
+        "t_cor": 0.0,
+        "x_cor": 0.0,
+        "y_cor": 0.0
       }
     },
     "signal_monitor": {

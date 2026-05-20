@@ -13,7 +13,7 @@ Main entry point:
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-experiment = Experiment(load_config("src/kohdalab/config/trkr_config_kikuchi.json"))
+experiment = Experiment(load_config("config/kikuchi.json"))
 plan = trkr_plan_from_config(experiment.config)
 rows = experiment.run_trkr(plan=plan)
 ```

@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config" / "trkr_config_kikuchi.json"
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "default.json"
 CONFIG_PATH_ENV = "KOHDALAB_CONFIG"
 DEFAULT_CONFIG_PATH_ENV = "KOHDALAB_DEFAULT_CONFIG"
 CONFIG_STATE_DIR_ENV = "KOHDALAB_STATE_DIR"

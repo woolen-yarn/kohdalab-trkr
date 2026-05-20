@@ -12,7 +12,7 @@ Use `Experiment` from `kohdalab.api`.
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("src/kohdalab/config/trkr_config_kikuchi.json")
+config = load_config("config/kikuchi.json")
 experiment = Experiment(config)
 
 plan = trkr_plan_from_config(config)
@@ -23,7 +23,7 @@ Equivalent constructor:
 
 ```python
 experiment = Experiment.from_config(
-    "src/kohdalab/config/trkr_config_kikuchi.json"
+    "config/kikuchi.json"
 )
 ```
 
@@ -414,18 +414,18 @@ are formatted in scientific notation.
 Run measurements from PowerShell:
 
 ```powershell
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json signal-monitor
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr --axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json strkr --fast-axis t --slow-axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr-2d --fast-axis x --slow-axis y
+kohdalab-cli --config config\kikuchi.json signal-monitor
+kohdalab-cli --config config\kikuchi.json trkr
+kohdalab-cli --config config\kikuchi.json srkr --axis x
+kohdalab-cli --config config\kikuchi.json strkr --fast-axis t --slow-axis x
+kohdalab-cli --config config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
 ```
 
 Move one axis:
 
 ```powershell
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json move-abs --axis t --coordinate measurement --value 0
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json move-abs --axis x --coordinate measurement --value 10
+kohdalab-cli --config config\kikuchi.json move-abs --axis t --coordinate measurement --value 0
+kohdalab-cli --config config\kikuchi.json move-abs --axis x --coordinate measurement --value 10
 ```
 
 The CLI prints start/status/point progress and writes CSV rows to each

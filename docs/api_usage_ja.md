@@ -11,7 +11,7 @@ English version: [`api_usage.md`](api_usage.md).
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("src/kohdalab/config/trkr_config_kikuchi.json")
+config = load_config("config/kikuchi.json")
 experiment = Experiment(config)
 
 plan = trkr_plan_from_config(config)
@@ -158,11 +158,11 @@ Signal Monitor は `fast_axis=elapsed_s` と `target_elapsed_s` を使います�
 ## CLI
 
 ```powershell
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json signal-monitor
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json trkr
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr --axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json strkr --fast-axis t --slow-axis x
-kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json srkr-2d --fast-axis x --slow-axis y
+kohdalab-cli --config config\kikuchi.json signal-monitor
+kohdalab-cli --config config\kikuchi.json trkr
+kohdalab-cli --config config\kikuchi.json srkr --axis x
+kohdalab-cli --config config\kikuchi.json strkr --fast-axis t --slow-axis x
+kohdalab-cli --config config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
 ```
 
 CLI は start/status/point progress を表示し、各 measurement の output 設定に従って CSV を書きます。
