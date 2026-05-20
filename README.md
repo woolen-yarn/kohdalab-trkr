@@ -297,6 +297,18 @@ The everyday GUI entry point is `kohdalab-gui`. The same measurement runners
 can also be started from a terminal:
 
 For post-change hardware verification, use `docs/hardware_smoke_test.md`.
+For occasional remote browser operation, use `docs/web_ui.md`.
+
+```powershell
+uv run kohdalab-web --config src\kohdalab\config\trkr_config_kikuchi.json
+```
+
+After a config has been loaded once, `uv run kohdalab-web` reopens the last
+used config automatically. Startup resolution is `--config`, `KOHDALAB_CONFIG`,
+last used config, then the lab default if that file exists. By default the Web
+UI binds to `127.0.0.1:8765`, which is intended for local use or SSH tunneling.
+Keep `kohdalab-gui` and `kohdalab-web` as alternate entry points; do not run
+both against the same instruments at the same time.
 
 ```powershell
 kohdalab-cli --config src\kohdalab\config\trkr_config_kikuchi.json signal-monitor

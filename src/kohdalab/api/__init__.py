@@ -1,6 +1,16 @@
 from __future__ import annotations
 
-from .config import load_config, normalize_config, save_config, validate_config
+from .config import (
+    ConfigPathResolution,
+    last_config_state_path,
+    load_config,
+    normalize_config,
+    read_last_config_path,
+    resolve_config_path,
+    save_config,
+    validate_config,
+    write_last_config_path,
+)
 from .device_requirements import missing_devices, required_devices
 from .devices import (
     actuator_pos_unit,
@@ -74,6 +84,7 @@ from .session import DeviceSession
 __all__ = [
     "DeviceSession",
     "Experiment",
+    "ConfigPathResolution",
     "LiveStatus",
     "LockinSettings",
     "LockinSignal",
@@ -105,6 +116,7 @@ __all__ = [
     "format_point",
     "list_actuators",
     "list_stages",
+    "last_config_state_path",
     "load_config",
     "make_signal_monitor_live_update",
     "make_srkr_2d_live_update",
@@ -121,6 +133,8 @@ __all__ = [
     "normalize_config",
     "output_row",
     "output_rows",
+    "read_last_config_path",
+    "resolve_config_path",
     "run_signal_monitor",
     "run_srkr",
     "run_srkr_2d",
@@ -146,4 +160,5 @@ __all__ = [
     "trkr_plan_from_config",
     "required_devices",
     "validate_config",
+    "write_last_config_path",
 ]

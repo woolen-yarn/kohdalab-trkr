@@ -1,13 +1,100 @@
 from __future__ import annotations
 
 import json
+import os
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "config" / "trkr_config_kikuchi.json"
+CONFIG_PATH_ENV = "KOHDALAB_CONFIG"
+DEFAULT_CONFIG_PATH_ENV = "KOHDALAB_DEFAULT_CONFIG"
+CONFIG_STATE_DIR_ENV = "KOHDALAB_STATE_DIR"
+LAST_CONFIG_STATE_PATH_ENV = "KOHDALAB_LAST_CONFIG_STATE_PATH"
+
+
+@dataclass(frozen=True)
+class ConfigPathResolution:
+    path: Path | None
+    source: str
+    candidates: list[dict[str, str]]
+
+
+def config_state_dir() -> Path:
+    configured = os.environ.get(CONFIG_STATE_DIR_ENV)
+    if configured:
+        return Path(configured)
+    return Path.home() / ".kohdalab"
+
+
+def last_config_state_path() -> Path:
+    configured = os.environ.get(LAST_CONFIG_STATE_PATH_ENV)
+    if configured:
+        return Path(configured)
+    return config_state_dir() / "last_config.json"
+
+
+def read_last_config_path(path: str | Path | None = None) -> Path | None:
+    state_path = Path(path) if path is not None else last_config_state_path()
+    if not state_path.exists():
+        return None
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+        value = data.get("path") if isinstance(data, dict) else data
+    except json.JSONDecodeError:
+        value = state_path.read_text(encoding="utf-8").strip()
+    if not value:
+        return None
+    return Path(str(value))
+
+
+def write_last_config_path(config_path: str | Path, path: str | Path | None = None) -> Path:
+    state_path = Path(path) if path is not None else last_config_state_path()
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    resolved = Path(config_path)
+    state_path.write_text(json.dumps({"path": str(resolved)}, indent=2), encoding="utf-8")
+    return state_path
+
+
+def _record_candidate(candidates: list[dict[str, str]], source: str, path: Path) -> None:
+    candidates.append({"source": source, "path": str(path), "exists": str(path.exists())})
+
+
+def resolve_config_path(
+    explicit_path: str | Path | None = None,
+    *,
+    env_var: str = CONFIG_PATH_ENV,
+    last_state_path: str | Path | None = None,
+    lab_default_path: str | Path | None = None,
+) -> ConfigPathResolution:
+    candidates: list[dict[str, str]] = []
+    if explicit_path:
+        path = Path(explicit_path)
+        _record_candidate(candidates, "explicit", path)
+        return ConfigPathResolution(path=path, source="explicit", candidates=candidates)
+
+    env_path = os.environ.get(env_var)
+    if env_path:
+        path = Path(env_path)
+        _record_candidate(candidates, env_var, path)
+        return ConfigPathResolution(path=path, source=env_var, candidates=candidates)
+
+    last_path = read_last_config_path(last_state_path)
+    if last_path is not None:
+        _record_candidate(candidates, "last", last_path)
+        if last_path.exists():
+            return ConfigPathResolution(path=last_path, source="last", candidates=candidates)
+
+    default_from_env = os.environ.get(DEFAULT_CONFIG_PATH_ENV)
+    default_path = Path(default_from_env) if default_from_env else Path(lab_default_path or DEFAULT_CONFIG_PATH)
+    _record_candidate(candidates, "lab_default", default_path)
+    if default_path.exists():
+        return ConfigPathResolution(path=default_path, source="lab_default", candidates=candidates)
+
+    return ConfigPathResolution(path=None, source="none", candidates=candidates)
 
 
 def with_auto_suffix(filename: str) -> str:

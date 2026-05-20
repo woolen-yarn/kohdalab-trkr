@@ -13,7 +13,14 @@ import pyqtgraph as pg
 from serial.tools import list_ports
 
 from kohdalab.api import Experiment, MeasurementPoint, load_config
-from kohdalab.api.config import DEFAULT_CONFIG_PATH, normalize_delay_stage_name, save_config
+from kohdalab.api.config import (
+    DEFAULT_CONFIG_PATH,
+    normalize_config,
+    normalize_delay_stage_name,
+    resolve_config_path,
+    save_config,
+    write_last_config_path,
+)
 from kohdalab.api.devices.delay_stage import list_stages
 from kohdalab.api.measurement_rows import axis_target_key, fields_for_row, fields_for_rows, output_rows
 from kohdalab.api.scan_limits import delay_stage_scan_limits, scanner_scan_limits
@@ -572,8 +579,15 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.setWindowTitle("KohdaLab TRKR")
         self.resize(1440, 820)
 
-        self.config_path = QtWidgets.QLineEdit(str(DEFAULT_CONFIG_PATH))
-        self.config: dict[str, Any] = load_config(DEFAULT_CONFIG_PATH)
+        config_resolution = resolve_config_path()
+        self.config_path = QtWidgets.QLineEdit(str(config_resolution.path or ""))
+        if config_resolution.path is None:
+            self.config = normalize_config({})
+            self._startup_config_message = "No config loaded. Choose a config path and click Load."
+        else:
+            self.config = load_config(config_resolution.path)
+            write_last_config_path(config_resolution.path)
+            self._startup_config_message = f"Loaded config ({config_resolution.source}): {config_resolution.path}"
         self.experiment: Experiment | None = None
         self.thread: QtCore.QThread | None = None
         self.worker: MeasurementWorker | None = None
@@ -632,6 +646,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self._connect_signals()
         self._install_log_streams()
         self._load_config_into_fields(self.config)
+        self.append_log(self._startup_config_message)
         self.refresh_all_ports()
         self._refresh_plot_labels()
         self._refresh_scan_limit_hints()
@@ -1844,24 +1859,34 @@ class TRKRGui(QtWidgets.QMainWindow):
         self._refresh_scan2d_role_hints("srkr_2d")
 
     def browse_config(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Config", str(DEFAULT_CONFIG_PATH), "JSON Files (*.json)")
+        start_dir = self.config_path.text().strip() or str(DEFAULT_CONFIG_PATH)
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Load Config", start_dir, "JSON Files (*.json)")
         if path:
             self.config_path.setText(path)
 
     def load_config_file(self):
         try:
-            self.config = load_config(self.config_path.text().strip())
+            resolution = resolve_config_path(self.config_path.text().strip() or None)
+            if resolution.path is None:
+                raise ValueError("Choose a config path before loading.")
+            self.config = load_config(resolution.path)
+            write_last_config_path(resolution.path)
+            self.config_path.setText(str(resolution.path))
             self._load_config_into_fields(self.config)
             if self.experiment is not None:
                 self.experiment.config = self._runtime_config()
-            self.append_log(f"Loaded config: {self.config_path.text().strip()}")
+            self.append_log(f"Loaded config ({resolution.source}): {resolution.path}")
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Config Error", str(e))
 
     def save_config_file(self):
         try:
-            path = Path(self.config_path.text().strip())
+            path_text = self.config_path.text().strip()
+            if not path_text:
+                raise ValueError("Choose a config path before saving.")
+            path = Path(path_text)
             save_config(self._runtime_config(), path)
+            write_last_config_path(path)
             self.append_log(f"Saved config: {path}")
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Config Error", str(e))
