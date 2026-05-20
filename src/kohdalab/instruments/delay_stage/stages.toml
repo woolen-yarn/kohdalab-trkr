@@ -1,0 +1,29 @@
+# Sigma Koki
+
+[SGSP46-500]
+controllers = ["SHOT302GS"]
+pos_unit = "pulse"
+travel_mm = 500.0
+screw_lead_mm_per_rev = 10.0
+step_angle_deg = 0.72
+
+[OSMS20-35]
+controllers = ["SHOT302GS", "GSC01"]
+pos_unit = "pulse"
+travel_mm = 35.0
+screw_lead_mm_per_rev = 1.0
+step_angle_deg = 0.72
+
+[OSMS26-300]
+controllers = ["SHOT302GS","GSC01"]
+pos_unit = "pulse"
+travel_mm = 300.0
+screw_lead_mm_per_rev = 2.0
+step_angle_deg = 0.72
+
+[OSMS33-600]
+controllers = ["SHOT302GS"]
+pos_unit = "pulse"
+travel_mm = 600.0
+screw_lead_mm_per_rev = 10.0
+step_angle_deg = 0.72

@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.venv/
+venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.ipynb_checkpoints/
+
+*.log
+
+# Local measurement outputs. Keep curated examples tracked explicitly if needed.
+thermorack_log.csv
+trkr_test.csv
