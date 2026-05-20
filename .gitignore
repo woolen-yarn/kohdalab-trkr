@@ -18,3 +18,6 @@ env/
 # Local measurement outputs. Keep curated examples tracked explicitly if needed.
 thermorack_log.csv
 trkr_test.csv
+
+# PC-specific configs should not be overwritten by git pulls.
+config/*.local.json

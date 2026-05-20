@@ -53,7 +53,7 @@
       "interval_s": 1.0,
       "n_points": 360,
       "output": {
-        "dir": "C:\\jupKernel\\kohdalab",
+        "dir": "C:\\pythonKernel\\kohdalab",
         "filename": "signal_monitor_run",
         "auto_timestamp_suffix": true
       }
@@ -68,7 +68,7 @@
       "wait_s": 2.0,
       "return_to_zero": true,
       "output": {
-        "dir": "C:\\jupKernel\\kohdalab",
+        "dir": "C:\\pythonKernel\\kohdalab",
         "filename": "trkr_run",
         "auto_timestamp_suffix": true
       }
@@ -84,7 +84,7 @@
       "wait_s": 2.0,
       "return_to_zero": true,
       "output": {
-        "dir": "C:\\jupKernel\\kohdalab",
+        "dir": "C:\\pythonKernel\\kohdalab",
         "filename": "srkr_run",
         "auto_timestamp_suffix": true
       }
@@ -117,7 +117,7 @@
         "slow_axis": true
       },
       "output": {
-        "dir": "C:\\jupKernel\\kohdalab",
+        "dir": "C:\\pythonKernel\\kohdalab",
         "filename": "strkr_run",
         "auto_timestamp_suffix": true
       }
@@ -145,7 +145,7 @@
         "slow_axis": true
       },
       "output": {
-        "dir": "C:\\jupKernel\\kohdalab",
+        "dir": "C:\\pythonKernel\\kohdalab",
         "filename": "srkr_2d_run",
         "auto_timestamp_suffix": true
       }
