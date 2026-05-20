@@ -171,6 +171,32 @@ $shortcut.Save()
 
 作成後は、デスクトップの `KohdaLab TRKR` をダブルクリックすると GUI が起動します。
 
+### 9. 最新版に更新する
+
+基本はこの 4 つです。
+
+```powershell
+Set-Location C:\pythonKernel\kohdalab-trkr
+
+git status
+git pull --ff-only
+uv sync --all-extras
+uv run kohdalab-gui
+```
+
+`git status` で `working tree clean` ならそのまま更新できます。`uv sync --all-extras` は、最新版で依存パッケージが変わった場合に `.venv` を合わせるためです。
+
+local の config を編集していて `git pull` が止まる場合は、先に退避します。
+
+```powershell
+git stash push -m "local config before update"
+git pull --ff-only
+uv sync --all-extras
+git stash pop
+```
+
+デスクトップショートカットは、同じ `C:\pythonKernel\kohdalab-trkr` を使っている限り作り直さなくて大丈夫です。中で `uv run kohdalab-gui` を実行するだけなので、更新後の最新版が起動します。
+
 Quick Start (English)
 ---------------------
 
