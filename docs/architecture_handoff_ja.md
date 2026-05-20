@@ -9,7 +9,7 @@ English version: [`architecture_handoff.md`](architecture_handoff.md).
 notebook、desktop GUI、CLI、将来の app は、1つの public API 経由で実験装置を制御します。
 
 ```text
-apps / notebooks / CLI / future web UI
+apps / notebooks / CLI / future apps
   -> kohdalab.api
   -> kohdalab.interfaces
   -> kohdalab.instruments

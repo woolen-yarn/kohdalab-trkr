@@ -244,7 +244,7 @@ The intended dependency direction is:
    units, limits, connection reuse, and convenience operations.
 
 3. `kohdalab.api`
-   Public workflow API. Notebook, GUI, CLI, and future Web UI code should call
+   Public workflow API. Notebook, GUI, CLI, and future app code should call
    this layer. `Experiment` owns config, device sessions, live status, moves,
    and measurement runs.
 
@@ -272,7 +272,7 @@ Design Notes
   middle of the delay-stage travel as `t_ps = 0`.
 - Keep instrument-specific command quirks in `instruments`.
 - Put reusable UI-independent orchestration in `api` so notebooks, GUI, CLI,
-  and Web UI can share the same behavior.
+  and future apps can share the same behavior.
 
 Python API
 ----------
@@ -297,18 +297,6 @@ The everyday GUI entry point is `kohdalab-gui`. The same measurement runners
 can also be started from a terminal:
 
 For post-change hardware verification, use `docs/hardware_smoke_test.md`.
-For occasional remote browser operation, use `docs/web_ui.md`.
-
-```powershell
-uv run kohdalab-web --config config\kikuchi.json
-```
-
-After a config has been loaded once, `uv run kohdalab-web` reopens the last
-used config automatically. Startup resolution is `--config`, `KOHDALAB_CONFIG`,
-last used config, then the lab default if that file exists. By default the Web
-UI binds to `127.0.0.1:8765`, which is intended for local use or SSH tunneling.
-Keep `kohdalab-gui` and `kohdalab-web` as alternate entry points; do not run
-both against the same instruments at the same time.
 
 ```powershell
 kohdalab-cli --config config\kikuchi.json signal-monitor

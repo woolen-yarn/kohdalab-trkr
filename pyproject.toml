@@ -27,7 +27,6 @@ notebook = [
 [project.scripts]
 kohdalab-cli = "kohdalab.api.cli:main"
 kohdalab-gui = "kohdalab.apps.trkr_gui:main"
-kohdalab-web = "kohdalab.apps.web_ui:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -38,9 +37,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-
-[tool.setuptools.package-data]
-"kohdalab.apps.web_static" = ["*.html", "*.css", "*.js"]
 
 [dependency-groups]
 dev = [

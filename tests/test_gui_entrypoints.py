@@ -10,5 +10,4 @@ def test_gui_entrypoints_are_explicit():
     scripts = pyproject["project"]["scripts"]
 
     assert scripts["kohdalab-gui"] == "kohdalab.apps.trkr_gui:main"
-    assert scripts["kohdalab-web"] == "kohdalab.apps.web_ui:main"
     assert "kohdalab-gui-advanced" not in scripts

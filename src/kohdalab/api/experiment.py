@@ -17,7 +17,7 @@ ContinueCallback = Callable[[], bool]
 
 
 class Experiment:
-    """User-facing facade for notebooks, GUI, and future web UI workflows.
+    """User-facing facade for notebooks, GUI, CLI, and future app workflows.
 
     The experiment owns one long-lived `DeviceSession`. Measurement methods
     always reuse that session and do not disconnect it after a run.

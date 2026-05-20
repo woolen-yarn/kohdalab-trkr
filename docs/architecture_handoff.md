@@ -13,7 +13,7 @@ through one public API.
 Dependency direction:
 
 ```text
-apps / notebooks / CLI / future web UI
+apps / notebooks / CLI / future apps
   -> kohdalab.api
   -> kohdalab.interfaces
   -> kohdalab.instruments
