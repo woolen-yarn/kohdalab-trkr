@@ -1,34 +1,38 @@
-﻿KohdaLab-TRKR
-============
+KohdaLab-TRKR
+=============
 
 KohdaLab-TRKR is organized around a small public API for laboratory control.
 
 For practical examples, see `docs/api_usage.md`.
 
-Quick Start (譌･譛ｬ隱・
+Quick Start (日本語)
 -------------------
 
-譁ｰ縺励＞ PC 縺ｧ GUI 貂ｬ螳壹ｒ蟋九ａ繧区怙遏ｭ謇矩・〒縺吶８indows PowerShell 繧呈Φ螳壹＠縺ｦ縺・∪縺吶・讓呎ｺ悶〒縺ｯ `C:\pythonKernel\kohdalab-trkr` 縺ｫ鄂ｮ縺阪∪縺吶・
-### 1. uv 繧偵う繝ｳ繧ｹ繝医・繝ｫ
+新しい PC で GUI 測定を始める最短手順です。Windows PowerShell を想定しています。
+標準では `C:\pythonKernel\kohdalab-trkr` に置きます。
 
-蜈ｬ蠑・installer:
+### 1. uv をインストール
+
+公式 installer:
 
 ```powershell
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-繧､繝ｳ繧ｹ繝医・繝ｫ蠕後∵眠縺励＞ PowerShell 繧帝幕縺・※遒ｺ隱阪＠縺ｾ縺吶・
+インストール後、新しい PowerShell を開いて確認します。
+
 ```powershell
 uv --version
 ```
 
-uv 縺ｮ蜈ｬ蠑・install docs:
+uv の公式 install docs:
 
 ```text
 https://docs.astral.sh/uv/getting-started/installation/
 ```
 
-### 2. GitHub repo 繧貞叙蠕・
+### 2. GitHub repo を取得
+
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\pythonKernel
 Set-Location C:\pythonKernel
@@ -36,44 +40,57 @@ git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
-`C:\pythonKernel` 縺ｮ菴懈・縺ｧ讓ｩ髯舌お繝ｩ繝ｼ縺悟・繧・PC 縺ｧ縺ｯ縲∵怙蛻昴・ 2 陦後□縺台ｻ･荳九↓鄂ｮ縺肴鋤縺医∪縺吶・
+`C:\pythonKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
+
 ```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
 ```
 
-縺吶〒縺ｫ zip 繧・USB 縺ｧ repo folder 繧呈戟縺｣縺ｦ縺阪◆蝣ｴ蜷医・縲√◎縺ｮ folder 縺ｫ遘ｻ蜍輔☆繧後・ OK 縺ｧ縺吶・
-### 3. 萓晏ｭ倡腸蠅・ｒ菴懈・
+すでに zip や USB で repo folder を持ってきた場合は、その folder に移動すれば OK です。
 
-GUI 縺ｨ notebook 繧ゆｽｿ縺・壼ｸｸ繧ｻ繝・ヨ繧｢繝・・:
+### 3. 依存環境を作成
+
+GUI と notebook も使う通常セットアップ:
 
 ```powershell
 uv sync --all-extras
 ```
 
-髢狗匱繧・test 繧り｡後≧ PC 縺ｧ縺ｯ:
+開発や test も行う PC では:
 
 ```powershell
 uv sync --all-extras --group dev
 ```
 
-### 4. 螳滓ｩ・PC 縺ｫ蠢・ｦ√↑螟夜Κ driver 繧堤｢ｺ隱・
-Python package 縺ｨ縺ｯ蛻･縺ｫ縲∝ｮ滓ｩ・PC 蛛ｴ縺ｫ莉･荳九′蠢・ｦ√〒縺吶・
-- NI-VISA 縺ｾ縺溘・ Keysight VISA 縺ｪ縺ｩ縺ｮ VISA runtime
-- delay stage / scanner 逕ｨ縺ｮ USB serial driver
-- Windows 縺ｮ Device Manager 縺ｧ COM port 縺瑚ｦ九∴繧九％縺ｨ
-- lock-in 縺ｮ GPIB/VISA resource 縺瑚ｦ九∴繧九％縺ｨ
+### 4. 実機 PC に必要な外部 driver を確認
 
-### 5. GUI 繧定ｵｷ蜍・
+Python package とは別に、実機 PC 側に以下が必要です。
+
+- NI-VISA または Keysight VISA などの VISA runtime
+- delay stage / scanner 用の USB serial driver
+- Windows の Device Manager で COM port が見えること
+- lock-in の GPIB/VISA resource が見えること
+
+### 5. GUI を起動
+
 ```powershell
 uv run kohdalab-gui
 ```
 
-GUI 縺瑚ｵｷ蜍輔＠縺溘ｉ:
+GUI が起動したら:
 
-1. `Load` 縺ｧ config 繧堤｢ｺ隱阪＠縺ｾ縺吶・2. Lock-in resource 縺ｨ蜷・COM port 繧・`Refresh` 縺励※驕ｸ縺ｳ逶ｴ縺励∪縺吶・3. `Save` 縺ｧ縺昴・ PC 逕ｨ縺ｮ config 縺ｫ菫晏ｭ倥＠縺ｾ縺吶・4. `Connect All` 縺ｾ縺溘・蛟句挨 `Connect` 縺ｧ謗･邯壹＠縺ｾ縺吶・5. `Read Live` 縺ｧ live status 縺梧峩譁ｰ縺輔ｌ繧九％縺ｨ繧堤｢ｺ隱阪＠縺ｾ縺吶・6. 蟆上＆縺・ｯ・峇縺ｧ `Signal Monitor`縲～TRKR`縲～SRKR`縲～STRKR`縲～SRKR 2D` 繧定ｩｦ縺励∪縺吶・
-螳滓ｩ溽｢ｺ隱・checklist 縺ｯ `docs/hardware_smoke_test_ja.md` 繧剃ｽｿ縺｣縺ｦ縺上□縺輔＞縲・
-### 6. CLI / notebook 繧ゆｽｿ縺医∪縺・
+1. `Load` で config を確認します。
+2. Lock-in resource と各 COM port を `Refresh` して選び直します。
+3. `Save` でその PC 用の config に保存します。
+4. `Connect All` または個別 `Connect` で接続します。
+5. `Read Live` で live status が更新されることを確認します。
+6. 小さい範囲で `Signal Monitor`、`TRKR`、`SRKR`、`STRKR`、`SRKR 2D` を試します。
+
+実機確認 checklist は `docs/hardware_smoke_test_ja.md` を使ってください。
+
+### 6. CLI / notebook も使えます
+
 CLI:
 
 ```powershell
@@ -95,7 +112,8 @@ maintained notebooks:
 - `notebook/strkr_notebook.ipynb`
 - `notebook/srkr_2d_notebook.ipynb`
 
-GUI 縺ｯ螳牙・縺ｮ縺溘ａ `auto_connect=False` 縺ｧ縲∝・縺ｫ譏守､ｺ謗･邯壹＠縺ｦ縺九ｉ貂ｬ螳壹＠縺ｾ縺吶・LI 縺ｨ notebook 縺ｯ譌｢螳壹〒 `auto_connect=True` 縺ｪ縺ｮ縺ｧ縲∝ｿ・ｦ・device 繧定・蜍墓磁邯壹＠縺ｫ陦後″縺ｾ縺吶・
+GUI は安全のため `auto_connect=False` で、先に明示接続してから測定します。CLI と notebook は既定で `auto_connect=True` なので、必要 device を自動接続しに行きます。
+
 Quick Start (English)
 ---------------------
 
@@ -315,4 +333,3 @@ The maintained notebooks are:
 
 These notebooks, `kohdalab-cli`, and `kohdalab-gui` all call the same
 `kohdalab.api.Experiment` facade and measurement plan builders.
-
