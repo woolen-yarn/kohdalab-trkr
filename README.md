@@ -151,22 +151,13 @@ GUI は安全のため `auto_connect=False` で、先に明示接続してから
 PowerShell で repo の場所を指定して、GUI 起動用の `.bat` とデスクトップショートカットを作ります。
 repo を別の場所に置いた場合は、最初の `$repo` だけ変更してください。
 
-```powershell
-$repo = "C:\pythonKernel\kohdalab-trkr"
-$bat = Join-Path $repo "start_kohdalab_gui.bat"
+`start_kohdalab_gui.bat` の中身:
 
-@"
+```bat
 @echo off
-cd /d "$repo"
+cd /d "C:\pythonKernel\kohdalab-trkr"
 uv run kohdalab-gui
 pause
-"@ | Set-Content -Encoding ASCII -Path $bat
-
-$ws = New-Object -ComObject WScript.Shell
-$shortcut = $ws.CreateShortcut("$env:USERPROFILE\Desktop\KohdaLab TRKR.lnk")
-$shortcut.TargetPath = $bat
-$shortcut.WorkingDirectory = $repo
-$shortcut.Save()
 ```
 
 作成後は、デスクトップの `KohdaLab TRKR` をダブルクリックすると GUI が起動します。
@@ -347,29 +338,17 @@ connected before a measurement starts. CLI and notebooks use
 
 ### 8. Create a desktop shortcut
 
-Run this in PowerShell to create a GUI launcher `.bat` file and a desktop
-shortcut. If the repository is in another folder, change only the first `$repo`
-line.
+Create `start_kohdalab_gui.bat` with this content:
 
-```powershell
-$repo = "C:\pythonKernel\kohdalab-trkr"
-$bat = Join-Path $repo "start_kohdalab_gui.bat"
-
-@"
+```bat
 @echo off
-cd /d "$repo"
+cd /d "C:\pythonKernel\kohdalab-trkr"
 uv run kohdalab-gui
 pause
-"@ | Set-Content -Encoding ASCII -Path $bat
-
-$ws = New-Object -ComObject WScript.Shell
-$shortcut = $ws.CreateShortcut("$env:USERPROFILE\Desktop\KohdaLab TRKR.lnk")
-$shortcut.TargetPath = $bat
-$shortcut.WorkingDirectory = $repo
-$shortcut.Save()
 ```
 
-After this, double-click `KohdaLab TRKR` on the desktop to start the GUI.
+Create a desktop shortcut to that `.bat` file. After this, double-click the
+shortcut to start the GUI.
 
 Layering
 --------
