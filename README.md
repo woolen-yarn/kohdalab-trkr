@@ -1,7 +1,7 @@
-KohdaLab
+KohdaLab-TRKR
 ========
 
-KohdaLab is organized around a small public API for laboratory control.
+KohdaLab-TRKR is organized around a small public API for laboratory control.
 
 For practical examples, see `docs/api_usage.md`.
 
