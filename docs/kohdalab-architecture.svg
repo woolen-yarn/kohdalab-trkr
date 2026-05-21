@@ -1,0 +1,216 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title desc">
+  <title id="title">KohdaLab TRKR Project Structure</title>
+  <desc id="desc">A dark theme architecture diagram for the KohdaLab TRKR project. The center shows the runtime stack from entry points to hardware, the left shows repository folders, and the right shows configuration, tests, docs, and CSV output.</desc>
+  <defs>
+    <style>
+      .bg { fill: #070a0f; }
+      .panel { fill: #101620; stroke: #293241; stroke-width: 1.5; rx: 16; ry: 16; }
+      .main-panel { fill: #0f1722; stroke: #3b485a; stroke-width: 1.8; rx: 18; ry: 18; }
+      .title { font: 700 30px Arial, Helvetica, sans-serif; fill: #f3f6fb; }
+      .subtitle { font: 400 15px Arial, Helvetica, sans-serif; fill: #9ba8ba; }
+      .panel-title { font: 700 15px Arial, Helvetica, sans-serif; fill: #eef3fa; letter-spacing: .03em; }
+      .hint { font: 400 12px Arial, Helvetica, sans-serif; fill: #7f8da3; }
+      .layer-title { font: 700 18px Arial, Helvetica, sans-serif; fill: #f4f7fb; }
+      .layer-note { font: 400 13px Arial, Helvetica, sans-serif; fill: #b9c4d4; }
+      .chip-title { font: 700 13px Arial, Helvetica, sans-serif; fill: #f4f7fb; }
+      .chip-note { font: 400 11.5px Arial, Helvetica, sans-serif; fill: #b7c2d0; }
+      .tree-root { font: 700 15px Consolas, "Courier New", monospace; fill: #f4f7fb; }
+      .tree { font: 400 13px Consolas, "Courier New", monospace; fill: #d5deeb; }
+      .tree-muted { font: 400 12px Arial, Helvetica, sans-serif; fill: #8d9aad; }
+      .num { font: 700 14px Arial, Helvetica, sans-serif; fill: #061018; }
+      .arrow { stroke: #c3ccd9; stroke-width: 2.2; fill: none; marker-end: url(#arrowhead); }
+      .soft-arrow { stroke: #6f7d91; stroke-width: 1.8; stroke-dasharray: 5 5; fill: none; marker-end: url(#soft-arrowhead); }
+      .bracket { stroke: #596679; stroke-width: 1.6; fill: none; }
+      .legend { font: 400 12px Arial, Helvetica, sans-serif; fill: #aab6c8; }
+      .divider { stroke: #273141; }
+    </style>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#c3ccd9"/>
+    </marker>
+    <marker id="soft-arrowhead" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6f7d91"/>
+    </marker>
+    <filter id="shadow" x="-8%" y="-8%" width="116%" height="116%">
+      <feDropShadow dx="0" dy="8" stdDeviation="9" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <linearGradient id="blueLayer" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#182a40"/>
+      <stop offset="100%" stop-color="#0f1b2c"/>
+    </linearGradient>
+    <linearGradient id="greenLayer" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#17352c"/>
+      <stop offset="100%" stop-color="#10251f"/>
+    </linearGradient>
+    <linearGradient id="amberLayer" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#3a2b15"/>
+      <stop offset="100%" stop-color="#22190e"/>
+    </linearGradient>
+    <linearGradient id="violetLayer" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#2a2240"/>
+      <stop offset="100%" stop-color="#1a162a"/>
+    </linearGradient>
+    <linearGradient id="redLayer" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#3a1d1c"/>
+      <stop offset="100%" stop-color="#231312"/>
+    </linearGradient>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="900"/>
+
+  <text class="title" x="52" y="54">KohdaLab TRKR Project Structure</text>
+  <text class="subtitle" x="52" y="82">Read the center from top to bottom: user tools call one public API, which owns sessions, talks to interfaces, and reaches hardware drivers.</text>
+
+  <!-- Panels -->
+  <rect class="panel" x="42" y="112" width="280" height="730"/>
+  <rect class="main-panel" x="352" y="112" width="566" height="730"/>
+  <rect class="panel" x="948" y="112" width="290" height="730"/>
+
+  <text class="panel-title" x="68" y="145">REPOSITORY MAP</text>
+  <text class="hint" x="68" y="166">Where to look in the codebase</text>
+
+  <text class="panel-title" x="382" y="145">RUNTIME STACK</text>
+  <text class="hint" x="382" y="166">How a measurement request moves through the system</text>
+
+  <text class="panel-title" x="974" y="145">SUPPORTING PIECES</text>
+  <text class="hint" x="974" y="166">Inputs, verification, docs, and outputs</text>
+
+  <!-- Left repository tree -->
+  <text class="tree-root" x="68" y="210">kohdalab-trkr/</text>
+
+  <text class="tree" x="82" y="242">src/kohdalab/</text>
+  <text class="tree" x="102" y="270">apps/</text>
+  <text class="tree-muted" x="164" y="270">Desktop GUI</text>
+  <text class="tree" x="102" y="298">api/</text>
+  <text class="tree-muted" x="164" y="298">Public workflow API</text>
+  <text class="tree" x="102" y="326">interfaces/</text>
+  <text class="tree-muted" x="196" y="326">Device abstraction</text>
+  <text class="tree" x="102" y="354">instruments/</text>
+  <text class="tree-muted" x="206" y="354">Hardware drivers</text>
+
+  <line x1="70" y1="384" x2="294" y2="384" class="divider"/>
+
+  <text class="tree" x="82" y="420">config/</text>
+  <text class="tree-muted" x="150" y="420">Device and scan profiles</text>
+  <text class="tree" x="82" y="450">notebook/</text>
+  <text class="tree-muted" x="170" y="450">Interactive workflows</text>
+  <text class="tree" x="82" y="480">tests/</text>
+  <text class="tree-muted" x="146" y="480">pytest coverage</text>
+  <text class="tree" x="82" y="510">docs/</text>
+  <text class="tree-muted" x="138" y="510">Usage and handoff notes</text>
+  <text class="tree" x="82" y="540">pyproject.toml</text>
+  <text class="tree-muted" x="82" y="560">Entry points and dependencies</text>
+
+  <rect x="68" y="618" width="228" height="142" rx="12" ry="12" fill="#151d2a" stroke="#303b4c"/>
+  <text class="chip-title" x="90" y="648">Largest Code Area</text>
+  <text class="chip-note" x="90" y="674">apps/ contains the Qt GUI and</text>
+  <text class="chip-note" x="90" y="692">most of the operator-facing state.</text>
+  <text class="chip-note" x="90" y="724">api/ is the stable surface that</text>
+  <text class="chip-note" x="90" y="742">GUI, CLI, and notebooks share.</text>
+
+  <!-- Central runtime stack -->
+  <!-- Layer 1 -->
+  <rect x="406" y="198" width="458" height="94" rx="14" ry="14" fill="url(#blueLayer)" stroke="#6ca6e8" filter="url(#shadow)"/>
+  <circle cx="432" cy="226" r="15" fill="#8fc2ff"/>
+  <text class="num" x="428" y="231">1</text>
+  <text class="layer-title" x="460" y="225">User-Facing Entry Points</text>
+  <text class="layer-note" x="460" y="249">Desktop GUI, command line, and notebooks</text>
+
+  <rect x="430" y="264" width="118" height="32" rx="10" ry="10" fill="#111927" stroke="#43617f"/>
+  <text class="chip-title" x="456" y="285">GUI</text>
+  <rect x="576" y="264" width="118" height="32" rx="10" ry="10" fill="#111927" stroke="#43617f"/>
+  <text class="chip-title" x="601" y="285">CLI</text>
+  <rect x="722" y="264" width="118" height="32" rx="10" ry="10" fill="#111927" stroke="#43617f"/>
+  <text class="chip-title" x="744" y="285">Notebook</text>
+
+  <!-- Layer 2 -->
+  <rect x="406" y="342" width="458" height="104" rx="14" ry="14" fill="url(#greenLayer)" stroke="#67c99f" filter="url(#shadow)"/>
+  <circle cx="432" cy="370" r="15" fill="#8ce0b7"/>
+  <text class="num" x="428" y="375">2</text>
+  <text class="layer-title" x="460" y="369">Public Workflow API</text>
+  <text class="layer-note" x="460" y="393">kohdalab.api is the shared experiment surface</text>
+
+  <rect x="430" y="408" width="126" height="30" rx="9" ry="9" fill="#101a18" stroke="#3f745f"/>
+  <text class="chip-title" x="453" y="428">Experiment</text>
+  <rect x="572" y="408" width="126" height="30" rx="9" ry="9" fill="#101a18" stroke="#3f745f"/>
+  <text class="chip-title" x="598" y="428">scan_plan</text>
+  <rect x="714" y="408" width="126" height="30" rx="9" ry="9" fill="#101a18" stroke="#3f745f"/>
+  <text class="chip-title" x="738" y="428">measurements</text>
+
+  <!-- Layer 3 -->
+  <rect x="406" y="496" width="458" height="94" rx="14" ry="14" fill="url(#amberLayer)" stroke="#d9a84e" filter="url(#shadow)"/>
+  <circle cx="432" cy="524" r="15" fill="#f0c46d"/>
+  <text class="num" x="428" y="529">3</text>
+  <text class="layer-title" x="460" y="523">Device Session Layer</text>
+  <text class="layer-note" x="460" y="547">Owns connected handles and serializes hardware I/O</text>
+  <text class="layer-note" x="460" y="568">DeviceSession + api.devices</text>
+
+  <!-- Layer 4 -->
+  <rect x="406" y="640" width="458" height="94" rx="14" ry="14" fill="url(#violetLayer)" stroke="#ac8be6" filter="url(#shadow)"/>
+  <circle cx="432" cy="668" r="15" fill="#c6a8ff"/>
+  <text class="num" x="428" y="673">4</text>
+  <text class="layer-title" x="460" y="667">Device Interfaces</text>
+  <text class="layer-note" x="460" y="691">Stable wrappers for lock-in, delay stage, and scanner</text>
+
+  <rect x="430" y="704" width="126" height="30" rx="9" ry="9" fill="#171324" stroke="#615182"/>
+  <text class="chip-title" x="466" y="724">lockin</text>
+  <rect x="572" y="704" width="126" height="30" rx="9" ry="9" fill="#171324" stroke="#615182"/>
+  <text class="chip-title" x="611" y="724">scanner</text>
+  <rect x="714" y="704" width="126" height="30" rx="9" ry="9" fill="#171324" stroke="#615182"/>
+  <text class="chip-title" x="740" y="724">delay_stage</text>
+
+  <!-- Layer 5 -->
+  <rect x="406" y="778" width="458" height="44" rx="14" ry="14" fill="url(#redLayer)" stroke="#e58a82" filter="url(#shadow)"/>
+  <circle cx="432" cy="800" r="15" fill="#ffa39d"/>
+  <text class="num" x="428" y="805">5</text>
+  <text class="layer-title" x="460" y="805">Hardware Drivers and Lab Instruments</text>
+
+  <!-- Central arrows -->
+  <path class="arrow" d="M635 292 L635 334"/>
+  <path class="arrow" d="M635 446 L635 488"/>
+  <path class="arrow" d="M635 590 L635 632"/>
+  <path class="arrow" d="M635 734 L635 770"/>
+
+  <!-- Left braces pointing to center -->
+  <path class="bracket" d="M324 252 C352 252 368 236 398 236"/>
+  <path class="bracket" d="M324 304 C352 304 368 384 398 384"/>
+  <path class="bracket" d="M324 330 C352 330 368 682 398 682"/>
+  <path class="bracket" d="M324 356 C352 356 368 800 398 800"/>
+
+  <!-- Right supporting pieces -->
+  <rect x="976" y="198" width="232" height="84" rx="13" ry="13" fill="url(#blueLayer)" stroke="#6ca6e8" filter="url(#shadow)"/>
+  <text class="layer-title" x="1002" y="228">Config Profiles</text>
+  <text class="layer-note" x="1002" y="252">config/*.json</text>
+  <text class="layer-note" x="1002" y="270">devices, ports, scan ranges</text>
+
+  <rect x="976" y="326" width="232" height="84" rx="13" ry="13" fill="url(#greenLayer)" stroke="#67c99f" filter="url(#shadow)"/>
+  <text class="layer-title" x="1002" y="356">Tests</text>
+  <text class="layer-note" x="1002" y="380">tests/*.py</text>
+  <text class="layer-note" x="1002" y="398">hardware-free verification</text>
+
+  <rect x="976" y="454" width="232" height="84" rx="13" ry="13" fill="url(#amberLayer)" stroke="#d9a84e" filter="url(#shadow)"/>
+  <text class="layer-title" x="1002" y="484">Documentation</text>
+  <text class="layer-note" x="1002" y="508">docs/*.md</text>
+  <text class="layer-note" x="1002" y="526">usage, GUI, handoff notes</text>
+
+  <rect x="976" y="582" width="232" height="84" rx="13" ry="13" fill="url(#violetLayer)" stroke="#ac8be6" filter="url(#shadow)"/>
+  <text class="layer-title" x="1002" y="612">Package Metadata</text>
+  <text class="layer-note" x="1002" y="636">pyproject.toml</text>
+  <text class="layer-note" x="1002" y="654">entry points and dependencies</text>
+
+  <rect x="976" y="710" width="232" height="84" rx="13" ry="13" fill="url(#redLayer)" stroke="#e58a82" filter="url(#shadow)"/>
+  <text class="layer-title" x="1002" y="740">Measurement Output</text>
+  <text class="layer-note" x="1002" y="764">CSV rows</text>
+  <text class="layer-note" x="1002" y="782">saved experiment data</text>
+
+  <!-- Soft arrows from supporting pieces -->
+  <path class="soft-arrow" d="M976 240 C930 242 900 280 864 350"/>
+  <path class="soft-arrow" d="M976 368 C930 368 904 376 864 386"/>
+  <path class="soft-arrow" d="M976 496 C930 494 902 458 864 426"/>
+  <path class="soft-arrow" d="M976 624 C926 624 898 590 864 552"/>
+  <path class="soft-arrow" d="M864 394 C918 482 942 656 976 752"/>
+
+  <!-- Legend -->
+  <rect x="382" y="852" width="506" height="28" rx="14" ry="14" fill="#111927" stroke="#303b4c"/>
+  <text class="legend" x="405" y="871">Solid arrows: runtime call path</text>
+  <text class="legend" x="610" y="871">Dashed arrows: supporting inputs or outputs</text>
+</svg>

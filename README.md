@@ -5,6 +5,11 @@ KohdaLab-TRKR is organized around a small public API for laboratory control.
 
 For practical examples, see `docs/api_usage.md`.
 
+Project Structure
+-----------------
+
+![KohdaLab TRKR Project Structure](docs/kohdalab-architecture.svg)
+
 Quick Start (日本語)
 -------------------
 
