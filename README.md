@@ -10,6 +10,15 @@ Project Structure
 
 ![KohdaLab TRKR Project Structure](docs/kohdalab-architecture.svg)
 
+Measurement sequence diagrams:
+
+- [Overview](docs/measurement_sequences.md)
+- [Signal Monitor](docs/measurement-sequence-signal-monitor.svg)
+- [TRKR](docs/measurement-sequence-trkr.svg)
+- [SRKR](docs/measurement-sequence-srkr.svg)
+- [STRKR](docs/measurement-sequence-strkr.svg)
+- [SRKR 2D](docs/measurement-sequence-srkr-2d.svg)
+
 Quick Start (日本語)
 -------------------
 

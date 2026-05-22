@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="760" viewBox="0 0 1180 760" role="img" aria-labelledby="title desc">
+  <title id="title">Signal Monitor Measurement Sequence</title>
+  <desc id="desc">Sequence diagram for run_signal_monitor: create or reuse a session, emit running, repeat scheduled lock-in reads, build signal_monitor rows, write CSV and point callbacks, emit stopped, then disconnect only owned sessions.</desc>
+  <defs>
+    <style>
+      .bg{fill:#f7f9fc}.title{font:700 28px Arial,sans-serif;fill:#172033}.sub{font:400 14px Arial,sans-serif;fill:#596579}.lane{fill:#ffffff;stroke:#d7deea;stroke-width:1.4}.head{fill:#172033}.headText{font:700 14px Arial,sans-serif;fill:#fff}.line{stroke:#aeb8c8;stroke-width:2}.arrow{stroke:#2f6f9f;stroke-width:2.2;fill:none;marker-end:url(#arrow)}.return{stroke:#8b98aa;stroke-width:1.8;stroke-dasharray:6 5;fill:none;marker-end:url(#arrowSoft)}.note{fill:#fff8e6;stroke:#e6c76f;stroke-width:1.2}.loop{fill:#eef6ff;stroke:#8ab9e8;stroke-width:1.4}.txt{font:400 13px Arial,sans-serif;fill:#172033}.small{font:400 12px Arial,sans-serif;fill:#4e5b6e}.mono{font:400 12px Consolas,monospace;fill:#233044}
+    </style>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#2f6f9f"/></marker>
+    <marker id="arrowSoft" viewBox="0 0 10 10" refX="8.8" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0L10 5L0 10z" fill="#8b98aa"/></marker>
+  </defs>
+  <rect class="bg" width="1180" height="760"/>
+  <text class="title" x="42" y="52">Signal Monitor</text>
+  <text class="sub" x="42" y="78">Implemented by run_signal_monitor; required device: lockin.main.</text>
+  <g>
+    <rect class="head" x="60" y="116" width="150" height="38" rx="6"/><text class="headText" x="88" y="140">Caller / GUI</text>
+    <rect class="head" x="260" y="116" width="150" height="38" rx="6"/><text class="headText" x="288" y="140">Measurement</text>
+    <rect class="head" x="460" y="116" width="150" height="38" rx="6"/><text class="headText" x="491" y="140">DeviceSession</text>
+    <rect class="head" x="660" y="116" width="150" height="38" rx="6"/><text class="headText" x="695" y="140">Lock-in</text>
+    <rect class="head" x="860" y="116" width="150" height="38" rx="6"/><text class="headText" x="895" y="140">CSV / point</text>
+    <line class="line" x1="135" y1="154" x2="135" y2="690"/><line class="line" x1="335" y1="154" x2="335" y2="690"/><line class="line" x1="535" y1="154" x2="535" y2="690"/><line class="line" x1="735" y1="154" x2="735" y2="690"/><line class="line" x1="935" y1="154" x2="935" y2="690"/>
+  </g>
+  <path class="arrow" d="M135 190H335"/><text class="txt" x="168" y="181">run_signal_monitor(plan/interval/n_points)</text>
+  <path class="arrow" d="M335 232H535"/><text class="txt" x="366" y="223">reuse supplied session or create DeviceSession</text>
+  <rect class="note" x="650" y="204" width="430" height="58" rx="6"/><text class="small" x="672" y="228">Plan/defaults choose interval_s and n_points.</text><text class="mono" x="672" y="248">fast_axis=elapsed_s, slow_axis=None</text>
+  <path class="return" d="M335 286H135"/><text class="txt" x="188" y="278">STATUS_RUNNING</text>
+  <rect class="loop" x="90" y="320" width="890" height="250" rx="8"/><text class="txt" x="112" y="346">loop index = 1..n_points</text>
+  <path class="arrow" d="M335 378H335"/><text class="txt" x="368" y="382">sleep until scheduled target_time</text>
+  <path class="arrow" d="M335 422H535"/><text class="txt" x="386" y="413">read_lockin_signal()</text>
+  <path class="arrow" d="M535 454H735"/><text class="txt" x="578" y="445">read X/Y/R/Theta</text>
+  <path class="return" d="M735 486H535"/><text class="txt" x="590" y="478">LockinSignal</text>
+  <path class="arrow" d="M335 518H935"/><text class="txt" x="386" y="509">signal_monitor_row(timestamp, target_elapsed_s, elapsed_s, signal)</text>
+  <text class="small" x="386" y="546">append row, write CSV header on first row, flush, emit on_point(point)</text>
+  <path class="return" d="M335 612H135"/><text class="txt" x="190" y="604">STATUS_STOPPED</text>
+  <path class="arrow" d="M335 650H535"/><text class="txt" x="366" y="641">disconnect_all() only if this function owns the session</text>
+</svg>
+
