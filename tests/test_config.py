@@ -57,3 +57,13 @@ def test_output_path_respects_legacy_output_settings(tmp_path):
     }
 
     assert output_path(settings, "default.csv") == tmp_path / "run_name.csv"
+
+
+def test_output_path_adds_csv_suffix_when_filename_contains_dot(tmp_path):
+    settings = {
+        "output_dir": str(tmp_path),
+        "filename": "run.99",
+        "auto_timestamp_suffix": False,
+    }
+
+    assert output_path(settings, "default.csv") == tmp_path / "run.99.csv"

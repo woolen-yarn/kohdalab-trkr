@@ -49,18 +49,18 @@ def test_build_output_path_adds_csv_suffix_without_timestamp(tmp_path):
     assert path == tmp_path / "scan.csv"
 
 
-def test_build_output_path_preserves_explicit_suffix_and_can_add_timestamp(tmp_path):
+def test_build_output_path_adds_csv_suffix_to_non_csv_suffix_with_timestamp(tmp_path):
     path = build_output_path(
         {
             "output_dir": str(tmp_path),
-            "filename": "scan.dat",
+            "filename": "scan.99",
             "auto_timestamp_suffix": True,
         }
     )
 
     assert path.parent == tmp_path
-    assert path.suffix == ".dat"
-    assert path.name.startswith("scan_")
+    assert path.suffix == ".csv"
+    assert path.name.startswith("scan.99_")
 
 
 def test_output_config_for_measurement_uses_api_output_shape(tmp_path):

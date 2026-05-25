@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from kohdalab.api.config import with_auto_suffix
+from kohdalab.api.config import with_auto_suffix, with_csv_suffix
 
 
 def output_settings_from_fields(
@@ -44,9 +44,7 @@ def normalize_output_settings(
 def build_output_path(settings: dict[str, Any]) -> Path:
     normalized = normalize_output_settings(settings)
     output_dir = Path(str(normalized["output_dir"]))
-    base_name = str(normalized["filename"])
-    if not Path(base_name).suffix:
-        base_name = f"{base_name}.csv"
+    base_name = with_csv_suffix(str(normalized["filename"]))
     filename = with_auto_suffix(base_name) if normalized["auto_timestamp_suffix"] else base_name
     return output_dir / filename
 

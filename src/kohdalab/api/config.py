@@ -103,6 +103,11 @@ def with_auto_suffix(filename: str) -> str:
     return f"{path.stem}_{stamp}{path.suffix or '.csv'}"
 
 
+def with_csv_suffix(filename: str) -> str:
+    path = Path(filename.strip() or "run.csv")
+    return str(path) if path.suffix.lower() == ".csv" else f"{path}.csv"
+
+
 def normalize_delay_stage_name(stage_name: str | None) -> str | None:
     if not stage_name:
         return None
@@ -408,7 +413,6 @@ def output_path(settings: dict[str, Any], default_name: str) -> Path:
     output = output if isinstance(output, dict) else {}
     output_dir = Path(str(output.get("dir") or output.get("output_dir") or settings.get("output_dir") or Path.cwd()))
     base_name = str(output.get("filename") or settings.get("filename") or default_name)
-    if not Path(base_name).suffix:
-        base_name = f"{base_name}.csv"
+    base_name = with_csv_suffix(base_name)
     filename = with_auto_suffix(base_name) if bool(output.get("auto_timestamp_suffix", settings.get("auto_timestamp_suffix", True))) else base_name
     return output_dir / filename
