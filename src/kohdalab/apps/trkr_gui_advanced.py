@@ -557,7 +557,7 @@ class TrkrWindow(QtWidgets.QMainWindow):
         self.y_port_refresh_button = QtWidgets.QPushButton("Refresh")
 
         self.t_controller_combo = QtWidgets.QComboBox()
-        self.t_controller_combo.addItems(["SHOT302GS", "GSC01"])
+        self.t_controller_combo.addItems(["SHOT302GS", "GSC01", "GSC01A"])
         self.t_stage_combo = QtWidgets.QComboBox()
         self.t_stage_combo.setEditable(True)
         self.t_stage_combo.addItems(list_stages(self.t_controller_combo.currentText()))

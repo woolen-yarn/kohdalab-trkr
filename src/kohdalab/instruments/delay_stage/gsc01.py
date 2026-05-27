@@ -108,7 +108,7 @@ class GSC01:
         axis = axis or self.default_axis
         positions = self.get_positions()
         if not positions:
-            raise RuntimeError(f"Unexpected GSC01 Q response: {self.get_status()}")
+            raise RuntimeError(f"Unexpected {type(self).__name__} Q response: {self.get_status()}")
         if axis < 1 or axis > len(positions):
             raise ValueError(f"Axis {axis} is not in position response: {positions}")
         return positions[axis - 1]
@@ -122,7 +122,7 @@ class GSC01:
             if self.is_ready():
                 return
             time.sleep(poll_interval)
-        raise TimeoutError("GSC01 stayed busy.")
+        raise TimeoutError(f"{type(self).__name__} stayed busy.")
 
     def wait_position(
         self,
@@ -142,7 +142,7 @@ class GSC01:
                 return
             time.sleep(poll_interval)
         current = self.get_pos_raw(axis=axis)
-        raise TimeoutError(f"GSC01 did not reach target: target={target_pos_raw}, current={current}")
+        raise TimeoutError(f"{type(self).__name__} did not reach target: target={target_pos_raw}, current={current}")
 
     def initialize(self, home: bool = False) -> dict:
         axis = self.default_axis
