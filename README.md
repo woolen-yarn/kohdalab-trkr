@@ -167,21 +167,23 @@ maintained notebooks:
 
 GUI は安全のため `auto_connect=False` で、先に明示接続してから測定します。CLI と notebook は既定で `auto_connect=True` なので、必要 device を自動接続しに行きます。
 
-### 8. デスクトップショートカットを作成
+### 8. デスクトップ起動ファイルを作成
 
-PowerShell で repo の場所を指定して、GUI 起動用の `.bat` とデスクトップショートカットを作ります。
-repo を別の場所に置いた場合は、最初の `$repo` だけ変更してください。
+GUI 起動用の `.vbs` をデスクトップにコピーします。`.vbs` なので、ダブルクリックしても黒い
+コンソールウィンドウを出さずに GUI を起動できます。
 
-`start_kohdalab_gui.bat` の中身:
+PowerShell で repo root から実行してください:
 
-```bat
-@echo off
-cd /d "C:\pythonKernel\kohdalab-trkr"
-uv run kohdalab-gui
-pause
+```powershell
+Set-Location C:\pythonKernel\kohdalab-trkr
+$desktop = [Environment]::GetFolderPath("Desktop")
+Copy-Item -LiteralPath ".\desktop\KohdaLab TRKR.vbs" -Destination (Join-Path $desktop "KohdaLab TRKR.vbs") -Force
 ```
 
-作成後は、デスクトップの `KohdaLab TRKR` をダブルクリックすると GUI が起動します。
+作成後は、デスクトップの `KohdaLab TRKR.vbs` をダブルクリックすると GUI が起動します。
+Windows の設定によっては、拡張子が隠れて `KohdaLab TRKR` と表示されます。
+repo を `C:\pythonKernel\kohdalab-trkr` 以外に置いた場合は、`desktop\KohdaLab TRKR.vbs`
+内の `projectDir = "C:\pythonKernel\kohdalab-trkr"` を実際の場所に変更してください。
 
 ### 9. 最新版に更新する
 
@@ -201,7 +203,7 @@ uv run kohdalab-gui
 PC ごとの設定は `config\*.local.json` に保存してください。このファイルは Git 管理外なので、
 `git pull` では上書きされません。
 
-デスクトップショートカットは、同じ `C:\pythonKernel\kohdalab-trkr` を使っている限り作り直さなくて大丈夫です。中で `uv run kohdalab-gui` を実行するだけなので、更新後の最新版が起動します。
+デスクトップの `.vbs` は、同じ `C:\pythonKernel\kohdalab-trkr` を使っている限り作り直さなくて大丈夫です。中で `uv run pythonw -m kohdalab.apps.trkr_gui` を実行するだけなので、更新後の最新版が起動します。
 
 Quick Start (English)
 ---------------------
@@ -359,19 +361,22 @@ The GUI uses `auto_connect=False` for safety, so devices must be explicitly
 connected before a measurement starts. CLI and notebooks use
 `auto_connect=True` by default and may connect required devices automatically.
 
-### 8. Create a desktop shortcut
+### 8. Create a desktop launcher
 
-Create `start_kohdalab_gui.bat` with this content:
+Copy the GUI launcher `.vbs` to the desktop. Because it uses `pythonw`, the GUI
+starts without opening a console window.
 
-```bat
-@echo off
-cd /d "C:\pythonKernel\kohdalab-trkr"
-uv run kohdalab-gui
-pause
+Run this from the repo root in PowerShell:
+
+```powershell
+Set-Location C:\pythonKernel\kohdalab-trkr
+$desktop = [Environment]::GetFolderPath("Desktop")
+Copy-Item -LiteralPath ".\desktop\KohdaLab TRKR.vbs" -Destination (Join-Path $desktop "KohdaLab TRKR.vbs") -Force
 ```
 
-Create a desktop shortcut to that `.bat` file. After this, double-click the
-shortcut to start the GUI.
+After this, double-click `KohdaLab TRKR.vbs` on the desktop to start the GUI.
+If the repo lives somewhere other than `C:\pythonKernel\kohdalab-trkr`, edit
+`projectDir = "C:\pythonKernel\kohdalab-trkr"` in `desktop\KohdaLab TRKR.vbs`.
 
 Layering
 --------
