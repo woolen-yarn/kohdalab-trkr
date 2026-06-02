@@ -28,6 +28,10 @@ notebook = [
 kohdalab-cli = "kohdalab.api.cli:main"
 kohdalab-gui = "kohdalab.apps.trkr_gui:main"
 
+[tool.uv]
+python-preference = "only-managed"
+python-downloads = "automatic"
+
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"

@@ -23,7 +23,7 @@ Quick Start (日本語)
 -------------------
 
 新しい PC で GUI 測定を始めるための標準手順です。Windows PowerShell を使います。
-ここでは標準の置き場所を `C:\pythonKernel\kohdalab-trkr` とします。別の場所に置く
+ここでは標準の置き場所を `$HOME\pythonKernel\kohdalab-trkr` とします。別の場所に置く
 場合は、以降の `$repo` と folder path だけ読み替えてください。
 
 ### 1. 事前準備: Git をインストールして GitHub にログイン
@@ -78,17 +78,10 @@ https://docs.astral.sh/uv/getting-started/installation/
 ### 3. GitHub repo を取得
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\pythonKernel
-Set-Location C:\pythonKernel
-git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
-Set-Location kohdalab-trkr
-```
-
-`C:\pythonKernel` の作成で権限エラーが出る PC では、最初の 2 行だけ以下に置き換えます。
-
-```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
+git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
+Set-Location kohdalab-trkr
 ```
 
 すでに zip や USB で repo folder を持ってきた場合は、その folder に移動すれば OK です。
@@ -177,7 +170,7 @@ Windows Desktop にコピーせず、ショートカットを作ります。`.vb
 PowerShell で repo root から実行してください:
 
 ```powershell
-Set-Location C:\pythonKernel\kohdalab-trkr
+Set-Location $HOME\pythonKernel\kohdalab-trkr
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "KohdaLab TRKR.lnk"))
 $shortcut.TargetPath = (Resolve-Path ".\desktop\KohdaLab TRKR.vbs").Path
@@ -186,7 +179,7 @@ $shortcut.Save()
 ```
 
 作成後は、デスクトップの `KohdaLab TRKR` ショートカットをダブルクリックすると GUI が起動します。
-repo を `C:\pythonKernel\kohdalab-trkr` 以外に置いた場合は、上の `Set-Location` だけ実際の場所に変更してください。
+repo を `$HOME\pythonKernel\kohdalab-trkr` 以外に置いた場合は、上の `Set-Location` だけ実際の場所に変更してください。
 起動に失敗した場合は、repo root の `gui_launcher.log` を確認してください。
 
 ### 9. 最新版に更新する
@@ -194,7 +187,7 @@ repo を `C:\pythonKernel\kohdalab-trkr` 以外に置いた場合は、上の `S
 基本はこの 4 つです。
 
 ```powershell
-Set-Location C:\pythonKernel\kohdalab-trkr
+Set-Location $HOME\pythonKernel\kohdalab-trkr
 
 git status
 git pull --ff-only
@@ -215,7 +208,7 @@ Quick Start (English)
 
 This is the standard setup path for starting GUI measurements on a new PC. The
 commands assume Windows PowerShell. The standard location used below is
-`C:\pythonKernel\kohdalab-trkr`; if you use another folder, replace `$repo` and the
+`$HOME\pythonKernel\kohdalab-trkr`; if you use another folder, replace `$repo` and the
 folder paths accordingly.
 
 ### 1. Prerequisite: install Git and sign in to GitHub
@@ -269,18 +262,10 @@ https://docs.astral.sh/uv/getting-started/installation/
 ### 3. Clone the GitHub repository
 
 ```powershell
-New-Item -ItemType Directory -Force -Path C:\pythonKernel
-Set-Location C:\pythonKernel
-git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
-Set-Location kohdalab-trkr
-```
-
-If creating `C:\pythonKernel` fails because of permissions, replace only the first
-two lines with:
-
-```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
+git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
+Set-Location kohdalab-trkr
 ```
 
 If the repository was copied by zip or USB storage, just open PowerShell in
@@ -376,7 +361,7 @@ so do not copy the script itself to the Windows Desktop. Because it uses
 Run this from the repo root in PowerShell:
 
 ```powershell
-Set-Location C:\pythonKernel\kohdalab-trkr
+Set-Location $HOME\pythonKernel\kohdalab-trkr
 $desktop = [Environment]::GetFolderPath("Desktop")
 $shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "KohdaLab TRKR.lnk"))
 $shortcut.TargetPath = (Resolve-Path ".\desktop\KohdaLab TRKR.vbs").Path
@@ -385,7 +370,7 @@ $shortcut.Save()
 ```
 
 After this, double-click the `KohdaLab TRKR` desktop shortcut to start the GUI.
-If the repo lives somewhere other than `C:\pythonKernel\kohdalab-trkr`, change
+If the repo lives somewhere other than `$HOME\pythonKernel\kohdalab-trkr`, change
 only the `Set-Location` path above before creating the shortcut. If startup
 fails, check `gui_launcher.log` in the repo root.
 
