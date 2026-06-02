@@ -167,23 +167,27 @@ maintained notebooks:
 
 GUI は安全のため `auto_connect=False` で、先に明示接続してから測定します。CLI と notebook は既定で `auto_connect=True` なので、必要 device を自動接続しに行きます。
 
-### 8. デスクトップ起動ファイルを作成
+### 8. デスクトップ起動ショートカットを作成
 
-GUI 起動用の `.vbs` をデスクトップにコピーします。`.vbs` なので、ダブルクリックしても黒い
-コンソールウィンドウを出さずに GUI を起動できます。
+GUI 起動用の `.vbs` は repo 内の `desktop` folder に置いたまま使います。
+この `.vbs` は自分の場所から repo root を自動判定するため、ファイル本体を
+Windows Desktop にコピーせず、ショートカットを作ります。`.vbs` は `pythonw`
+で起動するので、黒いコンソールウィンドウを出しません。
 
 PowerShell で repo root から実行してください:
 
 ```powershell
 Set-Location C:\pythonKernel\kohdalab-trkr
 $desktop = [Environment]::GetFolderPath("Desktop")
-Copy-Item -LiteralPath ".\desktop\KohdaLab TRKR.vbs" -Destination (Join-Path $desktop "KohdaLab TRKR.vbs") -Force
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "KohdaLab TRKR.lnk"))
+$shortcut.TargetPath = (Resolve-Path ".\desktop\KohdaLab TRKR.vbs").Path
+$shortcut.WorkingDirectory = (Resolve-Path ".").Path
+$shortcut.Save()
 ```
 
-作成後は、デスクトップの `KohdaLab TRKR.vbs` をダブルクリックすると GUI が起動します。
-Windows の設定によっては、拡張子が隠れて `KohdaLab TRKR` と表示されます。
-repo を `C:\pythonKernel\kohdalab-trkr` 以外に置いた場合は、`desktop\KohdaLab TRKR.vbs`
-内の `projectDir = "C:\pythonKernel\kohdalab-trkr"` を実際の場所に変更してください。
+作成後は、デスクトップの `KohdaLab TRKR` ショートカットをダブルクリックすると GUI が起動します。
+repo を `C:\pythonKernel\kohdalab-trkr` 以外に置いた場合は、上の `Set-Location` だけ実際の場所に変更してください。
+起動に失敗した場合は、repo root の `gui_launcher.log` を確認してください。
 
 ### 9. 最新版に更新する
 
@@ -203,7 +207,8 @@ uv run kohdalab-gui
 PC ごとの設定は `config\*.local.json` に保存してください。このファイルは Git 管理外なので、
 `git pull` では上書きされません。
 
-デスクトップの `.vbs` は、同じ `C:\pythonKernel\kohdalab-trkr` を使っている限り作り直さなくて大丈夫です。中で `uv run pythonw -m kohdalab.apps.trkr_gui` を実行するだけなので、更新後の最新版が起動します。
+デスクトップのショートカットは、repo の場所を変えない限り作り直さなくて大丈夫です。
+`.vbs` は `.venv\Scripts\pythonw.exe` があればそれを使い、なければ `uv run --extra gui python -m kohdalab.apps.trkr_gui` で最新版を起動します。
 
 Quick Start (English)
 ---------------------
@@ -363,20 +368,26 @@ connected before a measurement starts. CLI and notebooks use
 
 ### 8. Create a desktop launcher
 
-Copy the GUI launcher `.vbs` to the desktop. Because it uses `pythonw`, the GUI
-starts without opening a console window.
+Keep the GUI launcher `.vbs` inside the repository's `desktop` folder and create
+a desktop shortcut to it. The `.vbs` detects the repo root from its own location,
+so do not copy the script itself to the Windows Desktop. Because it uses
+`pythonw`, the GUI starts without opening a console window.
 
 Run this from the repo root in PowerShell:
 
 ```powershell
 Set-Location C:\pythonKernel\kohdalab-trkr
 $desktop = [Environment]::GetFolderPath("Desktop")
-Copy-Item -LiteralPath ".\desktop\KohdaLab TRKR.vbs" -Destination (Join-Path $desktop "KohdaLab TRKR.vbs") -Force
+$shortcut = (New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $desktop "KohdaLab TRKR.lnk"))
+$shortcut.TargetPath = (Resolve-Path ".\desktop\KohdaLab TRKR.vbs").Path
+$shortcut.WorkingDirectory = (Resolve-Path ".").Path
+$shortcut.Save()
 ```
 
-After this, double-click `KohdaLab TRKR.vbs` on the desktop to start the GUI.
-If the repo lives somewhere other than `C:\pythonKernel\kohdalab-trkr`, edit
-`projectDir = "C:\pythonKernel\kohdalab-trkr"` in `desktop\KohdaLab TRKR.vbs`.
+After this, double-click the `KohdaLab TRKR` desktop shortcut to start the GUI.
+If the repo lives somewhere other than `C:\pythonKernel\kohdalab-trkr`, change
+only the `Set-Location` path above before creating the shortcut. If startup
+fails, check `gui_launcher.log` in the repo root.
 
 Layering
 --------

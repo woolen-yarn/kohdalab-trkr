@@ -1,30 +1,18 @@
 Option Explicit
 
-Dim shell, fso, projectDir, env, oldPythonPath, srcPath, command
+Dim shell, fso, projectRoot, pythonwPath, uvPath, command
 
 Set shell = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
 
-projectDir = fso.GetParentFolderName(WScript.ScriptFullName)
-If Not fso.FileExists(projectDir & "\src\kohdalab\apps\trkr_gui.py") Then
-    projectDir = "C:\pythonKernel\kohdalab-trkr"
-End If
+projectRoot = fso.GetParentFolderName(fso.GetParentFolderName(WScript.ScriptFullName))
+pythonwPath = projectRoot & "\.venv\Scripts\pythonw.exe"
+uvPath = shell.ExpandEnvironmentStrings("%USERPROFILE%") & "\.local\bin\uv.exe"
 
-If Not fso.FileExists(projectDir & "\src\kohdalab\apps\trkr_gui.py") Then
-    MsgBox "Could not find src\kohdalab\apps\trkr_gui.py." & vbCrLf & projectDir, vbCritical, "Kohda Lab TRKR"
-    WScript.Quit 1
-End If
-
-shell.CurrentDirectory = projectDir
-
-Set env = shell.Environment("PROCESS")
-oldPythonPath = env("PYTHONPATH")
-srcPath = projectDir & "\src"
-If Len(oldPythonPath) > 0 Then
-    env("PYTHONPATH") = srcPath & ";" & projectDir & ";" & oldPythonPath
+If fso.FileExists(pythonwPath) Then
+  command = "cmd.exe /c cd /d """ & projectRoot & """ && set PYTHONPATH=src && """ & pythonwPath & """ -m kohdalab.apps.trkr_gui > gui_launcher.log 2>&1"
 Else
-    env("PYTHONPATH") = srcPath & ";" & projectDir
+  command = "cmd.exe /c cd /d """ & projectRoot & """ && """ & uvPath & """ run --extra gui python -m kohdalab.apps.trkr_gui > gui_launcher.log 2>&1"
 End If
 
-command = "cmd.exe /c ""uv run pythonw -m kohdalab.apps.trkr_gui"""
 shell.Run command, 0, False
