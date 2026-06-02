@@ -484,6 +484,16 @@ Safety
 Read `SAFETY.md` before operating real instruments. Always confirm coordinate
 systems, scan limits, wiring, and a manual way to stop motion.
 
+Windows Setup
+-------------
+
+Use `docs/windows_setup.md` when preparing a Windows instrument PC.
+
+Citation
+--------
+
+If you use this software in research, see `CITATION.cff`.
+
 License
 -------
 
