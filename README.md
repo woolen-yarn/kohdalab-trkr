@@ -1,6 +1,12 @@
 KohdaLab-TRKR
 =============
 
+[![Test](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.13%2B-blue)
+
+Roadmap: [ROADMAP.md](ROADMAP.md)
+
 KohdaLab-TRKR is organized around a small public API for laboratory control.
 
 For practical examples, see `docs/api_usage.md`.
