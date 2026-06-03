@@ -4,8 +4,35 @@ updates:
     directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
 
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "monthly"
+    groups:
+      python-runtime:
+        patterns:
+          - "pandas"
+          - "pyserial"
+          - "pyvisa"
+          - "numpy"
+          - "pyside6"
+          - "pyqtgraph"
+          - "matplotlib"
+          - "anywidget"
+      python-notebook:
+        patterns:
+          - "ipykernel"
+          - "ipython"
+          - "jupyter"
+          - "jupyterlab"
+      python-dev:
+        patterns:
+          - "pytest"
+          - "ruff"
+          - "black"
+          - "mypy"
