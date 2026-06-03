@@ -477,3 +477,24 @@ The maintained notebooks are:
 
 These notebooks, `kohdalab-cli`, and `kohdalab-gui` all call the same
 `kohdalab.api.Experiment` facade and measurement plan builders.
+
+Safety
+------
+
+Read `SAFETY.md` before operating real instruments. Always confirm coordinate
+systems, scan limits, wiring, and a manual way to stop motion.
+
+Windows Setup
+-------------
+
+Use `docs/windows_setup.md` when preparing a Windows instrument PC.
+
+Citation
+--------
+
+If you use this software in research, see `CITATION.cff`.
+
+License
+-------
+
+This project is released under the MIT License. See `LICENSE`.
