@@ -43,6 +43,7 @@ from kohdalab.api.status import (
     moving_axis_from_status,
 )
 from kohdalab.apps.trkr_gui_output import build_output_path, output_settings_from_fields
+from kohdalab.apps.trkr_gui_plot import scan2d_uses_equal_spatial_units
 from kohdalab.apps.trkr_gui_coordinates import scanner_axis_spin_value, scanner_scale_label_for_actuator
 from kohdalab.apps.trkr_gui_signal import (
     lockin_display_from_settings,
@@ -3124,6 +3125,10 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.scan2d_line_plots[signal_index].setLabel("left", title, units=unit)
                 self.scan2d_heatmap_plots[signal_index].setLabel("bottom", f"{fast_axis}_cor", units=_axis_unit(fast_axis))
                 self.scan2d_heatmap_plots[signal_index].setLabel("left", f"{slow_axis}_cor", units=_axis_unit(slow_axis))
+                self.scan2d_heatmap_plots[signal_index].getViewBox().setAspectLocked(
+                    scan2d_uses_equal_spatial_units(fast_axis, slow_axis),
+                    ratio=1.0,
+                )
 
     def _update_curves(self):
         self._refresh_plot_labels()
@@ -3225,6 +3230,10 @@ class TRKRGui(QtWidgets.QMainWindow):
             height = 1.0
         self.scan2d_heatmaps[signal_index].setRect(
             QtCore.QRectF(float(min(fast_values)), float(min(slow_values)), width, height)
+        )
+        self.scan2d_heatmap_plots[signal_index].getViewBox().setAspectLocked(
+            scan2d_uses_equal_spatial_units(fast_axis, slow_axis),
+            ratio=1.0,
         )
 
     def _request_async_shutdown(self):

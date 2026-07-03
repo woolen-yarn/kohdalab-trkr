@@ -21,6 +21,10 @@ def signal_scale(signal_key: str, voltage_scale: float) -> float:
     return 1.0 if signal_key == "Theta_deg" else voltage_scale
 
 
+def scan2d_uses_equal_spatial_units(fast_axis: str, slow_axis: str) -> bool:
+    return {fast_axis.strip().lower(), slow_axis.strip().lower()} == {"x", "y"}
+
+
 @dataclass(frozen=True)
 class SeriesData:
     x: list[float]

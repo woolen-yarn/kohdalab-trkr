@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from kohdalab.apps.trkr_gui_plot import (
     sample_axis_ticks,
+    scan2d_uses_equal_spatial_units,
     signal_monitor_top_labels,
     signal_scale,
     srkr_plot_series,
@@ -28,6 +29,12 @@ def test_sample_axis_ticks_decimates_long_series_and_keeps_last():
 def test_signal_scale_leaves_theta_unscaled():
     assert signal_scale("X_V", 1000.0) == 1000.0
     assert signal_scale("Theta_deg", 1000.0) == 1.0
+
+
+def test_scan2d_equal_spatial_units_only_for_xy():
+    assert scan2d_uses_equal_spatial_units("x", "y")
+    assert scan2d_uses_equal_spatial_units("y", "x")
+    assert not scan2d_uses_equal_spatial_units("t", "x")
 
 
 def test_standard_plot_series_for_signal_monitor():

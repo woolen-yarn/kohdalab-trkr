@@ -86,15 +86,18 @@ def _build_scanner_controller(config: dict, ser: serial.Serial | None = None):
     if controller_cls is None:
         raise ValueError(f"Unsupported scanner controller: {controller_name}")
 
-    return controller_cls(
-        port=config["port"],
-        baudrate=int(config.get("baudrate", 921600)),
-        timeout=float(config.get("timeout", 1.0)),
-        ser=ser,
-        axis=config.get("axis", 1),
-        controller_address=int(config.get("controller_address", 1)),
-        pos_unit=str(config.get("pos_unit", "mm")),
-    )
+    kwargs = {
+        "port": config["port"],
+        "baudrate": int(config.get("baudrate", 921600)),
+        "timeout": float(config.get("timeout", 1.0)),
+        "ser": ser,
+        "axis": config.get("axis", 1),
+        "controller_address": int(config.get("controller_address", 1)),
+        "pos_unit": str(config.get("pos_unit", "mm")),
+    }
+    if controller_name == "CONEXCC" and "ensure_closed_loop_on_move" in config:
+        kwargs["ensure_closed_loop_on_move"] = bool(config["ensure_closed_loop_on_move"])
+    return controller_cls(**kwargs)
 
 
 @dataclass(slots=True)
