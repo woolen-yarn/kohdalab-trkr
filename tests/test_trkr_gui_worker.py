@@ -509,7 +509,7 @@ def test_gui_runtime_config_preserves_scanner_software_hysteresis(monkeypatch, t
     monkeypatch.setattr(TRKRGui, "refresh_all_ports", lambda self: None)
     monkeypatch.setattr(TRKRGui, "_install_log_streams", lambda self: None)
 
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     gui = TRKRGui()
     gui.live_timer.stop()
 
