@@ -17,7 +17,7 @@ gui = [
 ]
 notebook = [
     "anywidget>=0.10.0",
-    "ipykernel>=6.29.5",
+    "ipykernel>=7.3.0",
     "ipython",
     "jupyter",
     "jupyterlab",
@@ -50,7 +50,7 @@ dev = [
     "mypy",
     "jupyter",
     "jupyterlab",
-    "ipykernel>=6.29.5",
+    "ipykernel>=7.3.0",
     "ipython",
     "numpy>=2.4.6",
     "matplotlib>=3.10.8",
