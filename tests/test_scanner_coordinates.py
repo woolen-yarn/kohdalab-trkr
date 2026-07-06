@@ -9,6 +9,7 @@ from kohdalab.api.scan_plan import normalize_scanner_coordinate
 class FakeScanner:
     def __init__(self, *, unit: str = "mm"):
         self.config = {
+            "controller": "CONEXCC",
             "origin_pos": 0.0,
             "sample_um_per_unit": 100.0,
         }
@@ -64,6 +65,110 @@ def test_move_scanner_abs_converts_measurement_um_to_actuator_unit():
     assert row["coordinate"] == "measurement"
     assert row["actual"] == 250.0
     assert row["x_mm"] == 2.5
+
+
+def test_move_scanner_abs_applies_negative_software_hysteresis_in_measurement_um():
+    scanner = FakeScanner()
+    scanner.config["software_hysteresis"] = {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "negative",
+    }
+
+    row = move_scanner_abs(
+        scanner_config={},
+        axis="x",
+        coordinate="measurement",
+        value=250.0,
+        scanner=scanner,
+    )
+
+    assert scanner.moves == [2.3, 2.5]
+    assert row["actual"] == 250.0
+
+
+def test_move_scanner_abs_reports_software_hysteresis_status():
+    scanner = FakeScanner()
+    scanner.config["software_hysteresis"] = {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "negative",
+    }
+    statuses: list[str] = []
+
+    move_scanner_abs(
+        scanner_config={},
+        axis="x",
+        coordinate="measurement",
+        value=250.0,
+        scanner=scanner,
+        on_status=statuses.append,
+    )
+
+    assert statuses == ["moving scanner x software hysteresis", "moving scanner x"]
+
+
+def test_move_scanner_abs_ignores_software_hysteresis_for_conexagap():
+    scanner = FakeScanner()
+    scanner.config["controller"] = "CONEXAGAP"
+    scanner.config["software_hysteresis"] = {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "negative",
+    }
+
+    row = move_scanner_abs(
+        scanner_config={},
+        axis="x",
+        coordinate="measurement",
+        value=250.0,
+        scanner=scanner,
+    )
+
+    assert scanner.moves == [2.5]
+    assert row["actual"] == 250.0
+
+
+def test_move_scanner_abs_applies_positive_software_hysteresis_to_interface_target():
+    scanner = FakeScanner()
+    scanner.config["software_hysteresis"] = {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "positive",
+    }
+
+    row = move_scanner_abs(
+        scanner_config={},
+        axis="x",
+        coordinate="interface",
+        value=2.5,
+        scanner=scanner,
+    )
+
+    assert scanner.moves == [2.7, 2.5]
+    assert row["coordinate"] == "interface"
+    assert row["actual"] == 250.0
+
+
+def test_move_scanner_abs_can_skip_configured_software_hysteresis():
+    scanner = FakeScanner()
+    scanner.config["software_hysteresis"] = {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "negative",
+    }
+
+    row = move_scanner_abs(
+        scanner_config={},
+        axis="x",
+        coordinate="measurement",
+        value=250.0,
+        scanner=scanner,
+        apply_software_hysteresis=False,
+    )
+
+    assert scanner.moves == [2.5]
+    assert row["actual"] == 250.0
 
 
 @pytest.mark.parametrize("coordinate", ["interface", "control", "instrument", "device", "mm", "pos_mm"])

@@ -17,6 +17,7 @@ class FakeSession:
 
     def __post_init__(self):
         self.moves: list[tuple[str, float, str]] = []
+        self.scanner_hysteresis_flags: list[bool] = []
         self.disconnected = False
         self.position = Position(
             t_ps=0.0,
@@ -42,10 +43,19 @@ class FakeSession:
         self.position.delay_stage_pulse = int(value * 100)
         return self.position
 
-    def move_scanner(self, axis: str, value: float, *, coordinate: str = "measurement", on_status=None):
+    def move_scanner(
+        self,
+        axis: str,
+        value: float,
+        *,
+        coordinate: str = "measurement",
+        apply_software_hysteresis: bool = True,
+        on_status=None,
+    ):
         if on_status is not None:
             on_status(moving_scanner_status(axis))
         self.moves.append((axis, value, coordinate))
+        self.scanner_hysteresis_flags.append(bool(apply_software_hysteresis))
         if axis == "x":
             self.position.x_um = value
             self.position.scanner_x_value = value / 100.0
@@ -248,6 +258,7 @@ def test_srkr_row_shape_and_return_to_zero(monkeypatch, tmp_path):
         ("x", 2.0, "measurement"),
         ("x", 1.0, "measurement"),
     ]
+    assert sessions[0].scanner_hysteresis_flags == [True, False, True]
     assert sessions[0].disconnected
 
 
@@ -282,6 +293,7 @@ def test_srkr_accepts_scan_plan(tmp_path):
 
     assert [row["target_x_cor_um"] for row in rows] == [50.0, 60.0]
     assert [move[1] for move in session.moves[:2]] == [51.0, 61.0]
+    assert session.scanner_hysteresis_flags[:2] == [True, False]
 
 
 def test_srkr_uses_provided_session_without_disconnect(tmp_path):
@@ -344,6 +356,7 @@ def test_strkr_runs_fast_slow_scan_and_returns_moved_axes(tmp_path):
         ("t", 10.0, "measurement"),
         ("x", 1.0, "measurement"),
     ]
+    assert session.scanner_hysteresis_flags == [True, False, True]
 
 
 def test_srkr_2d_runs_xy_scan_without_touching_t(tmp_path):
@@ -366,4 +379,5 @@ def test_srkr_2d_runs_xy_scan_without_touching_t(tmp_path):
     assert rows[0]["fast_axis"] == "x"
     assert rows[0]["slow_axis"] == "y"
     assert [move[0] for move in session.moves] == ["y", "x", "x", "x", "y", "x", "x", "y"]
+    assert session.scanner_hysteresis_flags == [True, True, False, False, False, False, False, True]
     assert ("t", 10.0, "measurement") not in session.moves

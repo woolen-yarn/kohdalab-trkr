@@ -16,14 +16,24 @@
         "actuator": "AG-M100D",
         "port": "COM11",
         "axis": "U",
-        "sample_um_per_unit": 582.0
+        "sample_um_per_unit": 582.0,
+        "software_hysteresis": {
+          "enabled": false,
+          "distance_um": 20.0,
+          "direction": "negative"
+        }
       },
       "y": {
         "controller": "CONEXAGAP",
         "actuator": "AG-M100D",
         "port": "COM11",
         "axis": "V",
-        "sample_um_per_unit": 412.0
+        "sample_um_per_unit": 412.0,
+        "software_hysteresis": {
+          "enabled": false,
+          "distance_um": 50.0,
+          "direction": "negative"
+        }
       }
     },
     "delay_stage": {
