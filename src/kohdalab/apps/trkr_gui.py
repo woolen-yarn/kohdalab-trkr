@@ -12,6 +12,7 @@ from PySide6 import QtCore, QtWidgets
 import pyqtgraph as pg
 from serial.tools import list_ports
 
+from kohdalab import __version__
 from kohdalab.api import Experiment, MeasurementPoint, load_config
 from kohdalab.api.config import (
     DEFAULT_CONFIG_PATH,
@@ -81,6 +82,10 @@ RDBU_R_LUT = pg.ColorMap(
 
 def _format_value(value: float | None, decimals: int = 3) -> str:
     return "-" if value is None else f"{float(value):.{decimals}f}"
+
+
+def _motion_axis_display_text(status: str) -> str:
+    return "BH..." if "software hysteresis" in status.strip().lower() else "Moving..."
 
 
 def _fmt_bound(value: float | None, unit: str) -> str:
@@ -577,7 +582,7 @@ class TRKRGui(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KohdaLab TRKR")
+        self.setWindowTitle(f"KohdaLab TRKR v{__version__}")
         self.resize(1440, 820)
 
         config_resolution = resolve_config_path()
@@ -1788,19 +1793,26 @@ class TRKRGui(QtWidgets.QMainWindow):
             axis_spin = self.x_axis_spin
             scale_spin = self.x_scale_spin
             port = self.x_port_combo
+            source = self.config.get("instruments", {}).get("scanner", {}).get("x")
         else:
             controller = self.y_controller_combo
             actuator = self.y_actuator_combo
             axis_spin = self.y_axis_spin
             scale_spin = self.y_scale_spin
             port = self.y_port_combo
-        return {
+            source = self.config.get("instruments", {}).get("scanner", {}).get("y")
+        config = {
             "controller": self._selected_text(controller) or "CONEXCC",
             "actuator": self._selected_text(actuator) or "TRA12CC",
             "port": self._selected_text(port),
             "axis": axis_spin.value(),
             "sample_um_per_unit": scale_spin.value(),
         }
+        if isinstance(source, dict):
+            merged = dict(source)
+            merged.update(config)
+            return merged
+        return config
 
     def _delay_stage_hint_values(self) -> tuple[float | None, float | None, float | None]:
         microstep_division = None
@@ -2539,12 +2551,15 @@ class TRKRGui(QtWidgets.QMainWindow):
     def handle_move_status(self, status: str):
         self.status_label.setText(status)
         self.append_log(status)
+        axis = moving_axis_from_status(status)
+        if axis in {"t", "x", "y"}:
+            self.position_labels[axis].setText(_motion_axis_display_text(status))
 
     def handle_measurement_status(self, status: str):
         self.status_label.setText(status)
         axis = moving_axis_from_status(status)
         if axis is not None:
-            self._set_measurement_axis_status(axis, "Moving...")
+            self._set_measurement_axis_status(axis, _motion_axis_display_text(status))
             return
         if status == STATUS_WAITING:
             self.status_label.setText(STATUS_RUNNING)

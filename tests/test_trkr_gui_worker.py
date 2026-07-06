@@ -11,6 +11,8 @@ from kohdalab.api.status import (
     moving_scanner_status,
 )
 import kohdalab.apps.trkr_gui as gui_module
+from kohdalab import __version__
+from kohdalab.api.config import ConfigPathResolution
 from kohdalab.apps.trkr_gui import (
     DeviceCommandWorker,
     LiveStatusWorker,
@@ -469,6 +471,79 @@ def test_gui_position_update_can_preserve_missing_axes():
     assert gui.values == {"t": 1.0, "x": 4.0, "y": 3.0}
 
 
+def test_gui_runtime_config_preserves_scanner_software_hysteresis(monkeypatch, tmp_path):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    loaded_config = {
+        "instruments": {
+            "lockin": {"main": {"model": "SR7265", "resource": "GPIB0::12::INSTR"}},
+            "delay_stage": {"t": {"controller": "SHOT302GS", "stage": "SGSP46-500", "port": "COM6", "direction": 1}},
+            "scanner": {
+                "x": {
+                    "controller": "CONEXCC",
+                    "actuator": "TRA12CC",
+                    "port": "COM5",
+                    "axis": 1,
+                    "sample_um_per_unit": 582.0,
+                    "software_hysteresis": {"enabled": True, "distance_um": 20.0, "direction": "negative"},
+                },
+                "y": {
+                    "controller": "CONEXCC",
+                    "actuator": "TRA12CC",
+                    "port": "COM4",
+                    "axis": 1,
+                    "sample_um_per_unit": 412.0,
+                },
+            },
+        },
+        "measurements": {"move_abs": {"zero": {"t_ps": 0.0, "x_um": 0.0, "y_um": 0.0}}},
+    }
+    monkeypatch.setattr(gui_module, "resolve_config_path", lambda: ConfigPathResolution(config_path, "test", []))
+    monkeypatch.setattr(gui_module, "load_config", lambda _path: loaded_config)
+    monkeypatch.setattr(gui_module, "write_last_config_path", lambda _path: None)
+    monkeypatch.setattr(TRKRGui, "refresh_all_ports", lambda self: None)
+    monkeypatch.setattr(TRKRGui, "_install_log_streams", lambda self: None)
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    gui = TRKRGui()
+    gui.live_timer.stop()
+
+    runtime = gui._runtime_config()
+
+    assert runtime["instruments"]["scanner"]["x"]["software_hysteresis"] == {
+        "enabled": True,
+        "distance_um": 20.0,
+        "direction": "negative",
+    }
+
+    gui._shutdown_complete = True
+    gui.close()
+
+
+def test_gui_title_includes_package_version(monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    monkeypatch.setattr(TRKRGui, "refresh_all_ports", lambda self: None)
+    monkeypatch.setattr(TRKRGui, "_install_log_streams", lambda self: None)
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    gui = TRKRGui()
+    gui.live_timer.stop()
+
+    assert gui.windowTitle() == f"KohdaLab TRKR v{__version__}"
+
+    gui._shutdown_complete = True
+    gui.close()
+
+
 def test_gui_switches_to_2d_scan_tabs(monkeypatch):
     import os
 
@@ -531,6 +606,9 @@ def test_gui_measurement_motion_status_updates_axis_labels(monkeypatch):
     assert gui.position_labels["x"].text() == "Moving..."
     assert gui.position_labels["t"].text() == "1.000"
 
+    gui.handle_measurement_status("moving scanner x software hysteresis")
+    assert gui.position_labels["x"].text() == "BH..."
+
     gui.handle_measurement_status(STATUS_WAITING)
     assert gui.position_labels["x"].text() == "2.000"
     assert gui.position_labels["t"].text() == "1.000"
@@ -538,6 +616,30 @@ def test_gui_measurement_motion_status_updates_axis_labels(monkeypatch):
     gui.handle_measurement_status(STATUS_STOPPED)
     assert gui.position_labels["x"].text() == "2.000"
     assert gui.position_labels["t"].text() == "1.000"
+
+    gui._shutdown_complete = True
+    gui.close()
+
+
+def test_gui_move_status_shows_short_bh_label(monkeypatch):
+    import os
+
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6 import QtWidgets
+
+    monkeypatch.setattr(TRKRGui, "refresh_all_ports", lambda self: None)
+    monkeypatch.setattr(TRKRGui, "_install_log_streams", lambda self: None)
+
+    _app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    gui = TRKRGui()
+    gui.live_timer.stop()
+    gui._current_position_values = {"t": 1.0, "x": 2.0, "y": 3.0}
+
+    gui.handle_move_status("moving scanner x software hysteresis")
+    assert gui.position_labels["x"].text() == "BH..."
+
+    gui.handle_move_status(moving_scanner_status("x"))
+    assert gui.position_labels["x"].text() == "Moving..."
 
     gui._shutdown_complete = True
     gui.close()

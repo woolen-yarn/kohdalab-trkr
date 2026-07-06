@@ -20,6 +20,7 @@ def test_moving_axis_status_maps_scan_axes():
 def test_moving_axis_from_status_parses_measurement_motion():
     assert moving_axis_from_status(STATUS_MOVING_DELAY_STAGE) == "t"
     assert moving_axis_from_status(moving_scanner_status("x")) == "x"
+    assert moving_axis_from_status("moving scanner x software hysteresis") == "x"
     assert moving_axis_from_status("moving scanner z") is None
     assert moving_axis_from_status(STATUS_READING_LOCKIN) is None
 

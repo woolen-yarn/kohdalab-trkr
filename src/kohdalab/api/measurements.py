@@ -112,6 +112,7 @@ def _move_axis(
     corrected_target: float,
     *,
     zero: dict[str, float],
+    apply_software_hysteresis: bool = True,
     on_status: StatusCallback | None = None,
 ) -> None:
     target = _absolute_measurement_target(zero, axis, corrected_target)
@@ -119,7 +120,13 @@ def _move_axis(
         session.move_delay_stage(target, coordinate="measurement", on_status=on_status)
         return
     if axis in {"x", "y"}:
-        session.move_scanner(axis, target, coordinate="measurement", on_status=on_status)
+        session.move_scanner(
+            axis,
+            target,
+            coordinate="measurement",
+            apply_software_hysteresis=apply_software_hysteresis,
+            on_status=on_status,
+        )
         return
     raise ValueError(f"Unsupported scan axis: {axis}")
 
@@ -149,16 +156,37 @@ def _run_scan2d(
             total = plan.total_points
             index = 0
             fast_first = plan.fast_target_points[0]
+            scanner_axes_approached: set[str] = set()
             for slow_index, slow_target in enumerate(plan.slow_target_points):
                 if not _continue(should_continue):
                     break
-                _move_axis(session, plan.slow_axis, slow_target, zero=zero, on_status=on_status)
+                slow_apply_hysteresis = plan.slow_axis in {"x", "y"} and plan.slow_axis not in scanner_axes_approached
+                _move_axis(
+                    session,
+                    plan.slow_axis,
+                    slow_target,
+                    zero=zero,
+                    apply_software_hysteresis=slow_apply_hysteresis,
+                    on_status=on_status,
+                )
+                if plan.slow_axis in {"x", "y"}:
+                    scanner_axes_approached.add(plan.slow_axis)
                 _emit_status(on_status, STATUS_SLOW_AXIS_READY)
                 for fast_target in plan.fast_target_points:
                     if not _continue(should_continue):
                         break
                     index += 1
-                    _move_axis(session, plan.fast_axis, fast_target, zero=zero, on_status=on_status)
+                    fast_apply_hysteresis = plan.fast_axis in {"x", "y"} and plan.fast_axis not in scanner_axes_approached
+                    _move_axis(
+                        session,
+                        plan.fast_axis,
+                        fast_target,
+                        zero=zero,
+                        apply_software_hysteresis=fast_apply_hysteresis,
+                        on_status=on_status,
+                    )
+                    if plan.fast_axis in {"x", "y"}:
+                        scanner_axes_approached.add(plan.fast_axis)
                     _emit_status(on_status, STATUS_WAITING)
                     if not _sleep_interruptible(wait, should_continue):
                         break
@@ -180,12 +208,33 @@ def _run_scan2d(
                     )
                     yield MeasurementPoint(index=index, total_points=total, row=row)
                 if slow_index < len(plan.slow_target_points) - 1 and _continue(should_continue):
-                    _move_axis(session, plan.fast_axis, fast_first, zero=zero, on_status=on_status)
+                    _move_axis(
+                        session,
+                        plan.fast_axis,
+                        fast_first,
+                        zero=zero,
+                        apply_software_hysteresis=False,
+                        on_status=on_status,
+                    )
             if _continue(should_continue):
                 if plan.return_to_zero.get("fast_axis", False):
-                    _move_axis(session, plan.fast_axis, 0.0, zero=zero, on_status=on_status)
+                    _move_axis(
+                        session,
+                        plan.fast_axis,
+                        0.0,
+                        zero=zero,
+                        apply_software_hysteresis=plan.fast_axis in {"x", "y"},
+                        on_status=on_status,
+                    )
                 if plan.return_to_zero.get("slow_axis", False):
-                    _move_axis(session, plan.slow_axis, 0.0, zero=zero, on_status=on_status)
+                    _move_axis(
+                        session,
+                        plan.slow_axis,
+                        0.0,
+                        zero=zero,
+                        apply_software_hysteresis=plan.slow_axis in {"x", "y"},
+                        on_status=on_status,
+                    )
             _emit_status(on_status, STATUS_STOPPED)
         finally:
             if owns_session:
@@ -374,7 +423,13 @@ def run_srkr(
                 if not _continue(should_continue):
                     break
                 row_target = targets_list[index - 1]
-                session.move_scanner(fast_axis, float(target), coordinate=coord, on_status=on_status)
+                session.move_scanner(
+                    fast_axis,
+                    float(target),
+                    coordinate=coord,
+                    apply_software_hysteresis=index == 1,
+                    on_status=on_status,
+                )
                 _emit_status(on_status, STATUS_WAITING)
                 if not _sleep_interruptible(wait, should_continue):
                     break
@@ -396,7 +451,13 @@ def run_srkr(
                 yield MeasurementPoint(index=index, total_points=total, row=row)
             if do_return and _continue(should_continue):
                 zero = zero_x if fast_axis == "x" else zero_y
-                session.move_scanner(fast_axis, zero, coordinate="measurement", on_status=on_status)
+                session.move_scanner(
+                    fast_axis,
+                    zero,
+                    coordinate="measurement",
+                    apply_software_hysteresis=True,
+                    on_status=on_status,
+                )
             _emit_status(on_status, STATUS_STOPPED)
         finally:
             if owns_session:

@@ -33,7 +33,7 @@ def moving_axis_from_status(status: str) -> str | None:
     if normalized == STATUS_MOVING_DELAY_STAGE:
         return "t"
     if normalized.startswith(_STATUS_MOVING_SCANNER_PREFIX):
-        axis = normalized.removeprefix(_STATUS_MOVING_SCANNER_PREFIX).strip()
+        axis = normalized.removeprefix(_STATUS_MOVING_SCANNER_PREFIX).strip().split(maxsplit=1)[0]
         return axis if axis in {"x", "y"} else None
     return None
 

@@ -269,6 +269,7 @@ class DeviceSession:
         *,
         coordinate: str = "measurement",
         ref: str | None = None,
+        apply_software_hysteresis: bool = True,
         on_status: StatusCallback | None = None,
         on_position: Callable[[dict[str, Any]], None] | None = None,
     ) -> Position:
@@ -289,6 +290,8 @@ class DeviceSession:
                 coordinate=coordinate,
                 value=value,
                 scanner=scanner,
+                apply_software_hysteresis=apply_software_hysteresis,
+                on_status=on_status,
                 on_position=on_position,
             )
         return Position.from_rows(row)

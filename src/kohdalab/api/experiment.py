@@ -182,6 +182,7 @@ class Experiment:
         *,
         coordinate: str = "measurement",
         ref: str | None = None,
+        apply_software_hysteresis: bool = True,
         on_status: StatusCallback | None = None,
         on_position: Callable[[dict[str, Any]], None] | None = None,
     ) -> Position:
@@ -190,6 +191,7 @@ class Experiment:
             value,
             coordinate=coordinate,
             ref=ref,
+            apply_software_hysteresis=apply_software_hysteresis,
             on_status=on_status,
             on_position=on_position,
         )

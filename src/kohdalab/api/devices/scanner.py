@@ -124,6 +124,117 @@ def _move_control(
         raise ValueError(f"Unsupported scanner control unit: {scanner.get_pos_unit()}")
 
 
+def _software_hysteresis_settings(config: dict[str, Any]) -> dict[str, Any]:
+    settings = config.get("software_hysteresis", {})
+    if not isinstance(settings, dict):
+        return {"enabled": False}
+    return settings
+
+
+def _software_hysteresis_enabled(config: dict[str, Any]) -> bool:
+    controller = str(config.get("controller", config.get("scanner_controller", ""))).strip().upper()
+    if controller != "CONEXCC":
+        return False
+    settings = _software_hysteresis_settings(config)
+    return bool(settings.get("enabled", False))
+
+
+def _software_hysteresis_distance_um(config: dict[str, Any]) -> float:
+    settings = _software_hysteresis_settings(config)
+    for key in ("distance_um", "approach_distance_um", "pre_move_um"):
+        if settings.get(key) is not None:
+            return abs(float(settings[key]))
+    return 0.0
+
+
+def _software_hysteresis_direction(config: dict[str, Any]) -> str:
+    settings = _software_hysteresis_settings(config)
+    direction = str(settings.get("direction", settings.get("approach", "negative"))).strip().lower()
+    aliases = {
+        "negative": "negative",
+        "negative_to_target": "negative",
+        "minus": "negative",
+        "-": "negative",
+        "positive": "positive",
+        "positive_to_target": "positive",
+        "plus": "positive",
+        "+": "positive",
+    }
+    if direction not in aliases:
+        raise ValueError("software_hysteresis.direction must be 'negative' or 'positive'.")
+    return aliases[direction]
+
+
+def _software_hysteresis_pre_target(
+    *,
+    scanner_config: dict[str, Any],
+    unit: str,
+    control_target: float,
+) -> float | None:
+    if not _software_hysteresis_enabled(scanner_config):
+        return None
+    distance_um = _software_hysteresis_distance_um(scanner_config)
+    if distance_um <= 0:
+        return None
+
+    target_sample_um = actuator_pos_to_sample_um(scanner_config, unit, control_target)
+    sign = -1.0 if _software_hysteresis_direction(scanner_config) == "negative" else 1.0
+    pre_sample_um = target_sample_um + sign * distance_um
+    return sample_um_to_actuator_pos(scanner_config, unit, pre_sample_um)
+
+
+def _move_control_with_software_hysteresis(
+    scanner,
+    control_target: float,
+    *,
+    axis: str,
+    unit: str,
+    coordinate: str,
+    target: float,
+    apply_software_hysteresis: bool = True,
+    on_status: Callable[[str], None] | None = None,
+    on_position: Callable[[dict[str, Any]], None] | None = None,
+) -> None:
+    pre_target = None
+    if apply_software_hysteresis:
+        pre_target = _software_hysteresis_pre_target(
+            scanner_config=scanner.config,
+            unit=unit,
+            control_target=float(control_target),
+    )
+    if pre_target is not None:
+        if on_status is not None:
+            on_status(f"moving scanner {axis} software hysteresis")
+        _move_control(
+            scanner,
+            pre_target,
+            on_position=_scanner_progress_callback(
+                scanner=scanner,
+                axis=axis,
+                unit=unit,
+                coordinate=coordinate,
+                target=actuator_pos_to_sample_um(scanner.config, unit, pre_target)
+                if coordinate == "measurement"
+                else pre_target,
+                on_position=on_position,
+            ),
+        )
+    if on_status is not None:
+        on_status(f"moving scanner {axis}")
+    _move_control(
+        scanner,
+        control_target,
+        on_position=_scanner_progress_callback(
+            scanner=scanner,
+            axis=axis,
+            unit=unit,
+            coordinate=coordinate,
+            target=target,
+            on_position=on_position,
+        ),
+    )
+
+
 def move_scanner_abs(
     *,
     scanner_config: dict[str, Any],
@@ -131,6 +242,8 @@ def move_scanner_abs(
     coordinate: str,
     value: float,
     scanner=None,
+    apply_software_hysteresis: bool = True,
+    on_status: Callable[[str], None] | None = None,
     on_position: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     axis = axis.strip().lower()
@@ -142,30 +255,28 @@ def move_scanner_abs(
     coordinate = _normalize_move_coordinate(coordinate, unit)
     if coordinate == "measurement":
         control_target = sample_um_to_actuator_pos(scanner.config, unit, float(value))
-        _move_control(
+        _move_control_with_software_hysteresis(
             scanner,
             control_target,
-            on_position=_scanner_progress_callback(
-                scanner=scanner,
-                axis=axis,
-                unit=unit,
-                coordinate=coordinate,
-                target=value,
-                on_position=on_position,
-            ),
+            axis=axis,
+            unit=unit,
+            coordinate=coordinate,
+            target=value,
+            apply_software_hysteresis=apply_software_hysteresis,
+            on_status=on_status,
+            on_position=on_position,
         )
     elif coordinate == "interface":
-        _move_control(
+        _move_control_with_software_hysteresis(
             scanner,
             float(value),
-            on_position=_scanner_progress_callback(
-                scanner=scanner,
-                axis=axis,
-                unit=unit,
-                coordinate=coordinate,
-                target=value,
-                on_position=on_position,
-            ),
+            axis=axis,
+            unit=unit,
+            coordinate=coordinate,
+            target=value,
+            apply_software_hysteresis=apply_software_hysteresis,
+            on_status=on_status,
+            on_position=on_position,
         )
     else:
         raise ValueError(
