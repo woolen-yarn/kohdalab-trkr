@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## [0.2.2] - 2026-07-13
+
+- Allowed Move and Run to start while read-only live-status operations are active,
+  while retaining device-specific I/O locks and rejecting unsafe concurrent access
+  to the same physical instrument.
+- Made GUI full-position reads skip busy motion devices instead of blocking the
+  live-status worker until a move completes.
+- Separated Move-time lock-in polling from full position/status polling with a
+  dedicated Qt worker and thread, including deterministic shutdown cleanup.
+- Selected the Move-time lock-in from the tracked connection map so transient
+  health snapshots cannot silently suppress signal, settings, or overload reads.
+- Preserved moving-axis position updates through the Move worker and ignored stale
+  full-position responses while a move or measurement is active.
+- Updated Pillow to 12.3.0 to resolve five dependency-audit findings.
+
 ## [0.2.1] - 2026-07-13
 
 - Raised the mandatory branch-aware coverage floor to 100% after covering every

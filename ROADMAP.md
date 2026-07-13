@@ -21,6 +21,12 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Harden device-session ownership, measurement cleanup, atomic output recovery, and controller validation.
 - Verify locked dependencies and reproducible wheel/source distributions in CI.
 
+## v0.2.2 - Responsive Live Status
+
+- Allow Move and Run to start while read-only live-status work is active.
+- Keep lock-in signal, settings, and overload status responsive during manual motion.
+- Preserve per-device I/O serialization while polling unrelated hardware concurrently.
+
 ## v0.3.0 - Hardware Abstraction
 
 - Clarify stable public driver/session APIs for supported instruments.
