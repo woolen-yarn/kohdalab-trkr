@@ -639,12 +639,13 @@ def test_gui_final_close_quits_and_waits_for_all_worker_threads(monkeypatch):
             return True
 
     gui = _new_gui(monkeypatch)
-    threads = [WaitableThread() for _ in range(5)]
+    threads = [WaitableThread() for _ in range(6)]
     gui.measurement_thread = threads[0]  # type: ignore[assignment]
     gui.move_thread = threads[1]  # type: ignore[assignment]
     gui.live_thread = threads[2]  # type: ignore[assignment]
-    gui.resource_thread = threads[3]  # type: ignore[assignment]
-    gui.device_thread = threads[4]  # type: ignore[assignment]
+    gui.lockin_live_thread = threads[3]  # type: ignore[assignment]
+    gui.resource_thread = threads[4]  # type: ignore[assignment]
+    gui.device_thread = threads[5]  # type: ignore[assignment]
 
     gui._close_worker_threads()
 
@@ -654,10 +655,12 @@ def test_gui_final_close_quits_and_waits_for_all_worker_threads(monkeypatch):
         ["quit", ("wait", 2000)],
         ["quit", ("wait", 2000)],
         ["quit", ("wait", 2000)],
+        ["quit", ("wait", 2000)],
     ]
     gui.measurement_thread = None
     gui.move_thread = None
     gui.live_thread = None
+    gui.lockin_live_thread = None
     gui.resource_thread = None
     gui.device_thread = None
     _close_gui(gui)
@@ -938,6 +941,41 @@ def test_gui_live_worker_applies_status_and_cleans_unexpected_exit(monkeypatch):
     assert thread.deleted is True
     assert gui.live_thread is None
     assert gui.live_worker is None
+    _close_gui(gui)
+
+
+def test_gui_lockin_live_worker_uses_a_dedicated_thread(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    experiment = object()
+    FakeLiveWorker.latest = None
+    monkeypatch.setattr(gui_module.QtCore, "QThread", FakeThread)
+    monkeypatch.setattr(gui_module, "LiveStatusWorker", FakeLiveWorker)
+    monkeypatch.setattr(gui, "_ensure_experiment", lambda: experiment)
+    applied: list[tuple[object, object, object]] = []
+    monkeypatch.setattr(
+        gui,
+        "handle_lockin_status_ready",
+        lambda settings, signal, overload: applied.append((settings, signal, overload)),
+    )
+
+    worker = gui._ensure_lockin_live_worker()
+    thread = gui.lockin_live_thread
+
+    assert worker is FakeLiveWorker.latest
+    assert isinstance(thread, FakeThread)
+    assert worker.experiment is experiment
+    assert worker.thread is thread
+    assert thread.start_called is True
+    assert gui._ensure_lockin_live_worker() is worker
+
+    worker.lockin_status_ready.emit({"Time Constant": 1.0}, {"X": 2.0}, None)
+    assert applied == [({"Time Constant": 1.0}, {"X": 2.0}, None)]
+
+    thread.finished.emit()
+    assert worker.deleted is True
+    assert thread.deleted is True
+    assert gui.lockin_live_thread is None
+    assert gui.lockin_live_worker is None
     _close_gui(gui)
 
 
@@ -2670,6 +2708,39 @@ def test_gui_live_worker_reuse_and_queued_invocation(monkeypatch):
     with pytest.raises(RuntimeError, match="Could not queue live status request"):
         gui._invoke_live_worker("request_full_status")
     gui.live_worker = None
+    _close_gui(gui)
+
+
+def test_gui_lockin_live_worker_uses_its_own_queued_invocation(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    worker = object()
+    gui.lockin_live_worker = worker  # type: ignore[assignment]
+    invoked: list[tuple[object, str, object]] = []
+    monkeypatch.setattr(
+        gui_module.QtCore.QMetaObject,
+        "invokeMethod",
+        lambda target, slot, connection: (
+            invoked.append((target, slot, connection)) or True
+        ),
+    )
+
+    gui._invoke_lockin_live_worker()
+
+    assert invoked == [
+        (
+            worker,
+            "read_lockin",
+            gui_module.QtCore.Qt.ConnectionType.QueuedConnection,
+        )
+    ]
+    monkeypatch.setattr(
+        gui_module.QtCore.QMetaObject,
+        "invokeMethod",
+        lambda _target, _slot, _connection: False,
+    )
+    with pytest.raises(RuntimeError, match="Could not queue lock-in live status"):
+        gui._invoke_lockin_live_worker()
+    gui.lockin_live_worker = None
     _close_gui(gui)
 
 
