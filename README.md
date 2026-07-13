@@ -1,17 +1,19 @@
 # KohdaLab TRKR
 
-[![Test](https://github.com/Kohdalab/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/Kohdalab/kohdalab-trkr/actions/workflows/test.yml)
+[![Test](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 
-KohdaLab TRKR is a Python toolkit for time-resolved Kerr rotation experiments and laboratory instrument control.
+KohdaLab TRKR is a Python toolkit for time-resolved Kerr rotation experiments, laboratory instrument control, and reproducible measurement data acquisition.
 
 ## What It Does
 
-- Provides a small Python API for experiment control.
+- Provides a typed Python API for experiment control.
 - Includes GUI and CLI entry points for lab workflows.
-- Supports TRKR-related measurement sequences and analysis-oriented examples.
-- Keeps measurement logic testable without requiring hardware for every check.
+- Supports Signal Monitor, TRKR, SRKR, STRKR, and SRKR 2D workflows.
+- Validates scan targets before opening hardware sessions.
+- Stores UTC timestamps and provenance metadata with measurement CSV files.
+- Tests drivers with simulated transports without requiring hardware for every check.
 
 ## Quick Start
 
@@ -19,7 +21,7 @@ For a new PC, start with the setup guide:
 
 - [Initial setup](docs/initial_setup.md)
 
-After setup:
+For repository development:
 
 ```powershell
 uv sync --all-extras --group dev --frozen
@@ -27,11 +29,27 @@ uv run kohdalab-cli --help
 uv run kohdalab-gui
 ```
 
+For a local installation without development tools:
+
+```powershell
+python -m pip install .
+python -m pip install ".[gui]"
+python -m pip install ".[notebook]"
+```
+
+The base package installs the API and CLI. GUI and Notebook dependencies are
+explicit extras so headless instrument or automation environments do not need
+the full Qt/Jupyter stack.
+
 Run checks:
 
 ```powershell
-uv run ruff check src tests
-uv run pytest -q
+uv run ruff check .
+uv run ruff format --check src tests scripts
+uv run mypy
+uv run pytest --cov --cov-branch -q
+uv lock --check
+uv build --no-sources
 ```
 
 ## Documentation
@@ -47,7 +65,11 @@ uv run pytest -q
 
 ## Project Status
 
-`v0.1.0` is the repository baseline: licensing, CI, branch protection, dependency maintenance, and documentation structure are in place. Measurement reliability and simulated hardware sessions are planned next.
+The current development version is `0.2.0`. It includes strict config and scan
+preflight validation, fail-closed controller handling, transport-level driver
+tests, package smoke tests, and measurement provenance sidecars. Hardware
+operation still requires the checks described in [SAFETY.md](SAFETY.md) and the
+[hardware smoke-test guide](docs/hardware_smoke_test.md).
 
 ## License
 

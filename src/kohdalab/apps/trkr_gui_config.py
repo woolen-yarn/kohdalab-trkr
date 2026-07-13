@@ -7,7 +7,9 @@ from kohdalab.api.config import instrument_key
 from kohdalab.apps.trkr_gui_output import output_config_for_measurement
 
 
-def zero_um_from_config(zero_config: dict, axis: str, default: float) -> float:
+def zero_um_from_config(
+    zero_config: dict[str, Any], axis: str, default: float
+) -> float:
     mm_key = f"{axis}_mm"
     um_key = f"{axis}_um"
     if um_key in zero_config:
@@ -17,7 +19,7 @@ def zero_um_from_config(zero_config: dict, axis: str, default: float) -> float:
     return float(default)
 
 
-def first_number(*values, default: float = 0.0) -> float:
+def first_number(*values: Any, default: float = 0.0) -> float:
     for value in values:
         if value is None or isinstance(value, dict):
             continue
@@ -28,42 +30,75 @@ def first_number(*values, default: float = 0.0) -> float:
     return float(default)
 
 
-def measurement_map(config: dict) -> dict:
-    return config.get("measurements", config.get("measurement", {}))
+def measurement_map(config: dict[str, Any]) -> dict[str, Any]:
+    measurements = config.get("measurements", config.get("measurement", {}))
+    return measurements if isinstance(measurements, dict) else {}
 
 
-def output_settings_from_measurement(settings: dict, fallback: dict, default_dir: str) -> dict:
+def output_settings_from_measurement(
+    settings: dict[str, Any], fallback: dict[str, Any], default_dir: str
+) -> dict[str, Any]:
     output = settings.get("output", {})
     if isinstance(output, dict):
         return {
-            "output_dir": output.get("dir", output.get("output_dir", settings.get("output_dir", fallback.get("output_dir", default_dir)))),
-            "filename": output.get("filename", settings.get("filename", fallback.get("filename", "trkr_run"))),
+            "output_dir": output.get(
+                "dir",
+                output.get(
+                    "output_dir",
+                    settings.get("output_dir", fallback.get("output_dir", default_dir)),
+                ),
+            ),
+            "filename": output.get(
+                "filename",
+                settings.get("filename", fallback.get("filename", "trkr_run")),
+            ),
             "auto_timestamp_suffix": bool(
                 output.get(
                     "auto_timestamp_suffix",
-                    settings.get("auto_timestamp_suffix", fallback.get("auto_timestamp_suffix", True)),
+                    settings.get(
+                        "auto_timestamp_suffix",
+                        fallback.get("auto_timestamp_suffix", True),
+                    ),
                 )
             ),
         }
     return {
-        "output_dir": settings.get("output_dir", fallback.get("output_dir", default_dir)),
+        "output_dir": settings.get(
+            "output_dir", fallback.get("output_dir", default_dir)
+        ),
         "filename": settings.get("filename", fallback.get("filename", "trkr_run")),
-        "auto_timestamp_suffix": bool(settings.get("auto_timestamp_suffix", fallback.get("auto_timestamp_suffix", True))),
+        "auto_timestamp_suffix": bool(
+            settings.get(
+                "auto_timestamp_suffix", fallback.get("auto_timestamp_suffix", True)
+            )
+        ),
     }
 
 
-def scanner_scale_key(config: dict) -> str:
+def scanner_scale_key(config: dict[str, Any]) -> str:
     return "sample_um_per_unit"
 
 
-def scanner_scale_value(config: dict, default: float) -> float:
+def scanner_scale_value(config: dict[str, Any], default: float) -> float:
     if "sample_um_per_unit" in config:
         return float(config["sample_um_per_unit"])
-    unit = str(config.get("pos_unit", "deg" if str(config.get("actuator", "")).upper().startswith("AG-") else "mm"))
+    unit = str(
+        config.get(
+            "pos_unit",
+            "deg"
+            if str(config.get("actuator", "")).upper().startswith("AG-")
+            else "mm",
+        )
+    )
     legacy_key = f"sample_um_per_actuator_{unit.strip().lower().replace('/', '_')}"
     if legacy_key in config:
         return float(config[legacy_key])
-    return float(config.get("sample_um_per_actuator_mm", config.get("sample_um_per_actuator_deg", default)))
+    return float(
+        config.get(
+            "sample_um_per_actuator_mm",
+            config.get("sample_um_per_actuator_deg", default),
+        )
+    )
 
 
 def default_instrument_refs() -> dict[str, dict[str, str]]:
@@ -100,7 +135,9 @@ def extract_loaded_gui_config(data: dict[str, Any]) -> LoadedGuiConfig:
     return _extract_legacy_config(data)
 
 
-def _extract_api_config(data: dict[str, Any], instruments: dict[str, Any]) -> LoadedGuiConfig:
+def _extract_api_config(
+    data: dict[str, Any], instruments: dict[str, Any]
+) -> LoadedGuiConfig:
     refs = default_instrument_refs()
     measurement = measurement_map(data)
     lockins = instruments.get("lockin", {})
@@ -127,15 +164,25 @@ def _extract_api_config(data: dict[str, Any], instruments: dict[str, Any]) -> Lo
     refs["lockin"]["SRKR"] = instrument_key(
         data,
         "lockin",
-        srkr_measurement.get("lockin_key", srkr_measurement.get("lockin", refs["lockin"]["TRKR"])),
+        srkr_measurement.get(
+            "lockin_key", srkr_measurement.get("lockin", refs["lockin"]["TRKR"])
+        ),
     )
 
-    srkr_scanners = srkr_measurement.get("scanner_keys", srkr_measurement.get("scanners", {}))
-    move_abs_scanners = move_abs_measurement.get("scanner_keys", move_abs_measurement.get("scanners", {}))
+    srkr_scanners = srkr_measurement.get(
+        "scanner_keys", srkr_measurement.get("scanners", {})
+    )
+    move_abs_scanners = move_abs_measurement.get(
+        "scanner_keys", move_abs_measurement.get("scanners", {})
+    )
     srkr_scanners = srkr_scanners if isinstance(srkr_scanners, dict) else {}
     move_abs_scanners = move_abs_scanners if isinstance(move_abs_scanners, dict) else {}
-    refs["scanner"]["x"] = _scanner_ref(data, scanners, "x", srkr_scanners, move_abs_scanners)
-    refs["scanner"]["y"] = _scanner_ref(data, scanners, "y", srkr_scanners, move_abs_scanners)
+    refs["scanner"]["x"] = _scanner_ref(
+        data, scanners, "x", srkr_scanners, move_abs_scanners
+    )
+    refs["scanner"]["y"] = _scanner_ref(
+        data, scanners, "y", srkr_scanners, move_abs_scanners
+    )
 
     refs["delay_stage"]["TRKR"] = instrument_key(
         data,
@@ -153,10 +200,20 @@ def _extract_api_config(data: dict[str, Any], instruments: dict[str, Any]) -> Lo
 
     return LoadedGuiConfig(
         instrument_refs=refs,
-        lockin_config=dict(lockins.get(refs["lockin"]["TRKR"], next(iter(lockins.values()), {}))),
-        x_config=dict(scanners.get(refs["scanner"]["x"], next(iter(scanners.values()), {}))),
-        y_config=dict(scanners.get(refs["scanner"]["y"], next(iter(scanners.values()), {}))),
-        t_config=dict(delay_stages.get(refs["delay_stage"]["TRKR"], next(iter(delay_stages.values()), {}))),
+        lockin_config=dict(
+            lockins.get(refs["lockin"]["TRKR"], next(iter(lockins.values()), {}))
+        ),
+        x_config=dict(
+            scanners.get(refs["scanner"]["x"], next(iter(scanners.values()), {}))
+        ),
+        y_config=dict(
+            scanners.get(refs["scanner"]["y"], next(iter(scanners.values()), {}))
+        ),
+        t_config=dict(
+            delay_stages.get(
+                refs["delay_stage"]["TRKR"], next(iter(delay_stages.values()), {})
+            )
+        ),
         trkr_config=dict(trkr_measurement),
         signal_monitor_config=dict(signal_monitor_measurement),
         srkr_config=dict(srkr_measurement),
@@ -185,11 +242,17 @@ def _extract_legacy_config(data: dict[str, Any]) -> LoadedGuiConfig:
     return LoadedGuiConfig(
         instrument_refs=default_instrument_refs(),
         lockin_config=dict(data.get("lockin", {})),
-        x_config=dict(xy_config.get("x") or data.get("x_scanner") or data.get("scanner1", {})),
-        y_config=dict(xy_config.get("y") or data.get("y_scanner") or data.get("scanner2", {})),
+        x_config=dict(
+            xy_config.get("x") or data.get("x_scanner") or data.get("scanner1", {})
+        ),
+        y_config=dict(
+            xy_config.get("y") or data.get("y_scanner") or data.get("scanner2", {})
+        ),
         t_config=dict(data.get("delay_stage") or data.get("delayline", {})),
         trkr_config=dict(data.get("trkr", {})),
-        signal_monitor_config=dict(data.get("signal_monitor", data.get("lab_time", {}))),
+        signal_monitor_config=dict(
+            data.get("signal_monitor", data.get("lab_time", {}))
+        ),
         srkr_config=dict(data.get("srkr", {})),
         move_abs_config={},
     )
@@ -259,7 +322,9 @@ def build_saved_config(snapshot: GuiConfigSnapshot) -> dict[str, Any]:
         srkr_settings["lockin_key"] = srkr_lockin_name
     if delay_stage_name != "t":
         trkr_settings["delay_stage_key"] = delay_stage_name
-        move_abs_settings["delay_stage_key"] = snapshot.instrument_refs["delay_stage"]["move_abs_t"]
+        move_abs_settings["delay_stage_key"] = snapshot.instrument_refs["delay_stage"][
+            "move_abs_t"
+        ]
     if scanner_x_name != "x" or scanner_y_name != "y":
         scanner_keys = {"x": scanner_x_name, "y": scanner_y_name}
         move_abs_settings["scanner_keys"] = scanner_keys
@@ -289,7 +354,9 @@ def build_saved_config(snapshot: GuiConfigSnapshot) -> dict[str, Any]:
     }
 
 
-def build_measurement_config(snapshot: GuiConfigSnapshot, measurement_name: str) -> dict[str, Any]:
+def build_measurement_config(
+    snapshot: GuiConfigSnapshot, measurement_name: str
+) -> dict[str, Any]:
     lockin_name = _lockin_ref(snapshot, measurement_name)
     config: dict[str, Any] = {
         "instruments": {
@@ -305,7 +372,7 @@ def build_measurement_config(snapshot: GuiConfigSnapshot, measurement_name: str)
     }
 
     if measurement_name == "signal_monitor":
-        settings = {
+        settings: dict[str, Any] = {
             "interval_s": snapshot.signal_monitor_interval_s,
             "n_points": snapshot.signal_monitor_n_points,
         }
@@ -367,5 +434,7 @@ def _zero_settings(snapshot: GuiConfigSnapshot) -> dict[str, float]:
     }
 
 
-def _output_config(snapshot: GuiConfigSnapshot, measurement_name: str) -> dict[str, Any]:
+def _output_config(
+    snapshot: GuiConfigSnapshot, measurement_name: str
+) -> dict[str, Any]:
     return output_config_for_measurement(snapshot.output_settings[measurement_name])

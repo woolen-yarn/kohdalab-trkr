@@ -7,6 +7,7 @@ from kohdalab.apps.trkr_gui_output import (
     normalize_output_settings,
     output_config_for_measurement,
     output_settings_from_fields,
+    validate_new_output_path,
 )
 
 
@@ -77,3 +78,34 @@ def test_output_config_for_measurement_uses_api_output_shape(tmp_path):
         "filename": "signal.csv",
         "auto_timestamp_suffix": False,
     }
+
+
+def test_validate_new_output_path_rejects_existing_csv(tmp_path):
+    output = tmp_path / "scan.csv"
+    output.write_text("existing data\n", encoding="utf-8")
+
+    try:
+        validate_new_output_path(output)
+    except FileExistsError as error:
+        assert str(output) in str(error)
+    else:
+        raise AssertionError("existing output was accepted")
+
+
+def test_validate_new_output_path_rejects_orphan_metadata(tmp_path):
+    output = tmp_path / "scan.csv"
+    sidecar = tmp_path / "scan.csv.meta.json"
+    sidecar.write_text('{"status": "running"}\n', encoding="utf-8")
+
+    try:
+        validate_new_output_path(output)
+    except FileExistsError as error:
+        assert str(sidecar) in str(error)
+    else:
+        raise AssertionError("existing metadata was accepted")
+
+
+def test_validate_new_output_path_accepts_unused_target(tmp_path):
+    output = tmp_path / "scan.csv"
+
+    assert validate_new_output_path(output) == output

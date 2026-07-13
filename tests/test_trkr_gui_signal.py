@@ -87,9 +87,15 @@ def test_lockin_display_from_settings_handles_missing_optional_values():
 def test_overload_display_from_status_ok_and_missing():
     assert overload_display_from_status(None) == "-"
     assert overload_display_from_status({"overload_byte": 0}) == "-"
-    assert overload_display_from_status({"overload": False, "input_overload": True}) == "OVERLOAD"
+    assert (
+        overload_display_from_status({"overload": False, "input_overload": True})
+        == "OVERLOAD"
+    )
     assert overload_display_from_status({"overload": True}) == "OVERLOAD"
 
 
 def test_overload_display_from_status_ignores_output_flags():
-    assert overload_display_from_status({"x_output_overload": True, "overload_byte": 16}) == "-"
+    assert (
+        overload_display_from_status({"x_output_overload": True, "overload_byte": 16})
+        == "-"
+    )

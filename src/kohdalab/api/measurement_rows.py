@@ -73,7 +73,11 @@ def fields_for_rows(rows: list[dict[str, Any]]) -> list[str]:
 
 
 def format_output_value(key: str, value: Any) -> Any:
-    if key in SIGNAL_VOLTAGE_KEYS and isinstance(value, (int, float)) and not isinstance(value, bool):
+    if (
+        key in SIGNAL_VOLTAGE_KEYS
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+    ):
         return f"{float(value):.6e}"
     return value
 
@@ -184,13 +188,19 @@ def _position_fields(position: Any, zero: dict[str, float]) -> dict[str, Any]:
     y_um = getattr(position, "y_um", None)
     values = {
         "t_ps": t_ps,
-        "t_cor_ps": None if t_ps is None else float(t_ps) - float(zero.get("t_ps", 0.0)),
+        "t_cor_ps": None
+        if t_ps is None
+        else float(t_ps) - float(zero.get("t_ps", 0.0)),
         "delay_stage_mm": getattr(position, "delay_stage_mm", None),
         "delay_stage_pulse": getattr(position, "delay_stage_pulse", None),
         "x_um": x_um,
-        "x_cor_um": None if x_um is None else float(x_um) - float(zero.get("x_um", 0.0)),
+        "x_cor_um": None
+        if x_um is None
+        else float(x_um) - float(zero.get("x_um", 0.0)),
         "y_um": y_um,
-        "y_cor_um": None if y_um is None else float(y_um) - float(zero.get("y_um", 0.0)),
+        "y_cor_um": None
+        if y_um is None
+        else float(y_um) - float(zero.get("y_um", 0.0)),
     }
     for axis in ("x", "y"):
         scanner_unit = getattr(position, f"scanner_{axis}_unit", None)

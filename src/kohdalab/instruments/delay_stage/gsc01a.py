@@ -16,22 +16,22 @@ class GSC01A(GSC01):
     `kohdalab.interfaces.delay_stage.DelayStage`.
     """
 
-    def set_logical_zero(self, axis: Optional[int] = None):
-        axis = axis or self.default_axis
+    def set_logical_zero(self, axis: Optional[int] = None) -> None:
+        axis = self._axis(axis)
         self._check_response(self.ask(f"R:{axis}"), "R")
 
-    def stop(self, axis: Optional[int] = None):
-        axis = axis or self.default_axis
+    def stop(self, axis: Optional[int] = None) -> None:
+        axis = self._axis(axis)
         self._check_response(self.ask(f"L:{axis}"), "L")
 
-    def immediate_stop(self):
+    def immediate_stop(self) -> None:
         self._check_response(self.ask("L:E"), "L:E")
 
     def query_sensor_status(self, sensor: int = 0) -> str:
         return self.query_internal(f"L{sensor}")
 
     def get_microstep_division(self, axis: Optional[int] = None) -> int:
-        axis = axis or self.default_axis
+        axis = self._axis(axis)
         responses = []
         for _attempt in range(3):
             resp = self.query_internal(f"S{axis}")

@@ -53,7 +53,7 @@ GitHub へのログインは、private repo に初めてアクセスすると Gi
 ログイン画面が出たら GitHub アカウントで認証してください。
 
 ```powershell
-git ls-remote https://github.com/Kohdalab/kohdalab-trkr.git
+git ls-remote https://github.com/woolen-yarn/kohdalab-trkr.git
 ```
 
 ### 2. 事前準備: uv をインストール
@@ -81,7 +81,7 @@ https://docs.astral.sh/uv/getting-started/installation/
 ```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
-git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
+git clone https://github.com/woolen-yarn/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
@@ -159,7 +159,7 @@ maintained notebooks:
 - `notebook/strkr_notebook.ipynb`
 - `notebook/srkr_2d_notebook.ipynb`
 
-GUI は安全のため `auto_connect=False` で、先に明示接続してから測定します。CLI と notebook は既定で `auto_connect=True` なので、必要 device を自動接続しに行きます。
+GUI と maintained notebook は安全のため `auto_connect=False` で、config 確認後に明示接続してから測定します。CLI は既定で `auto_connect=True` です。
 
 ### 8. デスクトップ起動ショートカットを作成
 
@@ -237,7 +237,7 @@ Git Credential Manager opens a browser sign-in the first time Git needs access
 to a private GitHub repository. To trigger that check before cloning, run:
 
 ```powershell
-git ls-remote https://github.com/Kohdalab/kohdalab-trkr.git
+git ls-remote https://github.com/woolen-yarn/kohdalab-trkr.git
 ```
 
 ### 2. Prerequisite: install uv
@@ -265,7 +265,7 @@ https://docs.astral.sh/uv/getting-started/installation/
 ```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
-git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
+git clone https://github.com/woolen-yarn/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 ```
 
@@ -348,9 +348,9 @@ Maintained notebooks:
 - `notebook/strkr_notebook.ipynb`
 - `notebook/srkr_2d_notebook.ipynb`
 
-The GUI uses `auto_connect=False` for safety, so devices must be explicitly
-connected before a measurement starts. CLI and notebooks use
-`auto_connect=True` by default and may connect required devices automatically.
+The GUI and maintained notebooks use `auto_connect=False` for safety, so
+devices must be explicitly connected after reviewing the config. The CLI uses
+the API default `auto_connect=True` and may connect required devices automatically.
 
 ### 8. Create a desktop launcher
 
@@ -463,6 +463,9 @@ The CLI prints start/status/point progress, writes measurement rows to the
 output path configured for each measurement, prints the final saved path, and
 prints errors to stderr. It keeps the notebook/CLI-friendly behavior of
 `Experiment`, including automatic connection of devices used by the command.
+The saved path is printed only after cleanup succeeds. Exit codes are `0` for
+completion, `1` for runtime/cleanup failure, `2` for invalid usage or config,
+and `130` for keyboard interruption.
 
 Notebook entry points
 ---------------------

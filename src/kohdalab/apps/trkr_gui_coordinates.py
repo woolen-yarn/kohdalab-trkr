@@ -34,7 +34,9 @@ def scanner_label_for_coordinate(
 ) -> str:
     axis = axis.strip().lower()
     coordinate = normalize_scanner_coordinate(coordinate)
-    unit = scanner_unit_for_coordinate(coordinate, actuator=actuator, connected_unit=connected_unit)
+    unit = scanner_unit_for_coordinate(
+        coordinate, actuator=actuator, connected_unit=connected_unit
+    )
     if coordinate == "measurement":
         return f"{axis} ({unit})"
     return f"scanner_{axis} ({unit})"
@@ -50,7 +52,7 @@ def scanner_axis_spin_value(value: object) -> int:
         return 1
     if normalized == "V":
         return 2
-    return int(value)
+    return int(normalized)
 
 
 def delay_stage_label_for_coordinate(coordinate: str | None) -> str:

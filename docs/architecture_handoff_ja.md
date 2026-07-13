@@ -46,12 +46,15 @@ standalone の `api.measurements.run_*()` も残しています。session が渡
 - `src/kohdalab/api/measurements.py`: Signal Monitor、TRKR、SRKR、STRKR、SRKR 2D workflow
 - `src/kohdalab/api/scan_plan.py`: `SignalMonitorPlan`, `TrkrPlan`, `SrkrPlan`, `StrkrPlan`, `Srkr2DPlan` と builder
 - `src/kohdalab/api/measurement_rows.py`: canonical row field order、row constructor、CSV output formatting
+- `src/kohdalab/api/run_metadata.py`: UTC timestamp と atomic `.csv.meta.json` provenance record。run ID、redacted config/hash、software version、row count、terminal status、CSV SHA-256 を記録
 - `src/kohdalab/api/status.py`: status constants と movement status helper
 - `src/kohdalab/api/device_requirements.py`: required/missing device check
 - `src/kohdalab/api/scan_limits.py`: delay-stage ps / scanner sample um の scan-limit hint
 - `src/kohdalab/api/devices/`: interface wrapper。lock-in read/settings write、delay-stage/scanner operations
 - `src/kohdalab/apps/trkr_gui.py`: everyday measurement-unit GUI
-- `src/kohdalab/apps/trkr_gui_advanced.py`: 以前の raw/interface coordinate GUI の参考 copy。現在の operator workflow には含めない
+- `src/kohdalab/apps/trkr_gui_workers.py`: measurement、device command、move、status、resource discovery、GUI log の background worker
+
+以前の raw/interface coordinate GUI の参考 copy は source tree から削除済みです。履歴は version control に残っています。
 
 ## Config Shape
 
@@ -138,7 +141,15 @@ delay_stages
 scanners
 ```
 
-`auto_connect=True` は notebook/CLI 向け default です。GUI は `auto_connect=False` を使い、必要 handle が missing の場合は Start しません。
+connected handle は instrument config に固定されます。`set_config()` は接続中referenceのinstrument定義変更を拒否し、measurement-only updateは許可します。`disconnect_all()` はhandle snapshot全体の切断を試行してから、失敗をまとめて報告します。
+
+validated configはdriver、stage、actuator catalogとも照合します。hardware endpointはcache-key単位でuniqueであり、全measurement device referenceは`DeviceSession`生成前に解決できる必要があります。
+
+lower-level delay-stage measurement coordinateの固定physical zeroはtravel中央、またはfiniteな明示`zero_pos_mm`です。`measurements.move_abs.zero.t_ps`はその上に置くmeasurement corrected offsetです。
+
+scanner controlとconversionはともに明示`origin_pos`をtravel中央より優先し、初期化位置とsample-coordinate zeroの不一致を防ぎます。
+
+API と CLI の default は `auto_connect=True` です。maintained notebook と GUI は `auto_connect=False` を明示し、config 確認後に device を明示接続します。
 
 `DeviceSession` は device reference ごとの reentrant lock で I/O を直列化します。これにより同じ lock-in handle への VISA/GPIB command は overlap せず、delay stage moving 中でも lock-in live status のような unrelated I/O は継続できます。
 
@@ -212,7 +223,7 @@ hardware-free pytest coverage:
 software verification:
 
 ```powershell
-uv run ruff check src tests
+uv run ruff check .
 uv run pytest
 ```
 

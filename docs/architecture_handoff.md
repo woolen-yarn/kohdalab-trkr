@@ -70,6 +70,10 @@ disconnect it at the end.
 - `src/kohdalab/api/measurement_rows.py`
   Canonical row field order, row constructors, CSV output formatting, and row
   field inference.
+- `src/kohdalab/api/run_metadata.py`
+  UTC timestamp generation and atomic `.csv.meta.json` provenance records.
+  Each record includes a run ID, redacted config snapshot and hash, software
+  versions, expected/written row counts, terminal status, and CSV SHA-256.
 - `src/kohdalab/api/status.py`
   Shared measurement/motion status strings and helpers that map movement status
   back to `t`, `x`, or `y`.
@@ -85,9 +89,12 @@ disconnect it at the end.
   Notebook-only formatting and live matplotlib helpers.
 - `src/kohdalab/apps/trkr_gui.py`
   Everyday measurement-unit GUI.
-- `src/kohdalab/apps/trkr_gui_advanced.py`
-  Reference copy of the previous raw/interface coordinate GUI. It is not part
-  of the current operator workflow.
+- `src/kohdalab/apps/trkr_gui_workers.py`
+  Background measurement, device-command, motion, status, resource-discovery,
+  and GUI logging workers. Worker names remain re-exported by `trkr_gui.py`.
+
+The previous raw/interface-coordinate GUI copies were removed from the source
+tree. Their history remains available in version control.
 
 ## Config Shape
 
@@ -166,7 +173,12 @@ pulse/raw coordinate exposed by this API.
 
 Hardware home/origin belongs to the control layer. Measurement coordinates use
 the middle of each device's configured min/max travel as zero unless an
-explicit origin is configured.
+explicit origin is configured. A custom delay stage without a finite maximum
+travel must provide finite `zero_pos_mm`; measurement corrected offsets such as
+`measurements.move_abs.zero.t_ps` are applied above this physical coordinate.
+Scanner control and conversion both prefer explicit `origin_pos` over the
+travel midpoint, preventing initialization and sample-coordinate conversion
+from using different physical zeros.
 
 ## Row Schemas
 
@@ -196,9 +208,19 @@ delay_stages
 scanners
 ```
 
+Connected handles are bound to their instrument config. `set_config()` rejects
+changes to a connected reference while still allowing measurement-only config
+updates. `disconnect_all()` is best-effort across the complete handle snapshot
+and reports aggregated failures after attempting every device.
+
+Validated configs are also checked against the driver, stage, and actuator
+catalogs. Hardware endpoints must be unique at the cache-key level, and every
+measurement device reference must resolve before `DeviceSession` construction.
+
 It also supports `connected_devices()` for API/GUI requirement checks.
 
-`auto_connect=True` is the default for notebooks and CLI convenience. With
+`auto_connect=True` is the API and CLI default. The maintained notebooks and
+GUI explicitly use `auto_connect=False`. With
 `auto_connect=False`, read/move operations raise `RuntimeError` if a required
 handle is missing. Explicit `connect_device()` and `connect_all()` still work
 in both modes.

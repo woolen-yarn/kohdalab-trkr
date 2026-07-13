@@ -171,7 +171,9 @@ def test_move_scanner_abs_can_skip_configured_software_hysteresis():
     assert row["actual"] == 250.0
 
 
-@pytest.mark.parametrize("coordinate", ["interface", "control", "instrument", "device", "mm", "pos_mm"])
+@pytest.mark.parametrize(
+    "coordinate", ["interface", "control", "instrument", "device", "mm", "pos_mm"]
+)
 def test_move_scanner_abs_treats_raw_scanner_aliases_as_interface(coordinate):
     scanner = FakeScanner()
 

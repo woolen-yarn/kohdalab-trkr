@@ -1,27 +1,51 @@
 [project]
 name = "kohdalab"
 version = "0.2.0"
-description = "Add your description here"
+description = "Experiment control and data acquisition for time-resolved Kerr rotation systems"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.13,<3.15"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "KohdaLab" }]
+keywords = ["instrument-control", "kerr-rotation", "laboratory-automation", "trkr"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
-    "pandas>=3.0.2",
     "pyserial>=3.5",
     "pyvisa>=1.16.2",
 ]
 
+[project.urls]
+Documentation = "https://github.com/woolen-yarn/kohdalab-trkr/tree/main/docs"
+Issues = "https://github.com/woolen-yarn/kohdalab-trkr/issues"
+Repository = "https://github.com/woolen-yarn/kohdalab-trkr"
+
 [project.optional-dependencies]
 gui = [
+    "numpy>=2.4.6",
     "pyside6>=6.11.1",
     "pyqtgraph>=0.14.0",
 ]
 notebook = [
     "anywidget>=0.10.0",
+    "bleach>=6.4.0",
     "ipykernel>=6.29.5",
     "ipython",
     "jupyter",
-    "jupyterlab",
+    "jupyter-server>=2.20.0",
+    "jupyterlab>=4.6.1",
     "matplotlib>=3.10.8",
+    "mistune>=3.3.3",
+    "pandas>=3.0.2",
+    "soupsieve>=2.8.4",
+    "tornado>=6.5.7",
 ]
 
 [project.scripts]
@@ -33,23 +57,82 @@ python-preference = "only-managed"
 python-downloads = "automatic"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.package-data]
+kohdalab = [
+    "resources/*.json",
+    "instruments/delay_stage/*.toml",
+    "instruments/scanner/*.toml",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = [
+    "src/kohdalab",
+]
+check_untyped_defs = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+extra_checks = true
+no_implicit_optional = true
+show_error_codes = true
+strict_equality = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "W", "B", "PIE", "S"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+"tests/test_notebooks.py" = ["S102"]
+"tests/test_run_metadata.py" = ["S105"]
+
+[tool.coverage.run]
+branch = true
+relative_files = true
+source = ["kohdalab"]
+
+[tool.coverage.report]
+fail_under = 100
+precision = 2
+show_missing = true
+
+[tool.pytest.ini_options]
+minversion = "9.0"
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+]
+testpaths = ["tests"]
+xfail_strict = true
+filterwarnings = ["error"]
+required_plugins = ["pytest-cov>=7.0"]
+
 [dependency-groups]
 dev = [
+    "bleach>=6.4.0",
     "pytest",
     "ruff",
-    "black",
     "mypy",
+    "pip-audit",
+    "pytest-cov",
+    "pyyaml",
+    "types-pyserial",
     "jupyter",
-    "jupyterlab",
+    "jupyter-server>=2.20.0",
+    "jupyterlab>=4.6.1",
     "ipykernel>=6.29.5",
     "ipython",
     "numpy>=2.4.6",
@@ -57,4 +140,12 @@ dev = [
     "anywidget>=0.10.0",
     "pyside6>=6.11.1",
     "pyqtgraph>=0.14.0",
+    "mistune>=3.3.3",
+    "soupsieve>=2.8.4",
+    "tornado>=6.5.7",
+]
+package = [
+    "check-wheel-contents",
+    "pyyaml",
+    "twine",
 ]

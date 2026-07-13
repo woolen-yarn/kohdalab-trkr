@@ -39,7 +39,7 @@ Confirm COM ports and VISA resources before starting Python.
 ```powershell
 New-Item -ItemType Directory -Force -Path $HOME\pythonKernel
 Set-Location $HOME\pythonKernel
-git clone https://github.com/Kohdalab/kohdalab-trkr.git kohdalab-trkr
+git clone https://github.com/woolen-yarn/kohdalab-trkr.git kohdalab-trkr
 Set-Location kohdalab-trkr
 uv sync --all-extras
 ```

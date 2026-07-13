@@ -16,7 +16,12 @@ def merge_config(defaults: dict[str, Any], overrides: dict[str, Any]) -> dict[st
     return merged
 
 
-def midpoint(min_value: float | int | None, max_value: float | int | None, *, default: float = 0.0) -> float:
+def midpoint(
+    min_value: float | int | None,
+    max_value: float | int | None,
+    *,
+    default: float = 0.0,
+) -> float:
     if min_value is None or max_value is None:
         return float(default)
     return (float(min_value) + float(max_value)) / 2.0

@@ -270,8 +270,10 @@ Done:
 Done:
 
 - Kept `trkr_gui.py` as the everyday measurement-unit GUI.
-- Kept `trkr_gui_advanced.py` only as a reference copy of the previous
-  raw/interface coordinate GUI.
+- Extracted background workers into `trkr_gui_workers.py`, while preserving
+  imports through `trkr_gui.py` for compatibility.
+- Removed the previous raw/interface coordinate GUI reference copies; version
+  control retains their history.
 - Removed the advanced GUI script entry point from the current operator
   workflow.
 - Added a small test so `kohdalab-gui` stays declared and

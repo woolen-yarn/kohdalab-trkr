@@ -127,6 +127,9 @@ origin buttons は `t_zero_ps`, `x_zero_um`, `y_zero_um` を設定します。co
 
 保存 row は measurement-oriented schema です。
 
+measurement run と **Save Now** は CSV と対応する `.csv.meta.json` provenance sidecar を保存します。row timestamp は UTC で、sidecar の CSV SHA-256 により保存後の変更を検出できます。
+runは既存CSV/sidecarを上書きしません。**Save Now**だけが明示的な置換操作で、temporary fileからatomic renameします。
+
 ```text
 timestamp, measurement, fast_axis, slow_axis,
 target_elapsed_s, target_t_cor_ps, target_x_cor_um, target_y_cor_um,

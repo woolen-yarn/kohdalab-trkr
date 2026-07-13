@@ -65,6 +65,11 @@ Motion rows are split between live position/origin state and move controls.
 ### Center Pane
 
 The center pane contains measurement settings, output/run controls, and plots.
+Measurement runs and **Save Now** write both the CSV and a matching
+`.csv.meta.json` provenance sidecar. Row timestamps are UTC and the sidecar's
+CSV SHA-256 can be used to detect later modification.
+Runs never overwrite an existing CSV or sidecar. **Save Now** is an explicit
+replacement operation and uses a temporary file plus atomic rename.
 
 Tabs:
 

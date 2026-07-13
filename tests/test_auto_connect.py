@@ -10,9 +10,12 @@ import kohdalab.api.session as session_module
 def config_with_devices() -> dict:
     return {
         "instruments": {
-            "lockin": {"main": {}},
-            "delay_stage": {"t": {}},
-            "scanner": {"x": {}, "y": {}},
+            "lockin": {"main": {"resource": "LOCKIN"}},
+            "delay_stage": {"t": {"port": "STAGE"}},
+            "scanner": {
+                "x": {"port": "SCANNER", "axis": 1},
+                "y": {"port": "SCANNER", "axis": 2},
+            },
         }
     }
 
@@ -25,7 +28,11 @@ def test_device_session_auto_connects_by_default(monkeypatch):
         return object()
 
     monkeypatch.setattr(session_module, "connect_lockin", connect_lockin)
-    monkeypatch.setattr(session_module, "read_lockin_signal", lambda config, *, lockin: {"X": 1, "Y": 2, "R": 3, "Theta": 4})
+    monkeypatch.setattr(
+        session_module,
+        "read_lockin_signal",
+        lambda config, *, lockin: {"X": 1, "Y": 2, "R": 3, "Theta": 4},
+    )
 
     session = DeviceSession(config_with_devices())
 
@@ -35,7 +42,11 @@ def test_device_session_auto_connects_by_default(monkeypatch):
 
 
 def test_device_session_can_require_explicit_lockin_connect(monkeypatch):
-    monkeypatch.setattr(session_module, "connect_lockin", lambda config: pytest.fail("unexpected auto-connect"))
+    monkeypatch.setattr(
+        session_module,
+        "connect_lockin",
+        lambda config: pytest.fail("unexpected auto-connect"),
+    )
 
     session = DeviceSession(config_with_devices(), auto_connect=False)
 
@@ -44,8 +55,14 @@ def test_device_session_can_require_explicit_lockin_connect(monkeypatch):
 
 
 def test_explicit_connect_still_works_when_auto_connect_is_disabled(monkeypatch):
-    monkeypatch.setattr(session_module, "connect_lockin", lambda config: "lockin-handle")
-    monkeypatch.setattr(session_module, "read_lockin_signal", lambda config, *, lockin: {"handle": lockin})
+    monkeypatch.setattr(
+        session_module, "connect_lockin", lambda config: "lockin-handle"
+    )
+    monkeypatch.setattr(
+        session_module,
+        "read_lockin_signal",
+        lambda config, *, lockin: {"handle": lockin},
+    )
 
     session = DeviceSession(config_with_devices(), auto_connect=False)
 
@@ -54,8 +71,16 @@ def test_explicit_connect_still_works_when_auto_connect_is_disabled(monkeypatch)
 
 
 def test_motion_requires_explicit_connect_when_auto_connect_is_disabled(monkeypatch):
-    monkeypatch.setattr(session_module, "connect_delay_stage", lambda config: pytest.fail("unexpected delay auto-connect"))
-    monkeypatch.setattr(session_module, "connect_scanner", lambda config: pytest.fail("unexpected scanner auto-connect"))
+    monkeypatch.setattr(
+        session_module,
+        "connect_delay_stage",
+        lambda config: pytest.fail("unexpected delay auto-connect"),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "connect_scanner",
+        lambda config: pytest.fail("unexpected scanner auto-connect"),
+    )
 
     session = DeviceSession(config_with_devices(), auto_connect=False)
 

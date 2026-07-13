@@ -1,8 +1,18 @@
 from __future__ import annotations
 
 import math
-import re
 import time
+from typing import Any
+
+from ._validation import (
+    finite_float,
+    integer_response,
+    parse_float_response,
+    resolve_index_from_table,
+    visa_read,
+    visa_write,
+    wait_time,
+)
 
 
 _SENSITIVITY_TABLE = {
@@ -48,70 +58,73 @@ _SLOPE_MAP = {
 
 _SLOPE_MAP_INV = {value: key for key, value in _SLOPE_MAP.items()}
 
-_FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?")
-
 
 class SR5210:
-    def __init__(self, inst):
+    def __init__(self, inst: Any) -> None:
         self.inst = inst
         self.inst.write_termination = "\r"
         self.inst.read_termination = "\n"
         self.default_delay = 0.02
         self.retry_delays = (0.02, 0.05)
 
-    def configure(self):
+    def configure(self) -> None:
         return None
 
     def ask(self, cmd: str, delay: float | None = None) -> str:
         delay = self.default_delay if delay is None else delay
-        self.inst.write(cmd)
+        visa_write(self.inst, "SR5210", cmd)
         time.sleep(delay)
-        response = self.inst.read().strip()
+        response = visa_read(self.inst, "SR5210", cmd)
         for retry_delay in self.retry_delays:
             if response:
                 break
             time.sleep(retry_delay)
-            try:
-                response = self.inst.read().strip()
-            except Exception:
-                response = ""
+            response = visa_read(self.inst, "SR5210", cmd)
+        if not response:
+            raise TimeoutError(f"SR5210 timed out waiting for {cmd} response")
         return response
 
-    def ask_responses(self, cmd: str, response_count: int, delay: float | None = None) -> list[str]:
+    def ask_responses(
+        self, cmd: str, response_count: int, delay: float | None = None
+    ) -> list[str]:
         delay = self.default_delay if delay is None else delay
-        self.inst.write(cmd)
+        if (
+            isinstance(response_count, bool)
+            or not isinstance(response_count, int)
+            or response_count < 1
+        ):
+            raise ValueError("response_count must be a positive integer.")
+        visa_write(self.inst, "SR5210", cmd)
         time.sleep(delay)
         responses = []
-        for _ in range(response_count):
-            response = self.inst.read().strip()
+        for index in range(response_count):
+            response = visa_read(self.inst, "SR5210", cmd)
             for retry_delay in self.retry_delays:
                 if response:
                     break
                 time.sleep(retry_delay)
-                try:
-                    response = self.inst.read().strip()
-                except Exception:
-                    response = ""
+                response = visa_read(self.inst, "SR5210", cmd)
+            if not response:
+                raise TimeoutError(
+                    f"SR5210 timed out waiting for response {index + 1}/{response_count} to {cmd}"
+                )
             responses.append(response)
         return responses
 
     def ask_float(self, cmd: str, delay: float | None = None) -> float:
-        ans = self.ask(cmd, delay=delay)
-        if ans == "":
-            raise RuntimeError(f"Empty response for {cmd}")
-        return float(ans)
+        return finite_float(
+            self.ask(cmd, delay=delay), context=f"SR5210 {cmd} response"
+        )
 
     @staticmethod
-    def parse_float_response(response: str, *, expected_count: int, cmd: str) -> list[float]:
-        values = [float(match.group(0)) for match in _FLOAT_RE.finditer(response)]
-        if len(values) != expected_count:
-            raise RuntimeError(
-                f"Unexpected response for {cmd}: {response!r} "
-                f"(expected {expected_count} values, got {len(values)})"
-            )
-        return values
+    def parse_float_response(
+        response: str, *, expected_count: int, cmd: str
+    ) -> list[float]:
+        return parse_float_response(response, expected_count=expected_count, cmd=cmd)
 
-    def ask_floats(self, cmd: str, expected_count: int, delay: float | None = None) -> list[float]:
+    def ask_floats(
+        self, cmd: str, expected_count: int, delay: float | None = None
+    ) -> list[float]:
         return self.parse_float_response(
             self.ask(cmd, delay=delay),
             expected_count=expected_count,
@@ -119,13 +132,10 @@ class SR5210:
         )
 
     @staticmethod
-    def _resolve_index_from_table(value: float, table: dict[int, float], label: str) -> int:
-        best_index, best_value = min(table.items(), key=lambda item: abs(item[1] - value))
-        tolerance = max(1e-15, abs(best_value) * 1e-9)
-        if abs(best_value - value) > tolerance:
-            available = ", ".join(f"{v:.6g}" for v in table.values())
-            raise ValueError(f"Unsupported {label} value: {value}. Available values: {available}")
-        return best_index
+    def _resolve_index_from_table(
+        value: float, table: dict[int, float], label: str
+    ) -> int:
+        return resolve_index_from_table(value, table, label)
 
     @staticmethod
     def _table_value(index: int, table: dict[int, float], label: str) -> float:
@@ -138,26 +148,30 @@ class SR5210:
     def _scaled_signal_value(raw: float, sensitivity: float) -> float:
         return float(raw) * float(sensitivity) / 10000.0
 
-    def get_live_data_raw(self) -> dict:
+    def get_live_data_raw(self) -> dict[str, Any]:
         sensitivity = self.get_sensitivity()
         x_raw = y_raw = r_raw = theta_mdeg = None
         try:
             xy_response, mp_response = self.ask_responses("XY;MP", response_count=2)
-            x_raw, y_raw = self.parse_float_response(xy_response, expected_count=2, cmd="XY")
-            r_raw, theta_mdeg = self.parse_float_response(mp_response, expected_count=2, cmd="MP")
-        except Exception:
+            x_raw, y_raw = self.parse_float_response(
+                xy_response, expected_count=2, cmd="XY"
+            )
+            r_raw, theta_mdeg = self.parse_float_response(
+                mp_response, expected_count=2, cmd="MP"
+            )
+        except (RuntimeError, TimeoutError, ValueError):
             pass
 
         if x_raw is None or y_raw is None:
             try:
                 x_raw, y_raw = self.ask_floats("XY", expected_count=2)
-            except Exception:
+            except (RuntimeError, TimeoutError, ValueError):
                 x_raw = y_raw = None
 
         if r_raw is None or theta_mdeg is None:
             try:
                 r_raw, theta_mdeg = self.ask_floats("MP", expected_count=2)
-            except Exception:
+            except (RuntimeError, TimeoutError, ValueError):
                 r_raw = theta_mdeg = None
 
         if x_raw is None or y_raw is None or r_raw is None or theta_mdeg is None:
@@ -167,14 +181,22 @@ class SR5210:
                     response_count=4,
                 )
                 if x_raw is None:
-                    x_raw = self.parse_float_response(x_response, expected_count=1, cmd="X")[0]
+                    x_raw = self.parse_float_response(
+                        x_response, expected_count=1, cmd="X"
+                    )[0]
                 if y_raw is None:
-                    y_raw = self.parse_float_response(y_response, expected_count=1, cmd="Y")[0]
+                    y_raw = self.parse_float_response(
+                        y_response, expected_count=1, cmd="Y"
+                    )[0]
                 if r_raw is None:
-                    r_raw = self.parse_float_response(r_response, expected_count=1, cmd="MAG")[0]
+                    r_raw = self.parse_float_response(
+                        r_response, expected_count=1, cmd="MAG"
+                    )[0]
                 if theta_mdeg is None:
-                    theta_mdeg = self.parse_float_response(theta_response, expected_count=1, cmd="PHA")[0]
-            except Exception:
+                    theta_mdeg = self.parse_float_response(
+                        theta_response, expected_count=1, cmd="PHA"
+                    )[0]
+            except (RuntimeError, TimeoutError, ValueError):
                 pass
 
         if x_raw is None or y_raw is None:
@@ -185,9 +207,11 @@ class SR5210:
             try:
                 r_raw = self.ask_float("MAG")
                 theta_mdeg = self.ask_float("PHA")
-            except Exception:
+            except (RuntimeError, TimeoutError, ValueError):
                 r_raw = math.hypot(float(x_raw), float(y_raw))
-                theta_mdeg = math.degrees(math.atan2(float(y_raw), float(x_raw))) * 1000.0
+                theta_mdeg = (
+                    math.degrees(math.atan2(float(y_raw), float(x_raw))) * 1000.0
+                )
 
         return {
             "X": self._scaled_signal_value(x_raw, sensitivity),
@@ -197,14 +221,14 @@ class SR5210:
         }
 
     def get_time_constant(self) -> float:
-        index = int(self.ask_float("TC"))
+        index = integer_response(self.ask_float("TC"), context="SR5210 TC response")
         return self._table_value(index, _TIME_CONSTANT_TABLE, "time constant")
 
     def get_ac_gain(self) -> None:
         return None
 
     def get_sensitivity(self) -> float:
-        index = int(self.ask_float("SEN"))
+        index = integer_response(self.ask_float("SEN"), context="SR5210 SEN response")
         return self._table_value(index, _SENSITIVITY_TABLE, "sensitivity")
 
     def get_ref_freq(self) -> float:
@@ -229,19 +253,21 @@ class SR5210:
         return "AC"
 
     def get_slope(self) -> int:
-        value = int(self.ask_float("XDB"))
+        value = integer_response(self.ask_float("XDB"), context="SR5210 XDB response")
         try:
             return _SLOPE_MAP[value]
         except KeyError as e:
             raise RuntimeError(f"Unexpected slope mode: {value}") from e
 
-    def get_overload_status(self) -> dict:
-        value = int(self.ask_float("N"))
+    def get_overload_status(self) -> dict[str, Any]:
+        value = integer_response(self.ask_float("N"), context="SR5210 N response")
         raw_input_overload = bool(value & (1 << 6))
         y_output_overload = bool(value & (1 << 3))
         x_output_overload = bool(value & (1 << 4))
         psd_overload = bool(value & (1 << 5))
-        any_overload = any((y_output_overload, x_output_overload, psd_overload, raw_input_overload))
+        any_overload = any(
+            (y_output_overload, x_output_overload, psd_overload, raw_input_overload)
+        )
         status = {
             "current_mode_1e8": bool(value & (1 << 1)),
             "current_mode_1e6": bool(value & (1 << 2)),
@@ -257,40 +283,46 @@ class SR5210:
         return status
 
     def get_wait_time(self, multiplier: float = 4.0) -> float:
-        return multiplier * self.get_time_constant()
+        return wait_time(multiplier, self.get_time_constant())
 
-    def auto_phase(self):
-        self.inst.write("AQN")
+    def auto_phase(self) -> None:
+        visa_write(self.inst, "SR5210", "AQN")
 
-    def auto_sensitivity(self):
-        self.inst.write("AS")
+    def auto_sensitivity(self) -> None:
+        visa_write(self.inst, "SR5210", "AS")
 
-    def auto_measure(self):
-        self.inst.write("ASM")
+    def auto_measure(self) -> None:
+        visa_write(self.inst, "SR5210", "ASM")
 
-    def set_sensitivity(self, value: float):
-        index = self._resolve_index_from_table(float(value), _SENSITIVITY_TABLE, "sensitivity")
-        self.inst.write(f"SEN {index}")
+    def set_sensitivity(self, value: float) -> None:
+        index = self._resolve_index_from_table(value, _SENSITIVITY_TABLE, "sensitivity")
+        visa_write(self.inst, "SR5210", f"SEN {index}")
 
-    def set_time_constant(self, value: float):
-        index = self._resolve_index_from_table(float(value), _TIME_CONSTANT_TABLE, "time constant")
-        self.inst.write(f"TC {index}")
+    def set_time_constant(self, value: float) -> None:
+        index = self._resolve_index_from_table(
+            value, _TIME_CONSTANT_TABLE, "time constant"
+        )
+        visa_write(self.inst, "SR5210", f"TC {index}")
 
-    def set_ac_gain(self, value: float):
+    def set_ac_gain(self, value: float) -> None:
         raise NotImplementedError("SR5210 does not expose SR7265-style AC gain.")
 
-    def set_coupling(self, value: str):
-        if value.strip().upper() != "AC":
+    def set_coupling(self, value: str) -> None:
+        if not isinstance(value, str) or value.strip().upper() != "AC":
             raise ValueError("SR5210 exposes only AC coupling through this API.")
 
-    def set_slope(self, value: int):
+    def set_slope(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("slope must be one of 6, 12 dB/oct.")
         try:
-            index = _SLOPE_MAP_INV[int(value)]
+            index = _SLOPE_MAP_INV[value]
         except KeyError as e:
-            raise ValueError(f"Unsupported slope: {value}. Use one of 6, 12 dB/oct.") from e
-        self.inst.write(f"XDB {index}")
+            raise ValueError(
+                f"Unsupported slope: {value}. Use one of 6, 12 dB/oct."
+            ) from e
+        visa_write(self.inst, "SR5210", f"XDB {index}")
 
-    def close(self):
+    def close(self) -> None:
         self.inst.close()
 
     def is_connected(self) -> bool:

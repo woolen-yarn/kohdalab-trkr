@@ -8,7 +8,9 @@ from kohdalab.api.config import instrument_key, measurement_settings
 def _lockin_ref(config: dict[str, Any], measurement_name: str) -> str:
     settings = measurement_settings(config, measurement_name)
     preferred_key = settings.get("lockin_key", settings.get("lockin"))
-    if preferred_key is None and "main" in config.get("instruments", {}).get("lockin", {}):
+    if preferred_key is None and "main" in config.get("instruments", {}).get(
+        "lockin", {}
+    ):
         preferred_key = "main"
     return f"lockin.{instrument_key(config, 'lockin', preferred_key)}"
 
@@ -16,19 +18,25 @@ def _lockin_ref(config: dict[str, Any], measurement_name: str) -> str:
 def _delay_stage_ref(config: dict[str, Any], measurement_name: str) -> str:
     settings = measurement_settings(config, measurement_name)
     preferred_key = settings.get("delay_stage_key", settings.get("delay_stage"))
-    if preferred_key is None and "t" in config.get("instruments", {}).get("delay_stage", {}):
+    if preferred_key is None and "t" in config.get("instruments", {}).get(
+        "delay_stage", {}
+    ):
         preferred_key = "t"
     return f"delay_stage.{instrument_key(config, 'delay_stage', preferred_key)}"
 
 
-def _scanner_ref(config: dict[str, Any], axis: str, measurement_name: str = "srkr") -> str:
+def _scanner_ref(
+    config: dict[str, Any], axis: str, measurement_name: str = "srkr"
+) -> str:
     axis = axis.strip().lower()
     if axis not in {"x", "y"}:
         raise ValueError("SRKR axis must be 'x' or 'y'.")
     settings = measurement_settings(config, measurement_name)
     scanner_keys = settings.get("scanner_keys", settings.get("scanners", {}))
     preferred_key = scanner_keys.get(axis) if isinstance(scanner_keys, dict) else None
-    if preferred_key is None and axis in config.get("instruments", {}).get("scanner", {}):
+    if preferred_key is None and axis in config.get("instruments", {}).get(
+        "scanner", {}
+    ):
         preferred_key = axis
     return f"scanner.{instrument_key(config, 'scanner', preferred_key)}"
 
@@ -36,7 +44,9 @@ def _scanner_ref(config: dict[str, Any], axis: str, measurement_name: str = "srk
 def _scan_axes(config: dict[str, Any], measurement_name: str) -> tuple[str, str]:
     scan = measurement_settings(config, measurement_name).get("scan", {})
     scan = scan if isinstance(scan, dict) else {}
-    return str(scan.get("fast_axis", "")).lower(), str(scan.get("slow_axis", "")).lower()
+    return str(scan.get("fast_axis", "")).lower(), str(
+        scan.get("slow_axis", "")
+    ).lower()
 
 
 def required_devices(
@@ -55,7 +65,10 @@ def required_devices(
     if measurement == "trkr":
         return [_lockin_ref(config, measurement), _delay_stage_ref(config, measurement)]
     if measurement == "srkr":
-        return [_lockin_ref(config, measurement), _scanner_ref(config, axis or "x", measurement)]
+        return [
+            _lockin_ref(config, measurement),
+            _scanner_ref(config, axis or "x", measurement),
+        ]
     if measurement == "strkr":
         config_fast, config_slow = _scan_axes(config, measurement)
         axes = {fast_axis or config_fast or "t", slow_axis or config_slow or "x"}

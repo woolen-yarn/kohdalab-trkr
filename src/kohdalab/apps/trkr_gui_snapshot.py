@@ -32,7 +32,5 @@ def format_snapshot_value(key: str, value: Any, *, voltage_scale: float = 1.0) -
             return f"{value:.3f}"
         if key == "elapsed_s":
             return f"{value:.3f}"
-        if key == "scan_axis":
-            return str(value)
         return f"{value:.6f}"
     return str(value)
