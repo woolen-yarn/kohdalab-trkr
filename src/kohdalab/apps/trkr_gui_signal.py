@@ -58,7 +58,9 @@ def lockin_display_from_settings(settings: dict[str, Any]) -> LockinDisplay:
     sensitivity_value = sensitivity * voltage_scale
     return LockinDisplay(
         sensitivity=f"{sensitivity_value:.3g} {voltage_unit}",
-        time_constant="-" if time_constant is None else time_constant_display(float(time_constant)),
+        time_constant="-"
+        if time_constant is None
+        else time_constant_display(float(time_constant)),
         ref_freq="-" if ref_freq is None else f"{float(ref_freq):.6g} Hz",
         voltage_scale=voltage_scale,
         voltage_unit=voltage_unit,

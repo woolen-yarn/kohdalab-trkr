@@ -1,0 +1,164 @@
+{
+  "profile": {
+    "name": "default",
+    "description": "Default TRKR/SRKR setup using CONEXAGAP scanners."
+  },
+  "instruments": {
+    "lockin": {
+      "main": {
+        "model": "SR7265",
+        "resource": "GPIB0::12::INSTR"
+      }
+    },
+    "scanner": {
+      "x": {
+        "controller": "CONEXAGAP",
+        "actuator": "AG-M100D",
+        "port": "COM11",
+        "axis": "U",
+        "sample_um_per_unit": 582.0,
+        "software_hysteresis": {
+          "enabled": false,
+          "distance_um": 20.0,
+          "direction": "negative"
+        }
+      },
+      "y": {
+        "controller": "CONEXAGAP",
+        "actuator": "AG-M100D",
+        "port": "COM11",
+        "axis": "V",
+        "sample_um_per_unit": 412.0,
+        "software_hysteresis": {
+          "enabled": false,
+          "distance_um": 50.0,
+          "direction": "negative"
+        }
+      }
+    },
+    "delay_stage": {
+      "t": {
+        "controller": "SHOT302GS",
+        "stage": "SGSP46-500",
+        "port": "COM6",
+        "direction": 1
+      }
+    }
+  },
+  "measurements": {
+    "move_abs": {
+      "coordinate": "measurement",
+      "zero": {
+        "t_ps": -122.0,
+        "x_um": 61.5756,
+        "y_um": 477.0136
+      },
+      "targets": {
+        "t": 0.0,
+        "x": 0.0,
+        "y": 0.0
+      }
+    },
+    "signal_monitor": {
+      "interval_s": 1.0,
+      "n_points": 360,
+      "output": {
+        "dir": "C:\\pythonKernel\\kohdalab",
+        "filename": "signal_monitor_run",
+        "auto_timestamp_suffix": true
+      }
+    },
+    "trkr": {
+      "coordinate": "measurement",
+      "scan": {
+        "min": -50.0,
+        "max": 300.0,
+        "step": 5.0
+      },
+      "wait_s": 2.0,
+      "return_to_zero": true,
+      "output": {
+        "dir": "C:\\pythonKernel\\kohdalab",
+        "filename": "trkr_run",
+        "auto_timestamp_suffix": true
+      }
+    },
+    "srkr": {
+      "coordinate": "measurement",
+      "scan": {
+        "axis": "x",
+        "min": -30.0,
+        "max": 30.0,
+        "step": 1.0
+      },
+      "wait_s": 2.0,
+      "return_to_zero": true,
+      "output": {
+        "dir": "C:\\pythonKernel\\kohdalab",
+        "filename": "srkr_run",
+        "auto_timestamp_suffix": true
+      }
+    },
+    "strkr": {
+      "scan": {
+        "fast_axis": "t",
+        "slow_axis": "x",
+        "ranges": {
+          "t": {
+            "min": -50.0,
+            "max": 300.0,
+            "step": 5.0
+          },
+          "x": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          },
+          "y": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          }
+        }
+      },
+      "wait_s": 2.0,
+      "return_to_zero": {
+        "fast_axis": true,
+        "slow_axis": true
+      },
+      "output": {
+        "dir": "C:\\pythonKernel\\kohdalab",
+        "filename": "strkr_run",
+        "auto_timestamp_suffix": true
+      }
+    },
+    "srkr_2d": {
+      "scan": {
+        "fast_axis": "x",
+        "slow_axis": "y",
+        "ranges": {
+          "x": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          },
+          "y": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          }
+        }
+      },
+      "wait_s": 2.0,
+      "return_to_zero": {
+        "fast_axis": true,
+        "slow_axis": true
+      },
+      "output": {
+        "dir": "C:\\pythonKernel\\kohdalab",
+        "filename": "srkr_2d_run",
+        "auto_timestamp_suffix": true
+      }
+    }
+  }
+}

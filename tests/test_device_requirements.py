@@ -26,6 +26,7 @@ def test_required_devices_for_each_measurement():
     config = config_with_devices()
 
     assert required_devices(config, "signal_monitor") == ["lockin.main"]
+    assert required_devices(config, " signal ") == ["lockin.main"]
     assert required_devices(config, "trkr") == ["lockin.main", "delay_stage.t"]
     assert required_devices(config, "srkr", axis="x") == ["lockin.main", "scanner.x"]
     assert required_devices(config, "srkr", axis="y") == ["lockin.main", "scanner.y"]
@@ -34,7 +35,11 @@ def test_required_devices_for_each_measurement():
         "delay_stage.t",
         "scanner.y",
     ]
-    assert required_devices(config, "srkr_2d") == ["lockin.main", "scanner.x", "scanner.y"]
+    assert required_devices(config, "srkr_2d") == [
+        "lockin.main",
+        "scanner.x",
+        "scanner.y",
+    ]
 
 
 def test_required_devices_respects_measurement_device_keys():
@@ -66,10 +71,24 @@ def test_required_devices_respects_measurement_device_keys():
 
     assert required_devices(config, "signal_monitor") == ["lockin.probe"]
     assert required_devices(config, "trkr") == ["lockin.probe", "delay_stage.delay"]
-    assert required_devices(config, "srkr", axis="x") == ["lockin.pump", "scanner.fast_x"]
-    assert required_devices(config, "srkr", axis="y") == ["lockin.pump", "scanner.slow_y"]
-    assert required_devices(config, "strkr") == ["lockin.pump", "delay_stage.delay", "scanner.fast_x"]
-    assert required_devices(config, "srkr_2d") == ["lockin.pump", "scanner.fast_x", "scanner.slow_y"]
+    assert required_devices(config, "srkr", axis="x") == [
+        "lockin.pump",
+        "scanner.fast_x",
+    ]
+    assert required_devices(config, "srkr", axis="y") == [
+        "lockin.pump",
+        "scanner.slow_y",
+    ]
+    assert required_devices(config, "strkr") == [
+        "lockin.pump",
+        "delay_stage.delay",
+        "scanner.fast_x",
+    ]
+    assert required_devices(config, "srkr_2d") == [
+        "lockin.pump",
+        "scanner.fast_x",
+        "scanner.slow_y",
+    ]
 
 
 def test_missing_devices_compares_against_connected_map():
@@ -97,3 +116,19 @@ def test_required_devices_rejects_invalid_measurement_or_axis():
         required_devices(config_with_devices(), "unknown")
     with pytest.raises(ValueError, match="SRKR axis"):
         required_devices(config_with_devices(), "srkr", axis="z")
+
+
+@pytest.mark.parametrize(
+    ("fast_axis", "slow_axis"),
+    [("x", "y"), ("t", "t"), ("x", "x"), ("z", "t")],
+)
+def test_required_devices_rejects_strkr_axes_without_one_time_and_one_space_axis(
+    fast_axis: str, slow_axis: str
+):
+    with pytest.raises(ValueError, match="STRKR axes"):
+        required_devices(
+            config_with_devices(),
+            "strkr",
+            fast_axis=fast_axis,
+            slow_axis=slow_axis,
+        )

@@ -32,7 +32,7 @@ measurement runs all go through that session.
 
 ## Connection Policy
 
-The default is notebook/CLI friendly:
+The API and CLI default allows automatic connection:
 
 ```python
 experiment = Experiment(config)  # auto_connect=True
@@ -40,6 +40,84 @@ experiment = Experiment(config)  # auto_connect=True
 
 With `auto_connect=True`, reads and moves can connect a missing device
 automatically.
+
+For deterministic cleanup, use `Experiment` or `DeviceSession` as a context
+manager. `close()` is equivalent to `disconnect_all()` and is idempotent:
+
+```python
+with Experiment(config) as experiment:
+    experiment.connect_all()
+    rows = experiment.run_trkr()
+```
+
+The context manager also closes on a body exception. If measurement code and
+cleanup both fail, the measurement exception remains primary and the cleanup
+failure is attached as an exception note.
+
+`connect_all()` is transactional. If a later device cannot connect, every
+lease acquired by that call is released in reverse order, while connections
+that existed before the call remain owned. Rollback attempts every acquired
+device; any rollback failures are attached to the original connection error as
+an exception note.
+
+Initialization also registers its connection lease before homing or origin
+movement and passes that exact handle through the service layer. If
+initialization fails, a lease acquired by that call is released; a connection
+that existed beforehand is retained. `initialize_xy()` applies the same rule
+across both axes. Physical motion already completed before an error cannot be
+rolled back.
+
+`connected_devices()` checks each live wrapper instead of reporting only
+session-dictionary membership. A false result or an exception from
+`is_connected()` is treated as disconnected. Device operations reject stale
+handles with an explicit disconnect/reconnect instruction, while disconnect
+remains available to clean up the stale lease.
+
+Sessions sharing one cached handle also share its reentrant I/O lock. Complete
+session-level operations against that handle are serialized across sessions,
+including connect and disconnect, while operations on unrelated hardware can
+still run concurrently.
+
+Changing measurement or output settings through `experiment.config` is allowed
+while devices are connected. Changing or removing the config of a connected
+instrument is rejected; disconnect it first so an existing handle can never be
+used with a different resource, port, controller, or actuator definition.
+`disconnect_all()` attempts every connected device even if one close operation
+fails, then raises one error containing all failed references.
+When multiple `DeviceSession` instances resolve to the same cached hardware
+handle, each session owns a lease. Disconnecting one session releases only its
+lease; the physical connection closes after the final owner disconnects.
+Repeated `connect_device()` calls in one session are idempotent.
+All owners of one physical target must use exactly the same instrument config;
+a conflicting session is rejected before device I/O and reports the differing
+top-level fields. A different config can be used after the final lease closes.
+The session also pins its own per-device config at connection time. Mutating a
+nested instrument config in place is detected before later device operations;
+disconnect still uses the pinned resource or port so the original connection
+cannot be orphaned.
+
+Delay-stage measurement coordinates require a stable physical zero. Known
+stage profiles derive it from the configured minimum/maximum travel midpoint.
+Custom stages without a maximum limit must set finite `zero_pos_mm`; the API no
+longer derives a moving zero from the current position. Instrument-coordinate
+targets are integer pulses—fractional pulses and non-finite targets are
+rejected before a controller command is sent.
+
+Scanner conversion and initialization use the same origin precedence:
+finite explicit `origin_pos`, otherwise the finite `min_pos`/`max_pos`
+midpoint, otherwise zero. An explicit origin must remain inside configured
+limits. Scanner targets, hardware readings, scale/origin values, and software
+hysteresis distances must be finite. Hysteresis enablement must be boolean and
+its direction must be a supported positive/negative approach alias.
+
+Config loading canonicalizes lock-in models, controller names, stage names,
+and actuator names, then checks them against the packaged driver/catalog data.
+Stage/controller and actuator/controller compatibility is validated before a
+session is created. Duplicate lock-in resources, duplicate delay-stage
+controller/port pairs, and duplicate scanner controller/port/axis tuples are
+rejected because they could expose one cached handle through independent
+session locks. Measurement-specific device keys must resolve to existing
+instrument entries.
 
 The GUI uses explicit connection mode:
 
@@ -409,6 +487,22 @@ from kohdalab.api import (
 Use `output_rows()` or `output_row()` when writing CSV manually; voltage fields
 are formatted in scientific notation.
 
+Measurement timestamps use RFC 3339 UTC with a `Z` suffix. Every measurement
+CSV is accompanied by `<name>.csv.meta.json`. The sidecar records the run ID,
+redacted config snapshot and SHA-256, software versions, expected and written
+point counts, terminal status (`completed`, `stopped`, `failed`, or
+`interrupted`), and the final CSV SHA-256. Use `write_measurement_rows()` for a
+manual export that must regenerate a matching sidecar.
+
+Measurement runs open their output CSV exclusively. If either the CSV or its
+sidecar already exists, the run fails before point iteration and therefore
+before measurement device I/O; existing data is never truncated implicitly.
+Automatic filename suffixes include microseconds. `write_measurement_rows()`
+also refuses replacement by default. Pass `overwrite=True` only for an
+explicit replacement such as GUI **Save Now**; that path writes and fsyncs a
+temporary CSV before atomically replacing the destination and regenerating its
+hash-matched sidecar.
+
 ## CLI
 
 Run measurements from PowerShell:
@@ -430,7 +524,9 @@ kohdalab-cli --config config\kikuchi.json move-abs --axis x --coordinate measure
 
 The CLI prints start/status/point progress and writes CSV rows to each
 measurement's configured output path. It uses the default `auto_connect=True`
-policy.
+policy. The final `Saved` message is printed only after device cleanup succeeds.
+Exit codes are `0` for a complete run, `1` for runtime or cleanup failure, `2`
+for invalid arguments/configuration, and `130` for keyboard interruption.
 
 ## Notebooks
 
@@ -446,8 +542,8 @@ notebook/srkr_2d_notebook.ipynb
 ```
 
 They use `Experiment`, scan-plan builders, `format_point()`, and notebook live
-plot helpers. Like the CLI, notebooks use the default `auto_connect=True`
-policy unless you construct `Experiment(config, auto_connect=False)`.
+plot helpers. The maintained notebooks explicitly use `auto_connect=False`;
+review the selected config and call `experiment.connect_all()` before a run.
 
 ## GUI
 

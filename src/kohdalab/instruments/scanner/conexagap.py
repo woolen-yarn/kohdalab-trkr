@@ -1,13 +1,35 @@
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
+from string import hexdigits
+from typing import Any
 
 import serial
 
 
 class ConexAgap:
     """Raw controller API for Newport CONEX-AGAP."""
+
+    STATE_CONFIGURATION = "14"
+    STATE_MOVING_CLOSED_LOOP = "28"
+    STATE_STEPPING_OPEN_LOOP = "29"
+    READY_STATES = {"32", "33", "34", "35", "36"}
+    DISABLE_STATES = {"3C", "3D"}
+    STATE_JOGGING_OPEN_LOOP = "46"
+    MOTION_STATES = {
+        STATE_MOVING_CLOSED_LOOP,
+        STATE_STEPPING_OPEN_LOOP,
+        STATE_JOGGING_OPEN_LOOP,
+    }
+    KNOWN_STATES = {
+        STATE_CONFIGURATION,
+        *READY_STATES,
+        *DISABLE_STATES,
+        *MOTION_STATES,
+    }
+    COMMAND_ERROR_CODES = {"@", "A", "B", "C", "D", "G", "I", "J", "M", "S", "U", "V"}
 
     def __init__(
         self,
@@ -19,7 +41,7 @@ class ConexAgap:
         axis: int | str = 1,
         controller_address: int = 1,
         pos_unit: str = "deg",
-    ):
+    ) -> None:
         self.port = port
         self.axis = self._normalize_axis(axis)
         self.controller_address = int(controller_address)
@@ -59,7 +81,7 @@ class ConexAgap:
         axis: int | str | None = None,
         controller_address: int | None = None,
         pos_unit: str | None = None,
-    ):
+    ) -> None:
         if axis is not None:
             self.axis = self._normalize_axis(axis)
         if controller_address is not None:
@@ -67,25 +89,42 @@ class ConexAgap:
         if pos_unit is not None:
             self.pos_unit = pos_unit
 
-    def close(self):
+    def close(self) -> None:
         if self._owns_serial and self.ser is not None:
             self.ser.close()
 
     def is_connected(self) -> bool:
         return self.ser is not None and self.ser.is_open
 
-    def _cmd(self, body: str) -> str:
+    def _cmd(self, body: str, *, expect_response: bool = False) -> str:
+        if not self.is_connected():
+            raise ConnectionError(f"{self.port} CONEX-AGAP serial connection is closed")
         cmd = f"{self.controller_address}{body}\r\n".encode("ascii")
-        self.ser.reset_input_buffer()
-        self.ser.write(cmd)
-        self.ser.flush()
-        return self.ser.readline().decode("ascii", errors="ignore").strip()
+        try:
+            self.ser.reset_input_buffer()
+            self.ser.write(cmd)
+            self.ser.flush()
+            raw = self.ser.readline()
+        except (serial.SerialException, OSError) as e:
+            raise ConnectionError(
+                f"{self.port} CONEX-AGAP serial I/O failed for {body}: {e}"
+            ) from e
+        try:
+            response = raw.decode("ascii").strip()
+        except UnicodeDecodeError as e:
+            raise RuntimeError(f"{self.port} CONEX-AGAP returned non-ASCII data") from e
+        if expect_response and not response:
+            raise TimeoutError(
+                f"{self.port} CONEX-AGAP timed out waiting for {body} response"
+            )
+        return response
 
-    def write(self, body: str):
+    def write(self, body: str) -> None:
         self._cmd(body)
+        self._check_command_error()
 
     def query(self, body: str) -> str:
-        return self._cmd(body)
+        return self._cmd(body, expect_response=True)
 
     def debug_query(self, body: str) -> str:
         resp = self.query(body)
@@ -95,42 +134,86 @@ class ConexAgap:
     def get_state(self) -> str:
         return self.query("TS")
 
-    def _state_code(self) -> str:
-        state = self.get_state()
-        prefix = f"{self.controller_address}TS"
-        if state.startswith(prefix) and len(state) >= len(prefix) + 6:
-            return state[-2:].upper()
-        return state[-2:].upper()
+    def _check_command_error(self) -> None:
+        response = self.query("TE")
+        prefix = f"{self.controller_address}TE"
+        if not response.startswith(prefix):
+            raise RuntimeError(f"Unexpected CONEX-AGAP TE response: {response!r}")
+        error = response[len(prefix) :].upper()
+        if len(error) != 1 or error not in self.COMMAND_ERROR_CODES:
+            raise RuntimeError(f"Unexpected CONEX-AGAP TE response: {response!r}")
+        if error != "@":
+            raise RuntimeError(f"{self.port} CONEX-AGAP command error {error}")
 
-    def _ensure_ready(self, timeout: float = 5.0, poll_interval: float = 0.05):
-        code = self._state_code()
-        if code in {"3C", "3D"}:
+    def _parse_ts(self, response: str | None = None) -> tuple[str, str]:
+        state = response if response is not None else self.get_state()
+        prefix = f"{self.controller_address}TS"
+        if not state.startswith(prefix):
+            raise RuntimeError(f"Unexpected CONEX-AGAP TS response: {state!r}")
+        payload = state[len(prefix) :]
+        if len(payload) != 6 or any(
+            character not in hexdigits for character in payload
+        ):
+            raise RuntimeError(f"Unexpected CONEX-AGAP TS response: {state!r}")
+        return payload[:4].upper(), payload[4:].upper()
+
+    def _read_status(self) -> tuple[str, str]:
+        error, state = self._parse_ts()
+        if error != "0000":
+            raise RuntimeError(f"{self.port} CONEX-AGAP positioner error {error}")
+        if state not in self.KNOWN_STATES:
+            raise RuntimeError(f"{self.port} CONEX-AGAP returned unknown state {state}")
+        return error, state
+
+    def get_state_code(self) -> str:
+        return self._read_status()[1]
+
+    def get_error_code(self) -> str:
+        return self._read_status()[0]
+
+    def _ensure_ready(self, timeout: float = 5.0, poll_interval: float = 0.05) -> None:
+        _error, code = self._read_status()
+        if code in self.READY_STATES:
+            return
+        if code in self.DISABLE_STATES:
             self.write("MM1")
-            t0 = time.time()
+            t0 = time.monotonic()
             while True:
-                code = self._state_code()
-                if code in {"32", "33", "34", "35", "36"}:
+                _error, code = self._read_status()
+                if code in self.READY_STATES:
                     return
-                if time.time() - t0 > timeout:
+                if code not in self.DISABLE_STATES:
+                    raise RuntimeError(
+                        f"{self.port} CONEX-AGAP failed to enter READY state (state {code})"
+                    )
+                if time.monotonic() - t0 > timeout:
                     raise TimeoutError(f"{self.port} failed to leave DISABLE state")
                 time.sleep(poll_interval)
+        raise RuntimeError(
+            f"{self.port} CONEX-AGAP is not ready for motion (state {code})"
+        )
 
     def is_moving(self) -> bool:
-        return self._state_code() in {"28", "29", "46"}
+        return self.get_state_code() in self.MOTION_STATES
 
     def wait_until_stopped(
         self,
         timeout: float = 30.0,
         poll_interval: float = 0.05,
         on_position: Callable[[float], None] | None = None,
-    ):
-        t0 = time.time()
+    ) -> None:
+        t0 = time.monotonic()
         while True:
-            if not self.is_moving():
+            _error, code = self._read_status()
+            if code in self.READY_STATES:
                 return
+            if code not in self.MOTION_STATES:
+                raise RuntimeError(
+                    f"{self.port} CONEX-AGAP motion stopped in unsafe state {code}"
+                )
             if on_position is not None:
                 on_position(self.get_pos_raw())
-            if time.time() - t0 > timeout:
+            if time.monotonic() - t0 > timeout:
                 raise TimeoutError(f"{self.port} motion timeout")
             time.sleep(poll_interval)
 
@@ -142,9 +225,12 @@ class ConexAgap:
         prefix = f"{self.controller_address}TP{self.axis}"
         if not ans.startswith(prefix):
             raise RuntimeError(f"Unexpected TP response: {ans}")
-        return float(ans[len(prefix):])
+        value = float(ans[len(prefix) :])
+        if not math.isfinite(value):
+            raise RuntimeError(f"{self.port} CONEX-AGAP returned non-finite position")
+        return value
 
-    def initialize(self, home: bool = False, timeout: float = 30.0) -> dict:
+    def initialize(self, home: bool = False, timeout: float = 30.0) -> dict[str, Any]:
         self._ensure_ready()
         if home:
             self.home()
@@ -164,6 +250,8 @@ class ConexAgap:
         *,
         on_position: Callable[[float], None] | None = None,
     ) -> float:
+        if isinstance(pos_raw, bool) or not math.isfinite(float(pos_raw)):
+            raise ValueError("CONEX-AGAP absolute target must be finite.")
         self._ensure_ready()
         self.write(f"PA{self.axis}{float(pos_raw):.4f}")
         self.wait_until_stopped(timeout=timeout, on_position=on_position)
@@ -179,6 +267,8 @@ class ConexAgap:
         *,
         on_position: Callable[[float], None] | None = None,
     ) -> float:
+        if isinstance(delta_raw, bool) or not math.isfinite(float(delta_raw)):
+            raise ValueError("CONEX-AGAP relative target must be finite.")
         self._ensure_ready()
         self.write(f"PR{self.axis}{float(delta_raw):.4f}")
         self.wait_until_stopped(timeout=timeout, on_position=on_position)
@@ -187,8 +277,8 @@ class ConexAgap:
             on_position(pos)
         return pos
 
-    def stop(self):
+    def stop(self) -> None:
         self.write(f"ST{self.axis}")
 
-    def home(self):
+    def home(self) -> None:
         self._ensure_ready()

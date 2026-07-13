@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from kohdalab.api.config import with_auto_suffix, with_csv_suffix
+from kohdalab.api.run_metadata import metadata_path
 
 
 def output_settings_from_fields(
@@ -45,8 +46,23 @@ def build_output_path(settings: dict[str, Any]) -> Path:
     normalized = normalize_output_settings(settings)
     output_dir = Path(str(normalized["output_dir"]))
     base_name = with_csv_suffix(str(normalized["filename"]))
-    filename = with_auto_suffix(base_name) if normalized["auto_timestamp_suffix"] else base_name
+    filename = (
+        with_auto_suffix(base_name)
+        if normalized["auto_timestamp_suffix"]
+        else base_name
+    )
     return output_dir / filename
+
+
+def validate_new_output_path(path: str | Path) -> Path:
+    """Reject an output target that would replace measurement data or metadata."""
+    output = Path(path)
+    if output.exists():
+        raise FileExistsError(f"Measurement output already exists: {output}")
+    sidecar = metadata_path(output)
+    if sidecar.exists():
+        raise FileExistsError(f"Measurement metadata already exists: {sidecar}")
+    return output
 
 
 def output_config_for_measurement(settings: dict[str, Any]) -> dict[str, Any]:

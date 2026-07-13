@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
-from kohdalab.api.config import build_range_points, measurement_settings, move_abs_zero, scan_settings
+from kohdalab.api.config import (
+    MAX_SCAN_POINTS_TOTAL,
+    build_range_points,
+    measurement_settings,
+    move_abs_zero,
+    scan_settings,
+)
 
 AXES = {"t", "x", "y"}
 SPATIAL_AXES = {"x", "y"}
@@ -91,10 +98,21 @@ class Srkr2DPlan(Scan2DPlan):
 
 
 def signal_monitor_plan(*, interval_s: float, n_points: int) -> SignalMonitorPlan:
+    interval_s = float(interval_s)
+    raw_n_points = n_points
+    n_points = int(raw_n_points)
+    if not math.isfinite(interval_s) or interval_s < 0:
+        raise ValueError("Signal Monitor interval_s must be finite and non-negative.")
+    if isinstance(raw_n_points, bool) or float(raw_n_points) != n_points:
+        raise ValueError("Signal Monitor n_points must be an integer.")
+    if n_points <= 0 or n_points > MAX_SCAN_POINTS_TOTAL:
+        raise ValueError(
+            f"Signal Monitor n_points must be between 1 and {MAX_SCAN_POINTS_TOTAL}."
+        )
     return SignalMonitorPlan(
-        interval_s=float(interval_s),
-        n_points=int(n_points),
-        summary=f"{int(n_points)} points, dt={float(interval_s):.1f} s",
+        interval_s=interval_s,
+        n_points=n_points,
+        summary=f"{n_points} points, dt={interval_s:.1f} s",
     )
 
 
@@ -106,8 +124,10 @@ def signal_monitor_plan_from_config(
 ) -> SignalMonitorPlan:
     settings = measurement_settings(config, "signal_monitor")
     return signal_monitor_plan(
-        interval_s=float(interval_s if interval_s is not None else settings.get("interval_s", 1.0)),
-        n_points=int(n_points if n_points is not None else settings.get("n_points", 360)),
+        interval_s=float(
+            interval_s if interval_s is not None else settings.get("interval_s", 1.0)
+        ),
+        n_points=n_points if n_points is not None else settings.get("n_points", 360),
     )
 
 
@@ -120,8 +140,20 @@ def trkr_plan(
     coordinate: str,
 ) -> TrkrPlan:
     coordinate = normalize_coordinate(coordinate)
-    target_points = build_range_points(float(minimum_ps), float(maximum_ps), float(step_ps))
-    scan_points = [float(t_zero_ps) + point for point in target_points] if coordinate == "measurement" else target_points
+    if coordinate not in {"measurement", "interface", "instrument"}:
+        raise ValueError(
+            "TRKR coordinate must be measurement, interface, or instrument."
+        )
+    if not math.isfinite(float(t_zero_ps)):
+        raise ValueError("TRKR t_zero_ps must be finite.")
+    target_points = build_range_points(
+        float(minimum_ps), float(maximum_ps), float(step_ps)
+    )
+    scan_points = (
+        [float(t_zero_ps) + point for point in target_points]
+        if coordinate == "measurement"
+        else target_points
+    )
     return TrkrPlan(
         coordinate=coordinate,
         scan_points=scan_points,
@@ -144,11 +176,19 @@ def trkr_plan_from_config(
     scan = scan_settings(config, "trkr")
     zero = move_abs_zero(config)
     return trkr_plan(
-        minimum_ps=float(minimum_ps if minimum_ps is not None else scan.get("min", -50.0)),
-        maximum_ps=float(maximum_ps if maximum_ps is not None else scan.get("max", 300.0)),
+        minimum_ps=float(
+            minimum_ps if minimum_ps is not None else scan.get("min", -50.0)
+        ),
+        maximum_ps=float(
+            maximum_ps if maximum_ps is not None else scan.get("max", 300.0)
+        ),
         step_ps=float(step_ps if step_ps is not None else scan.get("step", 5.0)),
         t_zero_ps=float(t_zero_ps if t_zero_ps is not None else zero.get("t_ps", 0.0)),
-        coordinate=str(coordinate if coordinate is not None else settings.get("coordinate", "measurement")),
+        coordinate=str(
+            coordinate
+            if coordinate is not None
+            else settings.get("coordinate", "measurement")
+        ),
     )
 
 
@@ -165,11 +205,17 @@ def srkr_plan(
     if axis not in {"x", "y"}:
         raise ValueError("SRKR axis must be 'x' or 'y'.")
     coordinate = normalize_scanner_coordinate(coordinate)
+    if coordinate not in {"measurement", "interface"}:
+        raise ValueError("SRKR coordinate must be measurement or interface.")
     zero = {
         "x": float(zero_by_axis["x"]),
         "y": float(zero_by_axis["y"]),
     }
-    target_points = build_range_points(float(minimum_um), float(maximum_um), float(step_um))
+    if not all(math.isfinite(value) for value in zero.values()):
+        raise ValueError("SRKR zero values must be finite.")
+    target_points = build_range_points(
+        float(minimum_um), float(maximum_um), float(step_um)
+    )
     if coordinate == "measurement":
         axis_zero = zero[axis]
         scan_points = [axis_zero + point for point in target_points]
@@ -200,15 +246,23 @@ def srkr_plan_from_config(
     zero = move_abs_zero(config)
     return srkr_plan(
         axis=str(axis if axis is not None else scan.get("axis", "x")),
-        minimum_um=float(minimum_um if minimum_um is not None else scan.get("min", -30.0)),
-        maximum_um=float(maximum_um if maximum_um is not None else scan.get("max", 30.0)),
+        minimum_um=float(
+            minimum_um if minimum_um is not None else scan.get("min", -30.0)
+        ),
+        maximum_um=float(
+            maximum_um if maximum_um is not None else scan.get("max", 30.0)
+        ),
         step_um=float(step_um if step_um is not None else scan.get("step", 1.0)),
         zero_by_axis=zero_by_axis
         or {
             "x": float(zero.get("x_um", 0.0)),
             "y": float(zero.get("y_um", 0.0)),
         },
-        coordinate=str(coordinate if coordinate is not None else settings.get("coordinate", "measurement")),
+        coordinate=str(
+            coordinate
+            if coordinate is not None
+            else settings.get("coordinate", "measurement")
+        ),
     )
 
 
@@ -256,7 +310,9 @@ def _normalize_return_to_zero(value: Any, *, default: bool = True) -> dict[str, 
     return {"fast_axis": default, "slow_axis": default}
 
 
-def _zero_from_config(config: dict[str, Any], zero_by_axis: dict[str, float] | None = None) -> dict[str, float]:
+def _zero_from_config(
+    config: dict[str, Any], zero_by_axis: dict[str, float] | None = None
+) -> dict[str, float]:
     zero = move_abs_zero(config) if zero_by_axis is None else zero_by_axis
     return {
         "t_ps": float(zero.get("t_ps", 0.0)),
@@ -267,21 +323,33 @@ def _zero_from_config(config: dict[str, Any], zero_by_axis: dict[str, float] | N
 
 def _target_points(ranges: dict[str, dict[str, float]], axis: str) -> list[float]:
     axis_range = ranges[axis]
-    return build_range_points(float(axis_range["min"]), float(axis_range["max"]), float(axis_range["step"]))
+    return build_range_points(
+        float(axis_range["min"]), float(axis_range["max"]), float(axis_range["step"])
+    )
 
 
 def _strkr_ranges(ranges: dict[str, Any]) -> dict[str, dict[str, float]]:
     return {
-        "t": _axis_range_from_config(ranges, "t", default_min=-50.0, default_max=300.0, default_step=5.0),
-        "x": _axis_range_from_config(ranges, "x", default_min=-30.0, default_max=30.0, default_step=1.0),
-        "y": _axis_range_from_config(ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0),
+        "t": _axis_range_from_config(
+            ranges, "t", default_min=-50.0, default_max=300.0, default_step=5.0
+        ),
+        "x": _axis_range_from_config(
+            ranges, "x", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
+        "y": _axis_range_from_config(
+            ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
     }
 
 
 def _srkr_2d_ranges(ranges: dict[str, Any]) -> dict[str, dict[str, float]]:
     return {
-        "x": _axis_range_from_config(ranges, "x", default_min=-30.0, default_max=30.0, default_step=1.0),
-        "y": _axis_range_from_config(ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0),
+        "x": _axis_range_from_config(
+            ranges, "x", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
+        "y": _axis_range_from_config(
+            ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
     }
 
 
@@ -299,6 +367,10 @@ def strkr_plan(
     scan_ranges = _strkr_ranges(ranges)
     fast_points = _target_points(scan_ranges, fast)
     slow_points = _target_points(scan_ranges, slow)
+    if len(fast_points) * len(slow_points) > MAX_SCAN_POINTS_TOTAL:
+        raise ValueError(
+            f"STRKR scan exceeds the maximum of {MAX_SCAN_POINTS_TOTAL} total points."
+        )
     return StrkrPlan(
         measurement="strkr",
         fast_axis=fast,
@@ -325,11 +397,17 @@ def strkr_plan_from_config(
     scan = scan_settings(config, "strkr")
     scan_ranges = ranges if ranges is not None else scan.get("ranges", {})
     return strkr_plan(
-        fast_axis=str(fast_axis if fast_axis is not None else scan.get("fast_axis", "t")),
-        slow_axis=str(slow_axis if slow_axis is not None else scan.get("slow_axis", "x")),
+        fast_axis=str(
+            fast_axis if fast_axis is not None else scan.get("fast_axis", "t")
+        ),
+        slow_axis=str(
+            slow_axis if slow_axis is not None else scan.get("slow_axis", "x")
+        ),
         ranges=scan_ranges if isinstance(scan_ranges, dict) else {},
         zero_by_axis=zero_by_axis or _zero_from_config(config),
-        return_to_zero=return_to_zero if return_to_zero is not None else settings.get("return_to_zero"),
+        return_to_zero=return_to_zero
+        if return_to_zero is not None
+        else settings.get("return_to_zero"),
     )
 
 
@@ -347,6 +425,10 @@ def srkr_2d_plan(
     scan_ranges = _srkr_2d_ranges(ranges)
     fast_points = _target_points(scan_ranges, fast)
     slow_points = _target_points(scan_ranges, slow)
+    if len(fast_points) * len(slow_points) > MAX_SCAN_POINTS_TOTAL:
+        raise ValueError(
+            f"SRKR 2D scan exceeds the maximum of {MAX_SCAN_POINTS_TOTAL} total points."
+        )
     return Srkr2DPlan(
         measurement="srkr_2d",
         fast_axis=fast,
@@ -373,9 +455,15 @@ def srkr_2d_plan_from_config(
     scan = scan_settings(config, "srkr_2d")
     scan_ranges = ranges if ranges is not None else scan.get("ranges", {})
     return srkr_2d_plan(
-        fast_axis=str(fast_axis if fast_axis is not None else scan.get("fast_axis", "x")),
-        slow_axis=str(slow_axis if slow_axis is not None else scan.get("slow_axis", "y")),
+        fast_axis=str(
+            fast_axis if fast_axis is not None else scan.get("fast_axis", "x")
+        ),
+        slow_axis=str(
+            slow_axis if slow_axis is not None else scan.get("slow_axis", "y")
+        ),
         ranges=scan_ranges if isinstance(scan_ranges, dict) else {},
         zero_by_axis=zero_by_axis or _zero_from_config(config),
-        return_to_zero=return_to_zero if return_to_zero is not None else settings.get("return_to_zero"),
+        return_to_zero=return_to_zero
+        if return_to_zero is not None
+        else settings.get("return_to_zero"),
     )

@@ -85,7 +85,7 @@ uv sync --all-extras --group dev --frozen
 Run checks before connecting instruments:
 
 ```bash
-uv run ruff check src tests
+uv run ruff check .
 uv run pytest -q
 uv run kohdalab-cli --help
 ```

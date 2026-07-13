@@ -83,7 +83,7 @@ SRKR 2D:        lockin.main, scanner.x, scanner.y
 Done:
 
 - `DeviceSession(auto_connect=True)` と `Experiment(auto_connect=True)` を追加
-- notebook/CLI は default で auto-connect
+- API/CLI は default で auto-connect。maintained notebook は `auto_connect=False` を明示
 - GUI は `Experiment(..., auto_connect=False)` を使い、明示接続済み handle だけで run
 - supplied session は measurement function から disconnect しない
 - standalone measurement function は session が渡されない場合だけ temporary session を作る

@@ -85,6 +85,36 @@ rows = experiment.run_srkr_2d(plan=srkr_2d_plan_from_config(config, fast_axis="x
 
 `Experiment.run_*()` は既存の `experiment.session` を再利用し、run 後も接続を維持します。standalone の `run_trkr(config, ...)` などは、session が渡されない場合だけ一時 session を作り、最後に disconnect します。
 
+決定的に解放する場合は`Experiment`または`DeviceSession`をcontext managerとして使います。`close()`は冪等で`disconnect_all()`と同じです。
+
+```python
+with Experiment(config) as experiment:
+    experiment.connect_all()
+    rows = experiment.run_trkr()
+```
+
+処理本体で例外が発生しても終了時に切断します。本体とcleanupが両方失敗した場合は本体例外を維持し、cleanup失敗をexception noteへ追加します。
+
+`connect_all()`はtransactionalです。後続deviceの接続に失敗した場合、その呼び出し中に取得した所有権だけを逆順で全て解放し、呼び出し前から存在した接続は維持します。rollback失敗は元の接続例外を維持したままexception noteへ追加します。
+
+initializeもhome/origin移動前に接続所有権を登録し、同じhandleをservice層へ渡します。初期化失敗時はその呼び出しで新規取得した所有権だけを解放し、既存接続は維持します。`initialize_xy()`も2軸全体で同じ規則を適用します。エラー前に完了した物理移動そのものは巻き戻せません。
+
+`connected_devices()`はsession辞書への登録だけでなく各wrapperの`is_connected()`を確認します。`False`または状態確認例外は未接続として扱います。stale handleでのdevice操作はdisconnect/reconnectを求める明示エラーにし、stale所有権を解放するdisconnectは引き続き実行できます。
+
+同じcached handleを共有するsessionは、そのhandleのreentrant I/O lockも共有します。同一handleへのsession-level操作、connect、disconnectはsessionをまたいで直列化し、無関係なhardwareへの操作は並行実行できます。
+
+device 接続中でも measurement/output 設定は `experiment.config` で更新できますが、接続中 instrument の resource、port、controller、actuator 定義の変更・削除は拒否されます。先に disconnect してください。`disconnect_all()` は1台の close が失敗しても全deviceの切断を試行し、最後に失敗したreferenceをまとめて報告します。複数の`DeviceSession`が同じcached hardware handleを共有する場合はsessionごとに所有権を持ち、最後の所有者がdisconnectした時点でのみ実接続を閉じます。同一session内の`connect_device()`再呼び出しは冪等です。同じ物理接続を共有する全sessionは完全に同じinstrument configを使う必要があり、不一致は異なるtop-level fieldを示してdevice I/O前に拒否します。最後の所有権解放後は別設定で接続できます。各sessionも接続時のdevice configを固定保存します。nested instrument configの直接変更は後続device操作前に検出され、disconnectでは固定したresource/portを使うため元の接続を取り残しません。
+
+delay-stage measurement coordinate には固定physical zeroが必要です。既知stage profileは設定済みtravelのmin/max中央を使い、最大limitがないcustom stageはfiniteな`zero_pos_mm`を必須とします。現在位置から移動するzeroは推定しません。instrument coordinateはinteger pulseのみ許可し、小数pulseと非有限targetはcontroller command前に拒否します。
+
+scanner変換と初期化のorigin優先順位は、finiteな明示`origin_pos`、finiteな`min_pos`/`max_pos`中央、最後にzeroです。明示originは設定limit内である必要があります。scanner target、hardware reading、scale/origin、software hysteresis distanceはfinite必須で、hysteresis enabledはboolean、directionは対応するpositive/negative aliasのみ許可します。
+
+config loadはlock-in model、controller、stage、actuator名をcanonical化し、同梱driver/catalogと照合します。stage/controllerとactuator/controllerの互換性もsession生成前に検証します。同一cached handleを別session lockから操作しないよう、重複lock-in resource、delay-stage controller/port、scanner controller/port/axisを拒否します。measurement固有device keyも既存instrument entryへ解決できる必要があります。
+
+measurement timestamp は `Z` suffix 付き RFC 3339 UTC です。各 measurement CSV には `<name>.csv.meta.json` が併設され、run ID、redacted config snapshot と SHA-256、software version、予定／保存 point 数、terminal status (`completed`, `stopped`, `failed`, `interrupted`)、CSV SHA-256 を記録します。手動 export で sidecar も同期させる場合は `write_measurement_rows()` を使います。
+
+measurement runはoutput CSVをexclusive createします。CSVまたはsidecarが既に存在する場合、point iterationとdevice I/Oの前に失敗し、既存dataを暗黙にtruncateしません。auto filename suffixはmicrosecondを含みます。`write_measurement_rows()`も既定では置換を拒否し、GUI **Save Now**のような明示置換だけ`overwrite=True`を使います。この経路はtemporary CSVをwrite/fsyncしてからdestinationをatomic replaceし、hashが一致するsidecarを再生成します。
+
 progress や live plot には callback を渡します。
 
 ```python
@@ -165,7 +195,7 @@ kohdalab-cli --config config\kikuchi.json strkr --fast-axis t --slow-axis x
 kohdalab-cli --config config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
 ```
 
-CLI は start/status/point progress を表示し、各 measurement の output 設定に従って CSV を書きます。
+CLI は start/status/point progress を表示し、各 measurement の output 設定に従って CSV を書きます。最終的な `Saved` は device cleanup 成功後だけ表示します。終了コードは、完了が `0`、実行時または cleanup 失敗が `1`、引数/config 不正が `2`、キーボード割り込みが `130` です。
 
 ## Notebooks
 
@@ -180,7 +210,7 @@ notebook/strkr_notebook.ipynb
 notebook/srkr_2d_notebook.ipynb
 ```
 
-これらは `Experiment`、scan-plan builder、`format_point()`、notebook live plot helper を使います。CLI と同じく、明示しなければ `auto_connect=True` です。
+これらは `Experiment`、scan-plan builder、`format_point()`、notebook live plot helper を使います。maintained notebook は `auto_connect=False` を明示しているため、config を確認してから `experiment.connect_all()` を実行します。
 
 ## GUI
 

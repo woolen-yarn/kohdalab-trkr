@@ -46,19 +46,37 @@ def test_delay_stage_unit_and_label(coordinate, unit, label):
 
 def test_scanner_unit_and_label_for_measurement_coordinate():
     assert scanner_unit_for_coordinate("measurement", actuator="TRA12CC") == "um"
-    assert scanner_label_for_coordinate("x", "measurement", actuator="TRA12CC") == "x (um)"
+    assert (
+        scanner_label_for_coordinate("x", "measurement", actuator="TRA12CC") == "x (um)"
+    )
 
 
 def test_scanner_unit_and_label_for_interface_coordinate_use_actuator_unit():
     assert scanner_unit_for_coordinate("interface", actuator="TRA12CC") == "mm"
-    assert scanner_label_for_coordinate("x", "interface", actuator="TRA12CC") == "scanner_x (mm)"
+    assert (
+        scanner_label_for_coordinate("x", "interface", actuator="TRA12CC")
+        == "scanner_x (mm)"
+    )
     assert scanner_unit_for_coordinate("instrument", actuator="AG-M100D") == "deg"
-    assert scanner_label_for_coordinate("y", "instrument", actuator="AG-M100D") == "scanner_y (deg)"
+    assert (
+        scanner_label_for_coordinate("y", "instrument", actuator="AG-M100D")
+        == "scanner_y (deg)"
+    )
 
 
 def test_scanner_connected_unit_overrides_actuator_lookup():
-    assert scanner_unit_for_coordinate("interface", actuator="TRA12CC", connected_unit="deg") == "deg"
-    assert scanner_label_for_coordinate("x", "interface", actuator="TRA12CC", connected_unit="deg") == "scanner_x (deg)"
+    assert (
+        scanner_unit_for_coordinate(
+            "interface", actuator="TRA12CC", connected_unit="deg"
+        )
+        == "deg"
+    )
+    assert (
+        scanner_label_for_coordinate(
+            "x", "interface", actuator="TRA12CC", connected_unit="deg"
+        )
+        == "scanner_x (deg)"
+    )
 
 
 def test_scanner_scale_label_uses_actuator_unit():

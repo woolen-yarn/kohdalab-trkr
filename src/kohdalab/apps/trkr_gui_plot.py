@@ -8,7 +8,7 @@ def sample_axis_ticks(
     positions: list[float], labels: list[str], *, max_ticks: int = 12
 ) -> list[tuple[float, str]]:
     if len(positions) <= max_ticks:
-        return list(zip(positions, labels))
+        return list(zip(positions, labels, strict=True))
 
     step = max(1, (len(positions) - 1) // (max_ticks - 1))
     indexes = list(range(0, len(positions), step))
@@ -40,7 +40,12 @@ def standard_plot_series(
     voltage_scale: float,
 ) -> tuple[SeriesData, SeriesData]:
     x_key = "elapsed_s" if measurement_name == "signal_monitor" else "t_cor_ps"
-    x = [row.get(x_key, row.get("t_ps")) for row in rows]
+    x: list[float] = []
+    for row in rows:
+        value = row.get(x_key, row.get("t_ps"))
+        if value is None:
+            raise ValueError(f"Missing plot x value: {x_key}")
+        x.append(float(value))
     scale1 = signal_scale(signal1_key, voltage_scale)
     scale2 = signal_scale(signal2_key, voltage_scale)
     return (
@@ -71,12 +76,24 @@ def srkr_plot_series(
     signal2_key: str,
     voltage_scale: float,
 ) -> SrkrPlotSeries:
-    x_rows = [row for row in rows if row.get("fast_axis", row.get("scan_axis")) == "x" and row.get("x_um") is not None]
-    y_rows = [row for row in rows if row.get("fast_axis", row.get("scan_axis")) == "y" and row.get("y_um") is not None]
+    x_rows = [
+        row
+        for row in rows
+        if row.get("fast_axis", row.get("scan_axis")) == "x"
+        and row.get("x_um") is not None
+    ]
+    y_rows = [
+        row
+        for row in rows
+        if row.get("fast_axis", row.get("scan_axis")) == "y"
+        and row.get("y_um") is not None
+    ]
     scale1 = signal_scale(signal1_key, voltage_scale)
     scale2 = signal_scale(signal2_key, voltage_scale)
 
-    def data(axis: str, signal_key: str, scale: float, axis_rows: list[dict[str, Any]]) -> SrkrPlotData:
+    def data(
+        axis: str, signal_key: str, scale: float, axis_rows: list[dict[str, Any]]
+    ) -> SrkrPlotData:
         return SrkrPlotData(
             positions=[row[f"{axis}_um"] for row in axis_rows],
             cor_values=[row[f"{axis}_cor_um"] for row in axis_rows],

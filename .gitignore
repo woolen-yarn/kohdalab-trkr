@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.DS_Store
 
 .venv/
 venv/
@@ -10,6 +11,9 @@ env/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
 
 .ipynb_checkpoints/
 

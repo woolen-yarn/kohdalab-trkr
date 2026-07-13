@@ -1,17 +1,34 @@
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
-from datetime import datetime
 from typing import Any
 
+from kohdalab.api.run_metadata import utc_now_iso
 from kohdalab.api.conversion import actuator_pos_to_sample_um, sample_um_to_actuator_pos
 from kohdalab.api.scan_plan import normalize_scanner_coordinate
 from kohdalab.interfaces import connect_scanner as _connect_scanner
 from kohdalab.interfaces import disconnect_scanner as _disconnect_scanner
-from kohdalab.interfaces.scanner import ACTUATOR_NAMES, ACTUATORS
+from kohdalab.interfaces.scanner import ACTUATOR_NAMES, ACTUATORS, Scanner
 
 
-def connect_scanner(config: dict[str, Any]):
+def _finite_float(value: float | int, name: str) -> float:
+    number = float(value)
+    if isinstance(value, bool) or not math.isfinite(number):
+        raise ValueError(f"{name} must be finite.")
+    return number
+
+
+def _validate_control_range(config: dict[str, Any], value: float, name: str) -> None:
+    minimum = config.get("min_pos")
+    maximum = config.get("max_pos")
+    if minimum is not None and value < _finite_float(minimum, "scanner min_pos"):
+        raise ValueError(f"{name} is below scanner min_pos.")
+    if maximum is not None and value > _finite_float(maximum, "scanner max_pos"):
+        raise ValueError(f"{name} is above scanner max_pos.")
+
+
+def connect_scanner(config: dict[str, Any]) -> Scanner:
     return _connect_scanner(config)
 
 
@@ -34,17 +51,19 @@ def list_actuators(controller: str | None = None) -> list[str]:
     for name in ACTUATOR_NAMES:
         settings = ACTUATORS.get(name.upper().replace("-", ""), {})
         controllers = settings.get("controllers")
-        if not controllers or controller_name in {str(item).upper() for item in controllers}:
+        if not controllers or controller_name in {
+            str(item).upper() for item in controllers
+        }:
             names.append(name)
     return sorted(names)
 
 
-def _control_pos(scanner) -> tuple[str, float]:
+def _control_pos(scanner: Scanner) -> tuple[str, float]:
     unit = scanner.get_pos_unit().strip().lower()
     if unit == "mm":
-        return unit, float(scanner.get_pos_mm())
+        return unit, _finite_float(scanner.get_pos_mm(), "scanner position")
     if unit == "deg":
-        return unit, float(scanner.get_pos_deg())
+        return unit, _finite_float(scanner.get_pos_deg(), "scanner position")
     raise ValueError(f"Unsupported scanner control unit: {scanner.get_pos_unit()}")
 
 
@@ -52,7 +71,7 @@ def read_scanner(
     axis: str,
     config: dict[str, Any] | None = None,
     *,
-    scanner=None,
+    scanner: Scanner | None = None,
     zero_um: float | None = None,
 ) -> dict[str, Any]:
     axis = axis.strip().lower()
@@ -68,14 +87,15 @@ def read_scanner(
         "unit": "um",
     }
     if zero_um is not None:
-        row["zero_um"] = float(zero_um)
-        row[f"{axis}_cor_um"] = sample_um - float(zero_um)
+        zero = _finite_float(zero_um, "scanner zero_um")
+        row["zero_um"] = zero
+        row[f"{axis}_cor_um"] = sample_um - zero
     return row
 
 
 def _scanner_progress_callback(
     *,
-    scanner,
+    scanner: Scanner,
     axis: str,
     unit: str,
     coordinate: str,
@@ -86,17 +106,20 @@ def _scanner_progress_callback(
         return None
 
     def emit(control: float) -> None:
-        sample_um = float(actuator_pos_to_sample_um(scanner.config, unit, float(control)))
+        control_value = _finite_float(control, "scanner progress position")
+        sample_um = float(
+            actuator_pos_to_sample_um(scanner.config, unit, control_value)
+        )
         on_position(
             {
-                "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+                "timestamp": utc_now_iso(),
                 "axis": axis,
                 "coordinate": coordinate,
                 "target": target,
                 "actual": sample_um,
                 "unit": "um",
                 f"{axis}_um": sample_um,
-                f"{axis}_{unit}": float(control),
+                f"{axis}_{unit}": control_value,
             }
         )
 
@@ -104,22 +127,23 @@ def _scanner_progress_callback(
 
 
 def _move_control(
-    scanner,
+    scanner: Scanner,
     value: float,
     *,
     on_position: Callable[[float], None] | None = None,
 ) -> None:
+    target = _finite_float(value, "scanner control target")
     unit = scanner.get_pos_unit().strip().lower()
     if unit == "mm":
         if on_position is None:
-            scanner.move_pos_mm(float(value))
+            scanner.move_pos_mm(target)
         else:
-            scanner.move_pos_mm(float(value), on_position=on_position)
+            scanner.move_pos_mm(target, on_position=on_position)
     elif unit == "deg":
         if on_position is None:
-            scanner.move_pos_deg(float(value))
+            scanner.move_pos_deg(target)
         else:
-            scanner.move_pos_deg(float(value), on_position=on_position)
+            scanner.move_pos_deg(target, on_position=on_position)
     else:
         raise ValueError(f"Unsupported scanner control unit: {scanner.get_pos_unit()}")
 
@@ -132,7 +156,11 @@ def _software_hysteresis_settings(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _software_hysteresis_enabled(config: dict[str, Any]) -> bool:
-    controller = str(config.get("controller", config.get("scanner_controller", ""))).strip().upper()
+    controller = (
+        str(config.get("controller", config.get("scanner_controller", "")))
+        .strip()
+        .upper()
+    )
     if controller != "CONEXCC":
         return False
     settings = _software_hysteresis_settings(config)
@@ -143,13 +171,20 @@ def _software_hysteresis_distance_um(config: dict[str, Any]) -> float:
     settings = _software_hysteresis_settings(config)
     for key in ("distance_um", "approach_distance_um", "pre_move_um"):
         if settings.get(key) is not None:
-            return abs(float(settings[key]))
+            distance = _finite_float(settings[key], f"software_hysteresis.{key}")
+            if distance < 0:
+                raise ValueError(f"software_hysteresis.{key} must be non-negative.")
+            return distance
     return 0.0
 
 
 def _software_hysteresis_direction(config: dict[str, Any]) -> str:
     settings = _software_hysteresis_settings(config)
-    direction = str(settings.get("direction", settings.get("approach", "negative"))).strip().lower()
+    direction = (
+        str(settings.get("direction", settings.get("approach", "negative")))
+        .strip()
+        .lower()
+    )
     aliases = {
         "negative": "negative",
         "negative_to_target": "negative",
@@ -161,7 +196,9 @@ def _software_hysteresis_direction(config: dict[str, Any]) -> str:
         "+": "positive",
     }
     if direction not in aliases:
-        raise ValueError("software_hysteresis.direction must be 'negative' or 'positive'.")
+        raise ValueError(
+            "software_hysteresis.direction must be 'negative' or 'positive'."
+        )
     return aliases[direction]
 
 
@@ -184,7 +221,7 @@ def _software_hysteresis_pre_target(
 
 
 def _move_control_with_software_hysteresis(
-    scanner,
+    scanner: Scanner,
     control_target: float,
     *,
     axis: str,
@@ -201,7 +238,7 @@ def _move_control_with_software_hysteresis(
             scanner_config=scanner.config,
             unit=unit,
             control_target=float(control_target),
-    )
+        )
     if pre_target is not None:
         if on_status is not None:
             on_status(f"moving scanner {axis} software hysteresis")
@@ -241,7 +278,7 @@ def move_scanner_abs(
     axis: str,
     coordinate: str,
     value: float,
-    scanner=None,
+    scanner: Scanner | None = None,
     apply_software_hysteresis: bool = True,
     on_status: Callable[[str], None] | None = None,
     on_position: Callable[[dict[str, Any]], None] | None = None,
@@ -250,18 +287,19 @@ def move_scanner_abs(
     if axis not in {"x", "y"}:
         raise ValueError("scanner axis must be 'x' or 'y'.")
     coordinate = coordinate.strip().lower()
+    target = _finite_float(value, "scanner target")
     scanner = scanner or connect_scanner(scanner_config)
     unit, _ = _control_pos(scanner)
     coordinate = _normalize_move_coordinate(coordinate, unit)
     if coordinate == "measurement":
-        control_target = sample_um_to_actuator_pos(scanner.config, unit, float(value))
+        control_target = sample_um_to_actuator_pos(scanner.config, unit, target)
         _move_control_with_software_hysteresis(
             scanner,
             control_target,
             axis=axis,
             unit=unit,
             coordinate=coordinate,
-            target=value,
+            target=target,
             apply_software_hysteresis=apply_software_hysteresis,
             on_status=on_status,
             on_position=on_position,
@@ -269,11 +307,11 @@ def move_scanner_abs(
     elif coordinate == "interface":
         _move_control_with_software_hysteresis(
             scanner,
-            float(value),
+            target,
             axis=axis,
             unit=unit,
             coordinate=coordinate,
-            target=value,
+            target=target,
             apply_software_hysteresis=apply_software_hysteresis,
             on_status=on_status,
             on_position=on_position,
@@ -286,10 +324,10 @@ def move_scanner_abs(
     _, control = _control_pos(scanner)
     sample_um = float(actuator_pos_to_sample_um(scanner.config, unit, control))
     return {
-        "timestamp": datetime.now().isoformat(timespec="milliseconds"),
+        "timestamp": utc_now_iso(),
         "axis": axis,
         "coordinate": coordinate,
-        "target": value,
+        "target": target,
         "actual": sample_um,
         "unit": "um",
         f"{axis}_um": sample_um,
@@ -309,10 +347,10 @@ def initialize_scanner(
     axis: str,
     config: dict[str, Any],
     *,
-    scanner=None,
+    scanner: Scanner | None = None,
     home: bool = True,
     move_to_origin: bool = True,
-    on_status=None,
+    on_status: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     axis = axis.strip().lower()
     if axis not in {"x", "y"}:
@@ -320,19 +358,27 @@ def initialize_scanner(
     emit = on_status or (lambda _status: None)
     emit(f"{axis} scanner initializing")
     scanner = scanner or _connect_scanner(config)
+    unit = scanner.get_pos_unit().strip().lower()
+    origin = 0.0
+    if move_to_origin:
+        if unit not in {"mm", "deg"}:
+            raise ValueError(
+                f"Unsupported scanner control unit: {scanner.get_pos_unit()}"
+            )
+        origin = _finite_float(scanner.origin_pos, "scanner origin_pos")
+        _validate_control_range(scanner.config, origin, "scanner origin_pos")
     info = dict(scanner.initialize(home=home))
     if move_to_origin:
         emit(f"{axis} scanner moving to origin")
-        unit = scanner.get_pos_unit().strip().lower()
         if unit == "mm":
-            scanner.move_pos_mm(scanner.origin_pos)
-        elif unit == "deg":
-            scanner.move_pos_deg(scanner.origin_pos)
+            scanner.move_pos_mm(origin)
         else:
-            raise ValueError(f"Unsupported scanner control unit: {scanner.get_pos_unit()}")
+            scanner.move_pos_deg(origin)
         control_unit, control = _control_pos(scanner)
         info[f"pos_{control_unit}"] = control
-        info["pos_um"] = float(actuator_pos_to_sample_um(scanner.config, control_unit, control))
+        info["pos_um"] = float(
+            actuator_pos_to_sample_um(scanner.config, control_unit, control)
+        )
         info["state"] = scanner.get_state()
         info["moving"] = scanner.is_moving()
     return info

@@ -19,7 +19,14 @@ from .devices import (
     set_lockin_settings,
 )
 from .experiment import Experiment
-from .measurements import run_signal_monitor, run_srkr, run_srkr_2d, run_strkr, run_trkr
+from .measurements import (
+    run_signal_monitor,
+    run_srkr,
+    run_srkr_2d,
+    run_strkr,
+    run_trkr,
+    write_measurement_rows,
+)
 from .measurement_rows import (
     MEASUREMENT_FIELDS,
     SIGNAL_MONITOR_FIELDS,
@@ -56,7 +63,12 @@ from .scan_plan import (
     trkr_plan,
     trkr_plan_from_config,
 )
-from .scan_limits import ScanLimits, delay_stage_scan_limits, scanner_scan_limits
+from .scan_limits import (
+    ScanLimits,
+    delay_stage_scan_limits,
+    preflight_axis_targets,
+    scanner_scan_limits,
+)
 from .status import (
     STATUS_MOVING_DELAY_STAGE,
     STATUS_READING_LOCKIN,
@@ -133,6 +145,7 @@ __all__ = [
     "normalize_config",
     "output_row",
     "output_rows",
+    "preflight_axis_targets",
     "read_last_config_path",
     "resolve_config_path",
     "run_signal_monitor",
@@ -161,4 +174,5 @@ __all__ = [
     "required_devices",
     "validate_config",
     "write_last_config_path",
+    "write_measurement_rows",
 ]

@@ -1,7 +1,18 @@
 from __future__ import annotations
 
-import re
+import logging
 import time
+from typing import Any
+
+from ._validation import (
+    finite_float,
+    integer_response,
+    parse_float_response,
+    resolve_index_from_table,
+    visa_read,
+    visa_write,
+    wait_time,
+)
 
 
 _SENSITIVITY_TABLE = {
@@ -33,6 +44,7 @@ _SENSITIVITY_TABLE = {
     25: 500e-3,
     26: 1.0,
 }
+LOGGER = logging.getLogger(__name__)
 
 _TIME_CONSTANT_TABLE = {
     0: 10e-6,
@@ -73,44 +85,40 @@ _SLOPE_MAP = {
 
 _SLOPE_MAP_INV = {value: key for key, value in _SLOPE_MAP.items()}
 
-_FLOAT_RE = re.compile(r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)(?:[Ee][-+]?\d+)?")
-
 
 class SR830:
-    def __init__(self, inst):
+    def __init__(self, inst: Any) -> None:
         self.inst = inst
         self.inst.write_termination = "\n"
         self.inst.read_termination = "\n"
 
-    def configure(self):
+    def configure(self) -> None:
         return None
 
     def ask(self, cmd: str, delay: float = 0.001) -> str:
         try:
             self.inst.clear()
-        except Exception:
-            pass
-        self.inst.write(cmd)
+        except Exception as error:
+            LOGGER.debug("SR830 VISA clear failed before %s", cmd, exc_info=error)
+        visa_write(self.inst, "SR830", cmd)
         time.sleep(delay)
-        return self.inst.read().strip()
+        response = visa_read(self.inst, "SR830", cmd)
+        if not response:
+            raise TimeoutError(f"SR830 timed out waiting for {cmd} response")
+        return response
 
     def ask_float(self, cmd: str, delay: float = 0.001) -> float:
-        ans = self.ask(cmd, delay=delay)
-        if ans == "":
-            raise RuntimeError(f"Empty response for {cmd}")
-        return float(ans)
+        return finite_float(self.ask(cmd, delay=delay), context=f"SR830 {cmd} response")
 
     @staticmethod
-    def parse_float_response(response: str, *, expected_count: int, cmd: str) -> list[float]:
-        values = [float(match.group(0)) for match in _FLOAT_RE.finditer(response)]
-        if len(values) != expected_count:
-            raise RuntimeError(
-                f"Unexpected response for {cmd}: {response!r} "
-                f"(expected {expected_count} values, got {len(values)})"
-            )
-        return values
+    def parse_float_response(
+        response: str, *, expected_count: int, cmd: str
+    ) -> list[float]:
+        return parse_float_response(response, expected_count=expected_count, cmd=cmd)
 
-    def ask_floats(self, cmd: str, expected_count: int, delay: float = 0.001) -> list[float]:
+    def ask_floats(
+        self, cmd: str, expected_count: int, delay: float = 0.001
+    ) -> list[float]:
         return self.parse_float_response(
             self.ask(cmd, delay=delay),
             expected_count=expected_count,
@@ -118,13 +126,10 @@ class SR830:
         )
 
     @staticmethod
-    def _resolve_index_from_table(value: float, table: dict[int, float], label: str) -> int:
-        best_index, best_value = min(table.items(), key=lambda item: abs(item[1] - value))
-        tolerance = max(1e-15, abs(best_value) * 1e-9)
-        if abs(best_value - value) > tolerance:
-            available = ", ".join(f"{v:.6g}" for v in table.values())
-            raise ValueError(f"Unsupported {label} value: {value}. Available values: {available}")
-        return best_index
+    def _resolve_index_from_table(
+        value: float, table: dict[int, float], label: str
+    ) -> int:
+        return resolve_index_from_table(value, table, label)
 
     @staticmethod
     def _table_value(index: int, table: dict[int, float], label: str) -> float:
@@ -133,19 +138,23 @@ class SR830:
         except KeyError as e:
             raise RuntimeError(f"Unexpected {label} index: {index}") from e
 
-    def get_live_data_raw(self) -> dict:
+    def get_live_data_raw(self) -> dict[str, Any]:
         x, y, r, theta = self.ask_floats("SNAP?1,2,3,4", expected_count=4)
         return {"X": x, "Y": y, "R": r, "Theta": theta}
 
     def get_time_constant(self) -> float:
-        index = int(self.ask_float("OFLT?"))
+        index = integer_response(
+            self.ask_float("OFLT?"), context="SR830 OFLT? response"
+        )
         return self._table_value(index, _TIME_CONSTANT_TABLE, "time constant")
 
     def get_ac_gain(self) -> None:
         return None
 
     def get_sensitivity(self) -> float:
-        index = int(self.ask_float("SENS?"))
+        index = integer_response(
+            self.ask_float("SENS?"), context="SR830 SENS? response"
+        )
         return self._table_value(index, _SENSITIVITY_TABLE, "sensitivity")
 
     def get_ref_freq(self) -> float:
@@ -167,21 +176,27 @@ class SR830:
         return []
 
     def get_coupling(self) -> str:
-        value = int(self.ask_float("ICPL?"))
+        value = integer_response(
+            self.ask_float("ICPL?"), context="SR830 ICPL? response"
+        )
         try:
             return _COUPLING_MAP[value]
         except KeyError as e:
             raise RuntimeError(f"Unexpected coupling mode: {value}") from e
 
     def get_slope(self) -> int:
-        value = int(self.ask_float("OFSL?"))
+        value = integer_response(
+            self.ask_float("OFSL?"), context="SR830 OFSL? response"
+        )
         try:
             return _SLOPE_MAP[value]
         except KeyError as e:
             raise RuntimeError(f"Unexpected slope mode: {value}") from e
 
-    def get_overload_status(self) -> dict:
-        value = int(self.ask_float("LIAS?"))
+    def get_overload_status(self) -> dict[str, Any]:
+        value = integer_response(
+            self.ask_float("LIAS?"), context="SR830 LIAS? response"
+        )
         input_overload = bool(value & (1 << 0))
         return {
             "overload": input_overload,
@@ -195,44 +210,52 @@ class SR830:
         }
 
     def get_wait_time(self, multiplier: float = 4.0) -> float:
-        return multiplier * self.get_time_constant()
+        return wait_time(multiplier, self.get_time_constant())
 
-    def auto_phase(self):
-        self.inst.write("APHS")
+    def auto_phase(self) -> None:
+        visa_write(self.inst, "SR830", "APHS")
 
-    def auto_sensitivity(self):
-        self.inst.write("AGAN")
+    def auto_sensitivity(self) -> None:
+        visa_write(self.inst, "SR830", "AGAN")
 
-    def auto_measure(self):
-        self.inst.write("AGAN")
+    def auto_measure(self) -> None:
+        visa_write(self.inst, "SR830", "AGAN")
 
-    def set_sensitivity(self, value: float):
-        index = self._resolve_index_from_table(float(value), _SENSITIVITY_TABLE, "sensitivity")
-        self.inst.write(f"SENS {index}")
+    def set_sensitivity(self, value: float) -> None:
+        index = self._resolve_index_from_table(value, _SENSITIVITY_TABLE, "sensitivity")
+        visa_write(self.inst, "SR830", f"SENS {index}")
 
-    def set_time_constant(self, value: float):
-        index = self._resolve_index_from_table(float(value), _TIME_CONSTANT_TABLE, "time constant")
-        self.inst.write(f"OFLT {index}")
+    def set_time_constant(self, value: float) -> None:
+        index = self._resolve_index_from_table(
+            value, _TIME_CONSTANT_TABLE, "time constant"
+        )
+        visa_write(self.inst, "SR830", f"OFLT {index}")
 
-    def set_ac_gain(self, value: float):
+    def set_ac_gain(self, value: float) -> None:
         raise NotImplementedError("SR830 does not expose SR7265-style AC gain.")
 
-    def set_coupling(self, value: str):
+    def set_coupling(self, value: str) -> None:
+        if not isinstance(value, str):
+            raise ValueError("coupling must be AC or DC.")
         normalized = value.strip().upper()
         try:
             index = _COUPLING_MAP_INV[normalized]
         except KeyError as e:
             raise ValueError(f"Unsupported coupling: {value}. Use AC or DC.") from e
-        self.inst.write(f"ICPL {index}")
+        visa_write(self.inst, "SR830", f"ICPL {index}")
 
-    def set_slope(self, value: int):
+    def set_slope(self, value: int) -> None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("slope must be one of 6, 12, 18, 24 dB/oct.")
         try:
-            index = _SLOPE_MAP_INV[int(value)]
+            index = _SLOPE_MAP_INV[value]
         except KeyError as e:
-            raise ValueError(f"Unsupported slope: {value}. Use one of 6, 12, 18, 24 dB/oct.") from e
-        self.inst.write(f"OFSL {index}")
+            raise ValueError(
+                f"Unsupported slope: {value}. Use one of 6, 12, 18, 24 dB/oct."
+            ) from e
+        visa_write(self.inst, "SR830", f"OFSL {index}")
 
-    def close(self):
+    def close(self) -> None:
         self.inst.close()
 
     def is_connected(self) -> bool:

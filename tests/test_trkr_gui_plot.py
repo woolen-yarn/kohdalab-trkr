@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from kohdalab.apps.trkr_gui_plot import (
     sample_axis_ticks,
     scan2d_uses_equal_spatial_units,
@@ -15,6 +17,11 @@ def test_sample_axis_ticks_keeps_short_series():
     assert sample_axis_ticks([1.0, 2.0], ["a", "b"]) == [(1.0, "a"), (2.0, "b")]
 
 
+def test_sample_axis_ticks_rejects_mismatched_positions_and_labels():
+    with pytest.raises(ValueError, match=r"zip\(\) argument 2 is shorter"):
+        sample_axis_ticks([1.0, 2.0], ["a"])
+
+
 def test_sample_axis_ticks_decimates_long_series_and_keeps_last():
     positions = [float(i) for i in range(25)]
     labels = [str(i) for i in range(25)]
@@ -24,6 +31,15 @@ def test_sample_axis_ticks_decimates_long_series_and_keeps_last():
     assert ticks[0] == (0.0, "0")
     assert ticks[-1] == (24.0, "24")
     assert len(ticks) <= 7
+
+
+def test_sample_axis_ticks_appends_unaligned_last_position():
+    positions = [float(i) for i in range(24)]
+    labels = [str(i) for i in range(24)]
+
+    ticks = sample_axis_ticks(positions, labels, max_ticks=6)
+
+    assert ticks[-2:] == [(20.0, "20"), (23.0, "23")]
 
 
 def test_signal_scale_leaves_theta_unscaled():
@@ -75,11 +91,40 @@ def test_standard_plot_series_for_trkr_theta_mode():
     assert series2.y == [12.0, 13.0]
 
 
+def test_standard_plot_series_rejects_missing_x_value():
+    with pytest.raises(ValueError, match="Missing plot x value: t_cor_ps"):
+        standard_plot_series(
+            [{"R_V": 0.001, "Theta_deg": 12.0}],
+            measurement_name="trkr",
+            signal1_key="R_V",
+            signal2_key="Theta_deg",
+            voltage_scale=1000.0,
+        )
+
+
 def test_srkr_plot_series_splits_axes_and_scales_signals():
     rows = [
-        {"fast_axis": "x", "x_um": 10.0, "x_cor_um": 1.0, "R_V": 0.001, "Theta_deg": 12.0},
-        {"fast_axis": "y", "y_um": 20.0, "y_cor_um": 2.0, "R_V": 0.002, "Theta_deg": 13.0},
-        {"fast_axis": "x", "x_um": 30.0, "x_cor_um": 3.0, "R_V": 0.003, "Theta_deg": 14.0},
+        {
+            "fast_axis": "x",
+            "x_um": 10.0,
+            "x_cor_um": 1.0,
+            "R_V": 0.001,
+            "Theta_deg": 12.0,
+        },
+        {
+            "fast_axis": "y",
+            "y_um": 20.0,
+            "y_cor_um": 2.0,
+            "R_V": 0.002,
+            "Theta_deg": 13.0,
+        },
+        {
+            "fast_axis": "x",
+            "x_um": 30.0,
+            "x_cor_um": 3.0,
+            "R_V": 0.003,
+            "Theta_deg": 14.0,
+        },
     ]
 
     series = srkr_plot_series(
