@@ -290,10 +290,8 @@ class LiveStatusWorker(QtCore.QObject):
         self._busy = False
 
     def _lockin_ref(self) -> str | None:
-        for ref, connected in self.experiment.connected_devices().items():
-            if connected and ref.startswith("lockin."):
-                return ref
-        return None
+        key = next(iter(self.experiment.lockins), None)
+        return None if key is None else f"lockin.{key}"
 
     def _read_lockin_settings(self, ref: str) -> dict[str, Any] | None:
         try:
