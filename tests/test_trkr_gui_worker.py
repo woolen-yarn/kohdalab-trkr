@@ -393,6 +393,25 @@ def test_live_status_worker_reads_lockin_only_status():
     assert statuses == [({"sensitivity_v": 1.0}, {"X": 1.0}, {"overload": False})]
 
 
+def test_live_status_worker_uses_tracked_lockin_when_health_snapshot_is_false():
+    class UnhealthySnapshotExperiment(FakeExperiment):
+        def connected_devices(self):
+            return {"lockin.main": False}
+
+    experiment = UnhealthySnapshotExperiment()
+    worker = LiveStatusWorker(experiment=experiment)
+    statuses = _capture_signal_args(worker.lockin_status_ready)
+
+    worker.read_lockin()
+
+    assert experiment.calls == [
+        ("read_lockin_settings", {"ref": "lockin.main"}),
+        ("read_lockin_signal", {"ref": "lockin.main"}),
+        ("read_lockin_overload", {"ref": "lockin.main"}),
+    ]
+    assert statuses == [({"sensitivity_v": 1.0}, {"X": 1.0}, {"overload": False})]
+
+
 def test_live_status_worker_reports_full_status_failure_and_recovers_busy_state():
     class FailingExperiment(FakeExperiment):
         def read_live_status(self, *, skip_busy_positions=False):
