@@ -65,7 +65,7 @@ uv build --no-sources
 
 ## Project Status
 
-The current development version is `0.2.0`. It includes strict config and scan
+The current development version is `0.2.1`. It includes strict config and scan
 preflight validation, fail-closed controller handling, transport-level driver
 tests, package smoke tests, and measurement provenance sidecars. Hardware
 operation still requires the checks described in [SAFETY.md](SAFETY.md) and the

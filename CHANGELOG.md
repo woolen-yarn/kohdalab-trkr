@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.2.1] - 2026-07-13
+
 - Raised the mandatory branch-aware coverage floor to 100% after covering every
   shipped statement and branch, making full coverage a durable CI invariant.
 - Bounded supported Python versions to the CI-tested 3.13 and 3.14 releases,
