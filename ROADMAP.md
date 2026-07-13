@@ -15,6 +15,12 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Add validation checks for config ranges, instrument resources, timing parameters, and output paths.
 - Preserve more run metadata with measurement outputs for later analysis and reproducibility.
 
+## v0.2.1 - Reliability Hardening
+
+- Enforce complete statement and branch coverage across supported Python and operating-system combinations.
+- Harden device-session ownership, measurement cleanup, atomic output recovery, and controller validation.
+- Verify locked dependencies and reproducible wheel/source distributions in CI.
+
 ## v0.3.0 - Hardware Abstraction
 
 - Clarify stable public driver/session APIs for supported instruments.
