@@ -176,6 +176,7 @@ def test_experiment_from_config_forwards_loaded_config_and_policy(
     [
         ("connect_device", "connect_device", ("lockin.main",), {}),
         ("read_position", "read_position", (), {}),
+        ("read_position", "read_position", (), {"skip_busy": True}),
         ("read_lockin_signal", "read_lockin_signal", ("lockin.main",), {}),
         ("read_lockin_settings", "read_lockin_settings", ("lockin.main",), {}),
         ("read_lockin_overload", "read_lockin_overload", ("lockin.main",), {}),
@@ -198,6 +199,12 @@ def test_experiment_from_config_forwards_loaded_config_and_policy(
             },
         ),
         ("read_live_status", "read_live_status", (), {}),
+        (
+            "read_live_status",
+            "read_live_status",
+            (),
+            {"skip_busy_positions": True},
+        ),
         (
             "initialize_delay_stage",
             "initialize_delay_stage",

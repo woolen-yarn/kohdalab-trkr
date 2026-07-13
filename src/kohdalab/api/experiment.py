@@ -202,8 +202,10 @@ class Experiment:
             slow_axis=slow_axis,
         )
 
-    def read_position(self) -> Position:
+    def read_position(self, *, skip_busy: bool = False) -> Position:
         with self._operation(config_update_safe=True):
+            if skip_busy:
+                return self.session.read_position(skip_busy=True)
             return self.session.read_position()
 
     def read_lockin_signal(self, ref: str = "signal") -> dict[str, Any]:
@@ -244,8 +246,10 @@ class Experiment:
                 slope=slope,
             )
 
-    def read_live_status(self) -> LiveStatus:
+    def read_live_status(self, *, skip_busy_positions: bool = False) -> LiveStatus:
         with self._operation(config_update_safe=True):
+            if skip_busy_positions:
+                return self.session.read_live_status(skip_busy_positions=True)
             return self.session.read_live_status()
 
     def initialize_delay_stage(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from threading import Lock
 
 import pytest
 
@@ -592,6 +593,57 @@ def test_read_position_combines_connected_stage_and_scanners(monkeypatch):
     assert position.y_um == 4.0
     assert position.scanner_x_value == 0.003
     assert position.scanner_y_value == 0.004
+
+
+def test_live_status_skips_busy_position_device_without_blocking_lockin(monkeypatch):
+    session = DeviceSession(config_with_devices(), auto_connect=False)
+    session.lockins["main"] = "lockin-handle"
+    session.delay_stages["t"] = "stage-handle"
+    session.scanners["x"] = "x-handle"
+    session.scanners["y"] = "y-handle"
+    busy_stage_lock = Lock()
+    busy_scanner_lock = Lock()
+    busy_stage_lock.acquire()
+    busy_scanner_lock.acquire()
+    session._io_locks["delay_stage"]["t"] = busy_stage_lock
+    session._io_locks["scanner"]["y"] = busy_scanner_lock
+
+    monkeypatch.setattr(
+        session_module,
+        "read_delay_stage",
+        lambda *_args, **_kwargs: pytest.fail("busy delay stage was read"),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "read_scanner",
+        lambda axis, _config, *, scanner: {f"{axis}_um": 7.0},
+    )
+    monkeypatch.setattr(
+        session_module,
+        "read_lockin_signal",
+        lambda _config, *, lockin: {"X": 1.0, "Y": 2.0, "R": 3.0, "Theta": 4.0},
+    )
+    monkeypatch.setattr(
+        session_module,
+        "read_lockin_settings",
+        lambda _config, *, lockin: {"Sensitivity": 0.1, "Time Constant": 0.2},
+    )
+    monkeypatch.setattr(
+        session_module,
+        "read_lockin_overload",
+        lambda _config, *, lockin: {"overload": False},
+    )
+
+    try:
+        status = session.read_live_status(skip_busy_positions=True)
+    finally:
+        busy_stage_lock.release()
+        busy_scanner_lock.release()
+
+    assert status.position.t_ps is None
+    assert status.position.x_um == 7.0
+    assert status.position.y_um is None
+    assert status.signal == {"X": 1.0, "Y": 2.0, "R": 3.0, "Theta": 4.0}
 
 
 def test_lockin_operations_and_live_status_use_connected_handle(monkeypatch):
