@@ -126,8 +126,13 @@ class FakeExperiment:
             on_position({f"{axis}_um": value - 0.5})
         return {"axis": axis, "value": value}
 
-    def read_live_status(self):
-        self.calls.append(("read_live_status", {}))
+    def read_live_status(self, *, skip_busy_positions=False):
+        self.calls.append(
+            (
+                "read_live_status",
+                {"skip_busy_positions": skip_busy_positions},
+            )
+        )
         return LiveStatus(
             position=Position(t_ps=1.0),
             signal={"X": 1.0, "Y": 2.0, "R": 3.0, "Theta": 4.0},
@@ -367,7 +372,7 @@ def test_live_status_worker_reads_full_status_and_overload():
 
     worker.read_full()
 
-    assert [call[0] for call in experiment.calls] == ["read_live_status"]
+    assert experiment.calls == [("read_live_status", {"skip_busy_positions": True})]
     status, overload = statuses[0]
     assert status.position.t_ps == 1.0
     assert overload == {"overload": False}
@@ -390,7 +395,8 @@ def test_live_status_worker_reads_lockin_only_status():
 
 def test_live_status_worker_reports_full_status_failure_and_recovers_busy_state():
     class FailingExperiment(FakeExperiment):
-        def read_live_status(self):
+        def read_live_status(self, *, skip_busy_positions=False):
+            del skip_busy_positions
             raise RuntimeError("simulated live status failure")
 
     worker = LiveStatusWorker(experiment=FailingExperiment())

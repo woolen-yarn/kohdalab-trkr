@@ -319,7 +319,7 @@ class LiveStatusWorker(QtCore.QObject):
             return
         self._busy = True
         try:
-            status = self.experiment.read_live_status()
+            status = self.experiment.read_live_status(skip_busy_positions=True)
             self.live_status_ready.emit(status, status.lockin_overload)
         except Exception as e:
             self.error_occurred.emit(str(e))

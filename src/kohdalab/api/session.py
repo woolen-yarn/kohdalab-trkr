@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from copy import deepcopy
 from threading import RLock
 from types import TracebackType
@@ -224,11 +225,33 @@ class DeviceSession:
             for kind, key in sorted(refs)
         }
 
-    def read_position(self) -> Position:
+    @contextmanager
+    def _position_read_lock(
+        self, kind: str, key: str, *, skip_busy: bool
+    ) -> Iterator[bool]:
+        lock = self._device_lock(kind, key)
+        if not skip_busy:
+            with lock:
+                yield True
+            return
+
+        lock_with_acquire = cast(Any, lock)
+        acquired = bool(lock_with_acquire.acquire(False))
+        try:
+            yield acquired
+        finally:
+            if acquired:
+                lock_with_acquire.release()
+
+    def read_position(self, *, skip_busy: bool = False) -> Position:
         rows: list[dict[str, Any]] = []
         for key in self._connected_keys("delay_stage"):
             config = self._instrument_config("delay_stage", key)
-            with self._device_lock("delay_stage", key):
+            with self._position_read_lock(
+                "delay_stage", key, skip_busy=skip_busy
+            ) as acquired:
+                if not acquired:
+                    continue
                 delay_stage = self._connected_handle("delay_stage", key)
                 if delay_stage is None:
                     continue
@@ -239,7 +262,11 @@ class DeviceSession:
             if axis is None:
                 continue
             config = self._instrument_config("scanner", key)
-            with self._device_lock("scanner", key):
+            with self._position_read_lock(
+                "scanner", key, skip_busy=skip_busy
+            ) as acquired:
+                if not acquired:
+                    continue
                 scanner = self._connected_handle("scanner", key)
                 if scanner is None:
                     continue
@@ -316,7 +343,7 @@ class DeviceSession:
                 slope=slope,
             )
 
-    def read_live_status(self) -> LiveStatus:
+    def read_live_status(self, *, skip_busy_positions: bool = False) -> LiveStatus:
         signal = None
         settings = None
         overload = None
@@ -326,9 +353,14 @@ class DeviceSession:
             signal = self.read_lockin_signal(f"lockin.{key}")
             settings = self.read_lockin_settings(f"lockin.{key}")
             overload = self.read_lockin_overload(f"lockin.{key}")
+        position = (
+            self.read_position(skip_busy=True)
+            if skip_busy_positions
+            else self.read_position()
+        )
         return LiveStatus(
             connected=self.connected_devices(),
-            position=self.read_position(),
+            position=position,
             signal=signal,
             lockin_settings=settings,
             lockin_overload=overload,
