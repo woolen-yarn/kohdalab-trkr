@@ -348,6 +348,8 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.move_worker: MoveWorker | None = None
         self.live_thread: QtCore.QThread | None = None
         self.live_worker: LiveStatusWorker | None = None
+        self.lockin_live_thread: QtCore.QThread | None = None
+        self.lockin_live_worker: LiveStatusWorker | None = None
         self.resource_thread: QtCore.QThread | None = None
         self.resource_worker: ResourceListWorker | None = None
         self.running_move_axis: str | None = None
@@ -2398,6 +2400,23 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.live_thread.start()
         return self.live_worker
 
+    def _ensure_lockin_live_worker(self) -> LiveStatusWorker:
+        if self.lockin_live_worker is not None:
+            return self.lockin_live_worker
+        experiment = self.experiment or self._ensure_experiment()
+        self.lockin_live_thread = QtCore.QThread(self)
+        self.lockin_live_worker = LiveStatusWorker(experiment=experiment)
+        self.lockin_live_worker.moveToThread(self.lockin_live_thread)
+        self.lockin_live_worker.lockin_status_ready.connect(
+            self.handle_lockin_status_ready
+        )
+        self.lockin_live_worker.error_occurred.connect(self.handle_live_status_error)
+        self.lockin_live_thread.finished.connect(self.lockin_live_worker.deleteLater)
+        self.lockin_live_thread.finished.connect(self.lockin_live_thread.deleteLater)
+        self.lockin_live_thread.finished.connect(self.cleanup_lockin_live_thread)
+        self.lockin_live_thread.start()
+        return self.lockin_live_worker
+
     def _invoke_live_worker(self, slot_name: str) -> None:
         worker = self._ensure_live_worker()
         invoked = QtCore.QMetaObject.invokeMethod(
@@ -2405,6 +2424,14 @@ class TRKRGui(QtWidgets.QMainWindow):
         )
         if not invoked:
             raise RuntimeError(f"Could not queue live status request: {slot_name}")
+
+    def _invoke_lockin_live_worker(self) -> None:
+        worker = self._ensure_lockin_live_worker()
+        invoked = QtCore.QMetaObject.invokeMethod(
+            worker, "read_lockin", QtCore.Qt.ConnectionType.QueuedConnection
+        )
+        if not invoked:
+            raise RuntimeError("Could not queue lock-in live status request")
 
     def _missing_required_devices(
         self, measurement: str, axis: str | None = None
@@ -2565,6 +2592,10 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.live_thread = None
         self.live_worker = None
 
+    def cleanup_lockin_live_thread(self) -> None:
+        self.lockin_live_thread = None
+        self.lockin_live_worker = None
+
     def read_live_status(self) -> None:
         if self.experiment is None:
             self._ensure_experiment()
@@ -2598,7 +2629,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self._invoke_live_worker("read_full")
 
     def _request_lockin_live_status(self) -> None:
-        self._invoke_live_worker("read_lockin")
+        self._invoke_lockin_live_worker()
 
     def handle_live_status_ready(self, status: object, overload: object) -> None:
         if not isinstance(status, LiveStatus):
@@ -3670,6 +3701,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.measurement_thread,
             self.move_thread,
             self.live_thread,
+            self.lockin_live_thread,
             self.resource_thread,
             self.device_thread,
         ):

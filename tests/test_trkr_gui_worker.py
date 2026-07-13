@@ -1525,9 +1525,14 @@ def test_gui_move_fallback_result_invalid_start_and_thread_cleanup(monkeypatch):
 
     gui.live_thread = object()  # type: ignore[assignment]
     gui.live_worker = object()  # type: ignore[assignment]
+    gui.lockin_live_thread = object()  # type: ignore[assignment]
+    gui.lockin_live_worker = object()  # type: ignore[assignment]
     gui.cleanup_live_thread()
+    gui.cleanup_lockin_live_thread()
     assert gui.live_thread is None
     assert gui.live_worker is None
+    assert gui.lockin_live_thread is None
+    assert gui.lockin_live_worker is None
     gui._shutdown_complete = True
     gui.close()
 
@@ -2039,17 +2044,19 @@ def test_gui_async_shutdown_drain_and_worker_thread_finalization(monkeypatch):
         def wait(self, timeout):
             self.calls.append(("wait", timeout))
 
-    threads = [Thread() for _ in range(5)]
+    threads = [Thread() for _ in range(6)]
     gui.measurement_thread = threads[0]  # type: ignore[assignment]
     gui.move_thread = threads[1]  # type: ignore[assignment]
     gui.live_thread = threads[2]  # type: ignore[assignment]
-    gui.resource_thread = threads[3]  # type: ignore[assignment]
-    gui.device_thread = threads[4]  # type: ignore[assignment]
+    gui.lockin_live_thread = threads[3]  # type: ignore[assignment]
+    gui.resource_thread = threads[4]  # type: ignore[assignment]
+    gui.device_thread = threads[5]  # type: ignore[assignment]
     gui._close_worker_threads()
     assert all(thread.calls == ["quit", ("wait", 2000)] for thread in threads)
     gui.measurement_thread = None
     gui.move_thread = None
     gui.live_thread = None
+    gui.lockin_live_thread = None
     gui.resource_thread = None
     gui.device_thread = None
     gui.experiment = None
@@ -2163,8 +2170,12 @@ def test_gui_actual_lockin_signal_overload_and_live_invocation_ui(monkeypatch):
     gui = TRKRGui()
     gui.live_timer.stop()
     invoked: list[str] = []
+    lockin_invoked: list[bool] = []
     errors: list[str] = []
     monkeypatch.setattr(gui, "_invoke_live_worker", invoked.append)
+    monkeypatch.setattr(
+        gui, "_invoke_lockin_live_worker", lambda: lockin_invoked.append(True)
+    )
     monkeypatch.setattr(gui, "handle_live_status_error", errors.append)
 
     gui._apply_lockin_settings(
@@ -2187,7 +2198,8 @@ def test_gui_actual_lockin_signal_overload_and_live_invocation_ui(monkeypatch):
     gui._request_full_live_status()
     gui._request_lockin_live_status()
     gui.handle_live_status_ready(object(), None)
-    assert invoked == ["read_full", "read_lockin"]
+    assert invoked == ["read_full"]
+    assert lockin_invoked == [True]
     assert errors == ["Unexpected live status payload."]
     gui._shutdown_complete = True
     gui.close()
