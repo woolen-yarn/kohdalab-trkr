@@ -29,7 +29,7 @@ Repository = "https://github.com/woolen-yarn/kohdalab-trkr"
 
 [project.optional-dependencies]
 gui = [
-    "numpy>=2.4.6",
+    "numpy>=2.5.1",
     "pyside6>=6.11.1",
     "pyqtgraph>=0.14.0",
 ]
@@ -41,7 +41,7 @@ notebook = [
     "jupyter",
     "jupyter-server>=2.20.0",
     "jupyterlab>=4.6.1",
-    "matplotlib>=3.10.8",
+    "matplotlib>=3.11.0",
     "mistune>=3.3.3",
     "pandas>=3.0.2",
     "soupsieve>=2.8.4",
@@ -135,8 +135,8 @@ dev = [
     "jupyterlab>=4.6.1",
     "ipykernel>=6.29.5",
     "ipython",
-    "numpy>=2.4.6",
-    "matplotlib>=3.10.8",
+    "numpy>=2.5.1",
+    "matplotlib>=3.11.0",
     "anywidget>=0.10.0",
     "pyside6>=6.11.1",
     "pyqtgraph>=0.14.0",
