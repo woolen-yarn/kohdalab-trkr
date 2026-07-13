@@ -990,6 +990,23 @@ def test_gui_does_not_apply_stale_full_position_during_move_or_measurement(
     assert gui._current_position_values == {"t": None, "x": None, "y": None}
     assert gui.signal_labels["X"].text() == "0.250 V"
 
+    gui.handle_live_status_ready(
+        gui_module.LiveStatus(
+            position=gui_module.Position(t_ps=96.0, x_um=95.0, y_um=94.0),
+            lockin_settings={
+                "Sensitivity": 1e-3,
+                "Time Constant": 0.3,
+                "Ref. Freq": 137.0,
+            },
+            lockin_overload={"overload": False},
+        ),
+        {"overload": True},
+    )
+
+    assert gui._current_position_values == {"t": None, "x": None, "y": None}
+    assert gui.sensitivity_label.text() != "-"
+    assert gui.overload_label.text() != "-"
+
     gui.move_thread = None
     gui.measurement_thread = object()  # type: ignore[assignment]
     gui.handle_live_status_ready(
@@ -1571,6 +1588,7 @@ def test_gui_read_live_status_routes_for_busy_move_and_idle_states(monkeypatch):
 
     gui.device_command_active = True
     gui.read_live_status()
+    gui.experiment = object()  # type: ignore[assignment]
     gui.device_command_active = False
     gui.move_thread = object()  # type: ignore[assignment]
     gui.read_live_status()
@@ -2644,6 +2662,13 @@ def test_gui_live_worker_reuse_and_queued_invocation(monkeypatch):
             gui_module.QtCore.Qt.ConnectionType.QueuedConnection,
         )
     ]
+    monkeypatch.setattr(
+        gui_module.QtCore.QMetaObject,
+        "invokeMethod",
+        lambda _target, _slot, _connection: False,
+    )
+    with pytest.raises(RuntimeError, match="Could not queue live status request"):
+        gui._invoke_live_worker("request_full_status")
     gui.live_worker = None
     _close_gui(gui)
 
