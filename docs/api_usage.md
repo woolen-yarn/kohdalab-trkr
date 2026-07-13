@@ -82,6 +82,10 @@ Changing measurement or output settings through `experiment.config` is allowed
 while devices are connected. Changing or removing the config of a connected
 instrument is rejected; disconnect it first so an existing handle can never be
 used with a different resource, port, controller, or actuator definition.
+Read-only status operations do not block measurement/output config refreshes;
+device-specific I/O locks still serialize access to the same instrument while
+unrelated instruments can operate concurrently. Motion, initialization, and
+measurement operations continue to block config changes.
 `disconnect_all()` attempts every connected device even if one close operation
 fails, then raises one error containing all failed references.
 When multiple `DeviceSession` instances resolve to the same cached hardware

@@ -419,6 +419,26 @@ def test_active_measurement_blocks_close_and_config_change(monkeypatch, tmp_path
     assert experiment.config["measurements"]["marker"] == 1
 
 
+def test_live_status_read_allows_config_refresh_but_still_blocks_close(
+    monkeypatch, tmp_path
+):
+    experiment = Experiment(minimal_config(tmp_path), auto_connect=False)
+    updated = deepcopy(experiment.config)
+    updated["measurements"]["marker"] = 1
+    sentinel = object()
+
+    def read_live_status():
+        with pytest.raises(RuntimeError, match="operation is active"):
+            experiment.close()
+        experiment.config = updated
+        return sentinel
+
+    monkeypatch.setattr(experiment.session, "read_live_status", read_live_status)
+
+    assert experiment.read_live_status() is sentinel
+    assert experiment.config["measurements"]["marker"] == 1
+
+
 def test_measurement_receives_config_snapshot(monkeypatch, tmp_path):
     experiment = Experiment(minimal_config(tmp_path), auto_connect=False)
 
