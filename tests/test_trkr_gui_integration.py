@@ -941,6 +941,29 @@ def test_gui_live_worker_applies_status_and_cleans_unexpected_exit(monkeypatch):
     _close_gui(gui)
 
 
+def test_gui_existing_experiment_is_reused_without_config_update_for_live_worker(
+    monkeypatch,
+):
+    gui = _new_gui(monkeypatch)
+    experiment = object()
+    gui.experiment = experiment  # type: ignore[assignment]
+    FakeLiveWorker.latest = None
+    monkeypatch.setattr(gui_module.QtCore, "QThread", FakeThread)
+    monkeypatch.setattr(gui_module, "LiveStatusWorker", FakeLiveWorker)
+    monkeypatch.setattr(
+        gui,
+        "_ensure_experiment",
+        lambda: pytest.fail("live status must not reapply the experiment config"),
+    )
+
+    worker = gui._ensure_live_worker()
+
+    assert worker.experiment is experiment
+    assert gui.live_thread is not None
+    gui.live_thread.finished.emit()
+    _close_gui(gui)
+
+
 def test_gui_live_status_rejects_malformed_payload(monkeypatch):
     gui = _new_gui(monkeypatch)
     gui.pending_origin_axis = "x"
@@ -949,6 +972,37 @@ def test_gui_live_status_rejects_malformed_payload(monkeypatch):
 
     assert gui.pending_origin_axis is None
     assert "Unexpected live status payload." in gui.log.toPlainText()
+    _close_gui(gui)
+
+
+def test_gui_does_not_apply_stale_full_position_during_move_or_measurement(
+    monkeypatch,
+):
+    gui = _new_gui(monkeypatch)
+    status = gui_module.LiveStatus(
+        position=gui_module.Position(t_ps=99.0, x_um=98.0, y_um=97.0),
+        signal={"X": 0.25, "Y": 0.0, "R": 0.25, "Theta": 0.0},
+    )
+    gui.move_thread = object()  # type: ignore[assignment]
+
+    gui.handle_live_status_ready(status, None)
+
+    assert gui._current_position_values == {"t": None, "x": None, "y": None}
+    assert gui.signal_labels["X"].text() == "0.250 V"
+
+    gui.move_thread = None
+    gui.measurement_thread = object()  # type: ignore[assignment]
+    gui.handle_live_status_ready(
+        gui_module.LiveStatus(
+            position=gui_module.Position(t_ps=1.0, x_um=2.0, y_um=3.0),
+            signal={"X": 0.5, "Y": 0.0, "R": 0.5, "Theta": 0.0},
+        ),
+        None,
+    )
+
+    assert gui._current_position_values == {"t": None, "x": None, "y": None}
+    assert gui.signal_labels["X"].text() == "0.250 V"
+    gui.measurement_thread = None
     _close_gui(gui)
 
 
@@ -2575,7 +2629,9 @@ def test_gui_live_worker_reuse_and_queued_invocation(monkeypatch):
     monkeypatch.setattr(
         gui_module.QtCore.QMetaObject,
         "invokeMethod",
-        lambda target, slot, connection: invoked.append((target, slot, connection)),
+        lambda target, slot, connection: (
+            invoked.append((target, slot, connection)) or True
+        ),
     )
 
     assert gui._ensure_live_worker() is worker

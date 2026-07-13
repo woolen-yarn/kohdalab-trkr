@@ -41,6 +41,7 @@ class Experiment:
         self.session = DeviceSession(self._config, auto_connect=self.auto_connect)
         self._state_lock = RLock()
         self._active_operations = 0
+        self._config_blocking_operations = 0
         self._closed = False
 
     def _ensure_open(self) -> None:
@@ -48,15 +49,19 @@ class Experiment:
             raise RuntimeError("Experiment is closed.")
 
     @contextmanager
-    def _operation(self) -> Iterator[None]:
+    def _operation(self, *, config_update_safe: bool = False) -> Iterator[None]:
         with self._state_lock:
             self._ensure_open()
             self._active_operations += 1
+            if not config_update_safe:
+                self._config_blocking_operations += 1
         try:
             yield
         finally:
             with self._state_lock:
                 self._active_operations -= 1
+                if not config_update_safe:
+                    self._config_blocking_operations -= 1
 
     def __enter__(self) -> Self:
         with self._state_lock:
@@ -111,7 +116,7 @@ class Experiment:
         normalized = normalize_config(value)
         with self._state_lock:
             self._ensure_open()
-            if self._active_operations:
+            if self._config_blocking_operations:
                 raise RuntimeError(
                     "Cannot change Experiment config while an operation is active."
                 )
@@ -198,19 +203,19 @@ class Experiment:
         )
 
     def read_position(self) -> Position:
-        with self._operation():
+        with self._operation(config_update_safe=True):
             return self.session.read_position()
 
     def read_lockin_signal(self, ref: str = "signal") -> dict[str, Any]:
-        with self._operation():
+        with self._operation(config_update_safe=True):
             return self.session.read_lockin_signal(ref)
 
     def read_lockin_settings(self, ref: str = "signal") -> dict[str, Any]:
-        with self._operation():
+        with self._operation(config_update_safe=True):
             return self.session.read_lockin_settings(ref)
 
     def read_lockin_overload(self, ref: str = "signal") -> dict[str, Any]:
-        with self._operation():
+        with self._operation(config_update_safe=True):
             return self.session.read_lockin_overload(ref)
 
     def lockin_wait_time(
@@ -240,7 +245,7 @@ class Experiment:
             )
 
     def read_live_status(self) -> LiveStatus:
-        with self._operation():
+        with self._operation(config_update_safe=True):
             return self.session.read_live_status()
 
     def initialize_delay_stage(

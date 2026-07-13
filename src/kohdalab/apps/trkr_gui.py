@@ -2383,9 +2383,9 @@ class TRKRGui(QtWidgets.QMainWindow):
         return self.device_worker
 
     def _ensure_live_worker(self) -> LiveStatusWorker:
-        experiment = self._ensure_experiment()
         if self.live_worker is not None:
             return self.live_worker
+        experiment = self.experiment or self._ensure_experiment()
         self.live_thread = QtCore.QThread(self)
         self.live_worker = LiveStatusWorker(experiment=experiment)
         self.live_worker.moveToThread(self.live_thread)
@@ -2400,9 +2400,11 @@ class TRKRGui(QtWidgets.QMainWindow):
 
     def _invoke_live_worker(self, slot_name: str) -> None:
         worker = self._ensure_live_worker()
-        QtCore.QMetaObject.invokeMethod(
+        invoked = QtCore.QMetaObject.invokeMethod(
             worker, slot_name, QtCore.Qt.ConnectionType.QueuedConnection
         )
+        if not invoked:
+            raise RuntimeError(f"Could not queue live status request: {slot_name}")
 
     def _missing_required_devices(
         self, measurement: str, axis: str | None = None
@@ -2564,7 +2566,8 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.live_worker = None
 
     def read_live_status(self) -> None:
-        self._ensure_experiment()
+        if self.experiment is None:
+            self._ensure_experiment()
         if self.device_command_active:
             return
         if self.move_thread is not None:
@@ -2600,6 +2603,17 @@ class TRKRGui(QtWidgets.QMainWindow):
     def handle_live_status_ready(self, status: object, overload: object) -> None:
         if not isinstance(status, LiveStatus):
             self.handle_live_status_error("Unexpected live status payload.")
+            return
+        if self.measurement_thread is not None:
+            return
+        if self.move_thread is not None:
+            if status.lockin_settings:
+                self._apply_lockin_settings(status.lockin_settings)
+            if status.signal:
+                self._apply_signal(status.signal)
+            self._apply_overload_status(
+                status.lockin_overload if overload is None else overload
+            )
             return
         self._apply_pending_origin(status.position)
         self._apply_live_status(status, overload=overload)
@@ -2727,14 +2741,14 @@ class TRKRGui(QtWidgets.QMainWindow):
         if now < self._move_block_until:
             return
         if self.device_command_active:
-            QtWidgets.QMessageBox.warning(
-                self, "Move Error", "Wait for device initialization to finish first."
-            )
+            message = "Wait for device initialization to finish first."
+            self.append_log(f"Move error: {message}")
+            QtWidgets.QMessageBox.warning(self, "Move Error", message)
             return
         if self._motion_axis_is_blocked_by_measurement(axis):
-            QtWidgets.QMessageBox.warning(
-                self, "Move Error", "Stop the running measurement for this axis first."
-            )
+            message = "Stop the running measurement for this axis first."
+            self.append_log(f"Move error: {message}")
+            QtWidgets.QMessageBox.warning(self, "Move Error", message)
             return
         try:
             if axis not in {"t", "x", "y"}:
@@ -2769,6 +2783,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.move_thread.start()
         except Exception as e:
             self.cleanup_move_thread()
+            self.append_log(f"Move error: {e}")
             QtWidgets.QMessageBox.warning(self, "Move Error", str(e))
 
     def move_corrected(self, axis: str) -> None:
@@ -2919,10 +2934,12 @@ class TRKRGui(QtWidgets.QMainWindow):
         if self.measurement_thread is not None:
             return
         if self.device_command_active or self.move_thread is not None:
+            message = "Wait for the active device operation to finish first."
+            self.append_log(f"Run error: {message}")
             QtWidgets.QMessageBox.warning(
                 self,
                 "Run Error",
-                "Wait for the active device operation to finish first.",
+                message,
             )
             return
         try:
@@ -3076,6 +3093,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.append_log(f"Started {summary} -> {output_path}")
             self.measurement_thread.start()
         except Exception as e:
+            self.append_log(f"Run error: {e}")
             QtWidgets.QMessageBox.warning(self, "Run Error", str(e))
 
     def stop_measurement(self) -> None:
