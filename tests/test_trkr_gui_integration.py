@@ -12,7 +12,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtTest, QtWidgets
 
 import kohdalab.apps.trkr_gui as gui_module
 from kohdalab.api import (
@@ -2464,15 +2464,16 @@ def test_gui_resource_refresh_ignores_reentry_and_malformed_results(monkeypatch)
     _close_gui(gui)
 
 
-def test_gui_store_current_output_settings_uses_selected_measurement(monkeypatch):
+def test_gui_store_current_output_settings_uses_displayed_measurement(monkeypatch):
     gui = _new_gui(monkeypatch)
     stored: list[str] = []
     monkeypatch.setattr(gui, "_measurement_name", lambda: "srkr_2d")
     monkeypatch.setattr(gui, "_store_output_settings", stored.append)
+    gui._last_measurement_for_output = "srkr"
 
     gui._store_current_output_settings()
 
-    assert stored == ["srkr_2d"]
+    assert stored == ["srkr"]
     _close_gui(gui)
 
 
@@ -2566,6 +2567,40 @@ def test_gui_attach_output_widget_rejects_out_of_range_tab(monkeypatch, index):
     gui._attach_output_run_to_tab(index)
 
     assert gui.output_run_widget.parent() is parent_before
+    _close_gui(gui)
+
+
+def test_gui_output_filename_stays_with_measurement_when_tab_is_clicked(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    gui.show()
+    QtWidgets.QApplication.processEvents()
+    gui.measurement_tabs.setCurrentIndex(2)
+    QtWidgets.QApplication.processEvents()
+    gui.output_name_edit.setFocus()
+    gui.output_name_edit.selectAll()
+    QtTest.QTest.keyClicks(gui.output_name_edit, "custom-srkr")
+    gui.output_settings_by_mode["trkr"]["auto_timestamp_suffix"] = False
+
+    tab_bar = gui.measurement_tabs.tabBar()
+    QtTest.QTest.mouseClick(
+        tab_bar,
+        QtCore.Qt.MouseButton.LeftButton,
+        QtCore.Qt.KeyboardModifier.NoModifier,
+        tab_bar.tabRect(1).center(),
+    )
+    QtWidgets.QApplication.processEvents()
+
+    assert gui.output_name_edit.text() == "trkr_run"
+    assert gui.auto_suffix_check.isChecked() is False
+    assert gui.output_settings_by_mode["srkr"]["filename"] == "custom-srkr"
+    assert gui.output_settings_by_mode["srkr"]["auto_timestamp_suffix"] is True
+    assert gui.output_settings_by_mode["trkr"]["filename"] == "trkr_run"
+    assert gui.output_settings_by_mode["trkr"]["auto_timestamp_suffix"] is False
+
+    gui.measurement_tabs.setCurrentIndex(2)
+    assert gui.output_name_edit.text() == "custom-srkr"
+    gui.measurement_tabs.setCurrentIndex(3)
+    assert gui.output_name_edit.text() == "strkr_run"
     _close_gui(gui)
 
 

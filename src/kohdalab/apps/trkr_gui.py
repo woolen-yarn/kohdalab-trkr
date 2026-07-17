@@ -1463,8 +1463,8 @@ class TRKRGui(QtWidgets.QMainWindow):
             measurement = self._measurement_name()
             self._normalize_2d_axis_controls(measurement)
             self._load_scan2d_role_ranges(measurement)
-            self._apply_output_settings(measurement)
             self._last_measurement_for_output = measurement
+            self._apply_output_settings(measurement)
             self._update_curves()
             self.point_label.setText(self.point_text_by_mode.get(measurement, "-"))
             self.eta_label.setText(self.eta_text_by_mode.get(measurement, "-"))
@@ -1752,7 +1752,7 @@ class TRKRGui(QtWidgets.QMainWindow):
 
     def _store_current_output_settings(self) -> None:
         if hasattr(self, "measurement_tabs"):
-            self._store_output_settings(self._measurement_name())
+            self._store_output_settings(self._last_measurement_for_output)
 
     def _default_output_filename(self, measurement: str) -> str:
         return {
