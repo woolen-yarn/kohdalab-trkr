@@ -602,7 +602,6 @@ def test_instrument_selection_uses_measurement_keys_and_rejects_ambiguity():
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda config: config["instruments"].update({"scanner": {}}), "scanner"),
         (
             lambda config: config["instruments"]["lockin"]["main"].pop("resource"),
             "lockin.main.resource",
@@ -627,6 +626,33 @@ def test_validate_config_rejects_missing_required_instrument_structure(
 
     with pytest.raises(ValueError, match=message):
         validate_config(invalid)
+
+
+@pytest.mark.parametrize("kind", ["lockin", "delay_stage", "scanner"])
+def test_validate_config_rejects_nonobject_instrument_kind(kind: str):
+    invalid = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    invalid["instruments"][kind] = []
+
+    with pytest.raises(ValueError, match=rf"instruments\.{kind} must be an object"):
+        validate_config(invalid)
+
+
+@pytest.mark.parametrize("kind", ["lockin", "delay_stage", "scanner"])
+@pytest.mark.parametrize("omit", [False, True])
+def test_load_config_accepts_unconfigured_instrument_kinds(
+    tmp_path, kind: str, omit: bool
+):
+    config = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    if omit:
+        config["instruments"].pop(kind)
+    else:
+        config["instruments"][kind] = {}
+    path = tmp_path / f"without-{kind}.json"
+    path.write_text(json.dumps(config), encoding="utf-8")
+
+    loaded = load_config(path)
+
+    assert not loaded["instruments"].get(kind)
 
 
 def test_state_path_helpers_honor_environment_overrides(monkeypatch, tmp_path):

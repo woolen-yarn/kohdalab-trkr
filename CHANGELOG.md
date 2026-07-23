@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Allowed lock-in, delay-stage, and scanner groups to be omitted from local
+  configurations while retaining strict validation for every configured device.
+- Preserved omitted devices in GUI runtime and saved configurations instead of
+  recreating them from form defaults.
+- Made GUI Connect All retain successful connections and report unavailable
+  devices as skipped, without changing the transactional API connection method.
+- Disabled measurements and manual motion controls that depend on unconfigured
+  device kinds, with a matching start-time safety check.
+
 ## [0.2.2] - 2026-07-13
 
 - Allowed Move and Run to start while read-only live-status operations are active,

@@ -158,8 +158,19 @@ class DeviceCommandWorker(QtCore.QObject):
         command = str(request.get("command") or "")
         if command == "connect_all":
             self.status_changed.emit("connecting all")
-            self.experiment.connect_all()
-            return {"command": command}
+            connected: list[str] = []
+            skipped: dict[str, str] = {}
+            for ref, is_connected in self.experiment.connected_devices().items():
+                if is_connected:
+                    connected.append(ref)
+                    continue
+                self.status_changed.emit(f"connecting {ref}")
+                try:
+                    self.experiment.connect_device(ref)
+                    connected.append(ref)
+                except Exception as error:
+                    skipped[ref] = str(error)
+            return {"command": command, "connected": connected, "skipped": skipped}
         if command == "connect_device":
             ref = self._device_ref(request)
             self.status_changed.emit(f"connecting {ref}")

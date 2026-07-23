@@ -576,9 +576,47 @@ def test_device_command_worker_connects_all_devices():
 
     worker.run()
 
-    assert experiment.calls == [("connect_all", {})]
+    assert experiment.calls == []
     assert statuses == ["connecting all"]
-    assert finished == [{"command": "connect_all"}]
+    assert finished == [
+        {"command": "connect_all", "connected": ["lockin.main"], "skipped": {}}
+    ]
+
+
+def test_device_command_worker_connects_available_devices_and_skips_failures():
+    class PartialExperiment(FakeExperiment):
+        def connected_devices(self):
+            return {
+                "lockin.main": False,
+                "delay_stage.t": False,
+                "scanner.x": False,
+            }
+
+        def connect_device(self, ref):
+            super().connect_device(ref)
+            if ref == "delay_stage.t":
+                raise OSError("stage unavailable")
+
+    experiment = PartialExperiment()
+    worker = DeviceCommandWorker(experiment=experiment, command="connect_all")
+    finished = _capture_finished(worker)
+    errors = _capture_text_signal(worker.error_occurred)
+
+    worker.run()
+
+    assert experiment.calls == [
+        ("connect_device", {"ref": "lockin.main"}),
+        ("connect_device", {"ref": "delay_stage.t"}),
+        ("connect_device", {"ref": "scanner.x"}),
+    ]
+    assert errors == []
+    assert finished == [
+        {
+            "command": "connect_all",
+            "connected": ["lockin.main", "scanner.x"],
+            "skipped": {"delay_stage.t": "stage unavailable"},
+        }
+    ]
 
 
 def test_device_command_worker_disconnects_one_device_by_explicit_ref():

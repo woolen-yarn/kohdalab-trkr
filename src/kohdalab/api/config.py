@@ -338,13 +338,10 @@ def validate_config(config: dict[str, Any]) -> None:
     if not isinstance(instruments, dict):
         raise ValueError("config must contain an 'instruments' object.")
     for kind in ("lockin", "delay_stage", "scanner"):
-        if (
-            kind not in instruments
-            or not isinstance(instruments[kind], dict)
-            or not instruments[kind]
-        ):
-            raise ValueError(f"config must contain instruments.{kind}.")
-        for key in instruments[kind]:
+        devices = instruments.get(kind, {})
+        if not isinstance(devices, dict):
+            raise ValueError(f"instruments.{kind} must be an object when provided.")
+        for key in devices:
             if not str(key).strip() or "." in str(key):
                 raise ValueError(
                     f"instruments.{kind} keys must be non-empty and must not contain '.'."
@@ -355,7 +352,7 @@ def validate_config(config: dict[str, Any]) -> None:
     for name in ("move_abs", "signal_monitor", "trkr", "srkr", "strkr", "srkr_2d"):
         if name not in measurements:
             raise ValueError(f"config must contain measurements.{name}.")
-    for key, lockin in instruments["lockin"].items():
+    for key, lockin in instruments.get("lockin", {}).items():
         if not isinstance(lockin, dict):
             raise ValueError(f"instruments.lockin.{key} must be an object.")
         for field in ("model", "resource"):
@@ -370,7 +367,7 @@ def validate_config(config: dict[str, Any]) -> None:
                 f"supported: {sorted(LOCKIN_CONTROLLERS)}."
             )
     lockin_endpoints: dict[str, str] = {}
-    for key, lockin in instruments["lockin"].items():
+    for key, lockin in instruments.get("lockin", {}).items():
         lockin_endpoint = str(lockin["resource"]).strip().casefold()
         if lockin_endpoint in lockin_endpoints:
             raise ValueError(
@@ -380,7 +377,7 @@ def validate_config(config: dict[str, Any]) -> None:
         lockin_endpoints[lockin_endpoint] = key
 
     delay_stage_endpoints: dict[tuple[str, str], str] = {}
-    for key, stage in instruments["delay_stage"].items():
+    for key, stage in instruments.get("delay_stage", {}).items():
         if not isinstance(stage, dict):
             raise ValueError(f"instruments.delay_stage.{key} must be an object.")
         for field in ("controller", "stage", "port", "direction"):
@@ -428,7 +425,7 @@ def validate_config(config: dict[str, Any]) -> None:
             )
 
     scanner_endpoints: dict[tuple[str, str, str], str] = {}
-    for key, scanner in instruments["scanner"].items():
+    for key, scanner in instruments.get("scanner", {}).items():
         if not isinstance(scanner, dict):
             raise ValueError(f"instruments.scanner.{key} must be an object.")
         for field in ("controller", "actuator", "port", "axis", "sample_um_per_unit"):
@@ -692,7 +689,19 @@ def validate_config(config: dict[str, Any]) -> None:
 
     from kohdalab.api.device_requirements import required_devices
 
+    configured_kinds = {
+        kind for kind in ("lockin", "delay_stage", "scanner") if instruments.get(kind)
+    }
+    required_kinds = {
+        "signal_monitor": {"lockin"},
+        "trkr": {"lockin", "delay_stage"},
+        "srkr": {"lockin", "scanner"},
+        "strkr": {"lockin", "delay_stage", "scanner"},
+        "srkr_2d": {"lockin", "scanner"},
+    }
     for name in ("signal_monitor", "trkr", "srkr", "strkr", "srkr_2d"):
+        if not required_kinds[name] <= configured_kinds:
+            continue
         try:
             if name == "srkr":
                 required_devices(config, name, axis=srkr_axis)
