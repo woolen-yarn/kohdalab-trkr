@@ -65,11 +65,12 @@ uv build --no-sources
 
 ## Project Status
 
-The current development version is `0.2.2`. It adds responsive lock-in live
-status during manual motion while retaining per-device I/O serialization,
-strict config and scan preflight validation, fail-closed controller handling,
-package smoke tests, and measurement provenance sidecars. Hardware operation
-still requires the checks described in [SAFETY.md](SAFETY.md) and the
+The current development version is `0.2.3`. It supports partial instrument
+configurations, disables measurements and motion controls whose required
+hardware is not configured, keeps output filenames independent by measurement
+mode, and preserves responsive lock-in live status during manual motion.
+Hardware operation still requires the checks described in
+[SAFETY.md](SAFETY.md) and the
 [hardware smoke-test guide](docs/hardware_smoke_test.md).
 
 ## License
