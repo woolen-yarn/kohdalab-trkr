@@ -2226,7 +2226,98 @@ def test_gui_startup_without_resolved_config_uses_normalized_defaults(monkeypatc
         gui.log.toPlainText()
     )
     assert gui.signal_points_spin.value() == 360
-    assert gui.start_button.isEnabled() is True
+    assert gui.start_button.isEnabled() is False
+    assert "instruments.lockin" in gui.start_button.toolTip()
+    _close_gui(gui)
+
+
+@pytest.mark.parametrize(
+    ("missing_kind", "disabled_tabs", "enabled_tabs", "disabled_axes"),
+    [
+        ("delay_stage", {1, 3}, {0, 2, 4}, {"t"}),
+        ("scanner", {2, 3, 4}, {0, 1}, {"x", "y"}),
+    ],
+)
+def test_gui_skips_unconfigured_devices_and_disables_dependent_measurements(
+    monkeypatch,
+    missing_kind: str,
+    disabled_tabs: set[int],
+    enabled_tabs: set[int],
+    disabled_axes: set[str],
+):
+    gui = _new_gui(monkeypatch)
+    config = deepcopy(gui.config)
+    config["instruments"].pop(missing_kind, None)
+    gui.config = config
+
+    gui._load_config_into_fields(config)
+
+    assert missing_kind not in gui._runtime_config()["instruments"]
+    for index in disabled_tabs:
+        gui.measurement_tabs.setCurrentIndex(index)
+        assert gui.start_button.isEnabled() is False
+        assert f"instruments.{missing_kind}" in gui.start_button.toolTip()
+    for index in enabled_tabs:
+        gui.measurement_tabs.setCurrentIndex(index)
+        assert gui.start_button.isEnabled() is True
+    axis_buttons = {
+        "t": gui.move_t_button,
+        "x": gui.move_x_button,
+        "y": gui.move_y_button,
+    }
+    for axis, button in axis_buttons.items():
+        assert button.isEnabled() is (axis not in disabled_axes)
+    _close_gui(gui)
+
+
+def test_gui_start_guard_rejects_measurement_with_unconfigured_device(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    config = deepcopy(gui.config)
+    config["instruments"].pop("delay_stage", None)
+    gui.config = config
+    gui._load_config_into_fields(config)
+    gui.measurement_tabs.setCurrentIndex(1)
+    warnings: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        gui_module.QtWidgets.QMessageBox,
+        "warning",
+        lambda _parent, title, message: warnings.append((title, message)),
+    )
+
+    gui.start_measurement()
+
+    assert gui.measurement_thread is None
+    assert warnings == [("Run Error", "Not configured: instruments.delay_stage")]
+    _close_gui(gui)
+
+
+def test_gui_reports_devices_skipped_by_connect_all(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    monkeypatch.setattr(gui, "_request_full_live_status", lambda: None)
+
+    gui.handle_device_command_finished(
+        {
+            "command": "connect_all",
+            "connected": ["lockin.main", "scanner.x"],
+            "skipped": {"delay_stage.t": "port unavailable"},
+        }
+    )
+
+    assert gui.status_label.text() == "connected with skips"
+    assert "skipped 1: delay_stage.t: port unavailable" in gui.log.toPlainText()
+    _close_gui(gui)
+
+
+def test_gui_optional_device_helpers_tolerate_incomplete_internal_state(monkeypatch):
+    TRKRGui._refresh_measurement_availability(object())
+    gui = _new_gui(monkeypatch)
+    valid_config = deepcopy(gui.config)
+    gui.config = {"instruments": []}
+    assert gui._configured_instrument_kinds() == set()
+
+    gui.config = valid_config
+    gui.config["instruments"]["scanner"] = []
+    assert gui._runtime_config()["instruments"]["scanner"] == []
     _close_gui(gui)
 
 

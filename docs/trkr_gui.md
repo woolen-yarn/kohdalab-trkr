@@ -174,6 +174,13 @@ Experiment.missing_devices(...)
 If a required device is missing, Start fails with a message instead of
 connecting implicitly.
 
+Instrument groups that are not used on a PC may be omitted from `instruments`
+or left as empty objects. The GUI preserves those omissions, disables the
+dependent motion controls and measurements, and logs them when the config is
+loaded. GUI `Connect All` is best-effort: successfully connected devices remain
+available while failures are listed as skipped. Individual API
+`Experiment.connect_all()` calls retain their transactional rollback behavior.
+
 The GUI stores connected handles in `self.experiment.session`:
 
 ```text

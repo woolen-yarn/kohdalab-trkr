@@ -1465,6 +1465,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self._load_scan2d_role_ranges(measurement)
             self._last_measurement_for_output = measurement
             self._apply_output_settings(measurement)
+            self._refresh_measurement_availability()
             self._update_curves()
             self.point_label.setText(self.point_text_by_mode.get(measurement, "-"))
             self.eta_label.setText(self.eta_text_by_mode.get(measurement, "-"))
@@ -1929,6 +1930,11 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.experiment.config = self._runtime_config()
             write_last_config_path(resolution.path)
             self.append_log(f"Loaded config ({resolution.source}): {resolution.path}")
+            missing_kinds = self._unconfigured_instrument_kinds()
+            if missing_kinds:
+                self.append_log(
+                    "Skipped unconfigured instruments: " + ", ".join(missing_kinds)
+                )
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Config Error", str(e))
 
@@ -2137,6 +2143,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         )
         self._last_measurement_for_output = self._measurement_name()
         self._apply_output_settings(self._last_measurement_for_output)
+        self._refresh_measurement_availability()
 
     def _settings_from_measurement_output(
         self, measurement: str, measurement_settings: dict[str, Any]
@@ -2180,18 +2187,75 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _return_roles_payload(self) -> dict[str, bool]:
         return {"fast_axis": True, "slow_axis": True}
 
+    def _configured_instrument_kinds(self) -> set[str]:
+        instruments = self.config.get("instruments", {})
+        if not isinstance(instruments, dict):
+            return set()
+        return {
+            kind
+            for kind in ("lockin", "delay_stage", "scanner")
+            if isinstance(instruments.get(kind), dict) and instruments[kind]
+        }
+
+    def _unconfigured_instrument_kinds(self) -> list[str]:
+        configured = self._configured_instrument_kinds()
+        return [
+            kind
+            for kind in ("lockin", "delay_stage", "scanner")
+            if kind not in configured
+        ]
+
+    def _measurement_configuration_error(self, measurement: str) -> str | None:
+        required_kinds = {
+            "signal_monitor": {"lockin"},
+            "trkr": {"lockin", "delay_stage"},
+            "srkr": {"lockin", "scanner"},
+            "strkr": {"lockin", "delay_stage", "scanner"},
+            "srkr_2d": {"lockin", "scanner"},
+        }
+        missing = sorted(
+            required_kinds.get(measurement, set()) - self._configured_instrument_kinds()
+        )
+        if not missing:
+            return None
+        return "Not configured: " + ", ".join(f"instruments.{kind}" for kind in missing)
+
+    def _axis_is_configured(self, axis: str) -> bool:
+        required_kind = "delay_stage" if axis == "t" else "scanner"
+        return required_kind in self._configured_instrument_kinds()
+
+    def _refresh_measurement_availability(self) -> None:
+        if not hasattr(self, "start_button") or not hasattr(self, "measurement_tabs"):
+            return
+        reason = self._measurement_configuration_error(self._measurement_name())
+        idle = (
+            self.measurement_thread is None
+            and self.move_thread is None
+            and not self.device_command_active
+        )
+        self.start_button.setEnabled(idle and reason is None)
+        self.start_button.setToolTip(reason or "")
+        if idle:
+            for axis in ("t", "x", "y"):
+                self._set_motion_axis_enabled(axis, self._axis_is_configured(axis))
+
     def _runtime_config(self) -> dict[str, Any]:
         self._store_current_output_settings()
         self._sync_scan2d_role_values_to_axis_ranges("strkr")
         self._sync_scan2d_role_values_to_axis_ranges("srkr_2d")
         config = deepcopy(self.config)
         instruments = config.setdefault("instruments", {})
-        instruments["lockin"] = {"main": self._lockin_config()}
-        instruments["delay_stage"] = {"t": self._delay_stage_config()}
-        instruments["scanner"] = {
-            "x": self._scanner_config("x"),
-            "y": self._scanner_config("y"),
-        }
+        lockins = instruments.get("lockin", {})
+        if isinstance(lockins, dict) and "main" in lockins:
+            lockins["main"] = self._lockin_config()
+        delay_stages = instruments.get("delay_stage", {})
+        if isinstance(delay_stages, dict) and "t" in delay_stages:
+            delay_stages["t"] = self._delay_stage_config()
+        scanners = instruments.get("scanner", {})
+        if isinstance(scanners, dict):
+            for axis in ("x", "y"):
+                if axis in scanners:
+                    scanners[axis] = self._scanner_config(axis)
 
         measurements = config.setdefault("measurements", {})
         move_abs = measurements.setdefault("move_abs", {})
@@ -2508,8 +2572,22 @@ class TRKRGui(QtWidgets.QMainWindow):
             command = info.get("command")
             ref = info.get("ref")
             if command == "connect_all":
-                self.status_label.setText("connected")
-                self.append_log("Connected all configured devices.")
+                connected = info.get("connected", [])
+                skipped = info.get("skipped", {})
+                connected = connected if isinstance(connected, list) else []
+                skipped = skipped if isinstance(skipped, dict) else {}
+                if skipped:
+                    self.status_label.setText("connected with skips")
+                    details = "; ".join(
+                        f"{device}: {message}" for device, message in skipped.items()
+                    )
+                    self.append_log(
+                        f"Connected {len(connected)} configured device(s); "
+                        f"skipped {len(skipped)}: {details}"
+                    )
+                else:
+                    self.status_label.setText("connected")
+                    self.append_log("Connected all configured devices.")
                 self._request_full_live_status()
                 return
             if command == "connect_device":
@@ -2587,6 +2665,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.device_command_active = False
         self.pending_wait_spin = None
         self._set_device_initializing(False)
+        self._refresh_measurement_availability()
 
     def cleanup_live_thread(self) -> None:
         self.live_thread = None
@@ -2975,6 +3054,9 @@ class TRKRGui(QtWidgets.QMainWindow):
             return
         try:
             measurement = self._measurement_name()
+            configuration_error = self._measurement_configuration_error(measurement)
+            if configuration_error is not None:
+                raise RuntimeError(configuration_error)
             if measurement in {"strkr", "srkr_2d"}:
                 self._sync_scan2d_role_values_to_axis_ranges(measurement)
             self._normalize_2d_axis_controls(measurement)
@@ -3272,10 +3354,11 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.save_button.setEnabled(not running)
         self.connect_button.setEnabled(not running)
         self.disconnect_button.setEnabled(not running)
-        self._set_motion_axis_enabled("t", True)
-        self._set_motion_axis_enabled("x", True)
-        self._set_motion_axis_enabled("y", True)
+        self._set_motion_axis_enabled("t", self._axis_is_configured("t"))
+        self._set_motion_axis_enabled("x", self._axis_is_configured("x"))
+        self._set_motion_axis_enabled("y", self._axis_is_configured("y"))
         if not running:
+            self._refresh_measurement_availability()
             return
         for axis in self.running_motion_axes:
             self._set_motion_axis_enabled(axis, False)

@@ -87,6 +87,8 @@ SRKR 2D:        lockin.main, scanner.x, scanner.y
 
 判定は API の `Experiment.required_devices()` / `Experiment.missing_devices()` にあります。missing device があれば、GUI は message を出して Start しません。
 
+PC で使用しない機器種別は `instruments` から省略するか空 object にできます。GUI は省略状態を保持し、依存する motion 操作と測定を無効化して、config 読み込み時に log へ記録します。GUI の `Connect All` は接続できた機器を保持し、失敗した機器だけを skipped として表示します。API の `Experiment.connect_all()` は従来どおり失敗時 rollback の厳密な動作です。
+
 ## Worker Model
 
 GUI は slow hardware operation で Qt main event loop を止めないように worker を使います。
