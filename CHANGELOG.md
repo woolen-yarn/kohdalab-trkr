@@ -10,6 +10,7 @@
   devices as skipped, without changing the transactional API connection method.
 - Disabled measurements and manual motion controls that depend on unconfigured
   device kinds, with a matching start-time safety check.
+- Updated JupyterLab to 4.6.2 to resolve five dependency-audit findings.
 
 ## [0.2.2] - 2026-07-13
 
