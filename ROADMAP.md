@@ -27,6 +27,13 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Keep lock-in signal, settings, and overload status responsive during manual motion.
 - Preserve per-device I/O serialization while polling unrelated hardware concurrently.
 
+## v0.2.3 - Optional Instrument Configurations
+
+- Allow unused lock-in, delay-stage, and scanner groups to be omitted from local configurations.
+- Disable measurements and motion controls when their required hardware is not configured.
+- Keep output filenames independent for each measurement mode.
+- Continue connecting available instruments when another configured device is unavailable.
+
 ## v0.3.0 - Hardware Abstraction
 
 - Clarify stable public driver/session APIs for supported instruments.

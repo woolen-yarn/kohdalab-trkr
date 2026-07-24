@@ -48,7 +48,7 @@ def _verify(root: Path, *, tag: str | None = None) -> Any:
 def test_repository_development_metadata_is_consistent() -> None:
     metadata = _verify(ROOT)
 
-    assert metadata.version == "0.2.2"
+    assert metadata.version == "0.2.3"
 
 
 def test_development_check_rejects_citation_version_mismatch(tmp_path: Path) -> None:

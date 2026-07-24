@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## [0.2.3] - 2026-07-23
+
+- Kept output filenames independent for TRKR, SRKR, STRKR, and SRKR 2D instead
+  of propagating one measurement's filename changes to the other modes.
 - Allowed lock-in, delay-stage, and scanner groups to be omitted from local
   configurations while retaining strict validation for every configured device.
 - Preserved omitted devices in GUI runtime and saved configurations instead of
