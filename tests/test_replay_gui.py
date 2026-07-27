@@ -231,6 +231,30 @@ def test_timed_worker_cycle_completion_and_pre_stopped_paths():
     assert worker._run_timed_cycle()
 
 
+def test_worker_stop_paths_are_deterministic(monkeypatch):
+    timed = ReplayWorker(dataset(), interval_s=0.001)
+    monkeypatch.setattr(
+        timed,
+        "_status_phase",
+        lambda _status, _fraction: False,
+    )
+    monkeypatch.setattr(timed, "_emit_point", lambda _index, _row: False)
+    monkeypatch.setattr(timed, "_wait", lambda fraction: fraction == 0.20)
+    assert timed._run_timed_cycle()
+
+    fast = ReplayWorker(dataset(), interval_s=0.0)
+    monkeypatch.setattr(fast, "_emit_points", lambda _points: False)
+    monkeypatch.setattr(fast._stop_event, "wait", lambda _timeout: True)
+    assert fast._run_fast_cycle()
+
+    pre_stopped = ReplayWorker(dataset(), interval_s=0.0)
+    finished: list[object] = []
+    pre_stopped.finished.connect(finished.append)
+    pre_stopped.stop()
+    pre_stopped.run()
+    assert finished == [[dict(pre_stopped.dataset.rows[0])]]
+
+
 def test_replay_gui_uses_original_layout_and_disables_hardware_controls():
     qapp()
     window = ReplayGui({"trkr": dataset()}, interval_s=0.0)
