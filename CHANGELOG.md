@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.2.4] - 2026-07-27
+
 - Promoted the hardware-free CSV replay GUI to a maintained application alongside
   the normal hardware GUI.
 - Moved packaged config templates under `src/kohdalab/config` and added a
