@@ -40,6 +40,7 @@ FAST_REPLAY_BATCH_SIZE = 16
 FAST_REPLAY_FRAME_S = 1.0 / 60.0
 LEFT_PANEL_VALUE_SAMPLES = ("-9999.999", "Moving...")
 LOCKIN_SIGNAL_VALUE_WIDTH = 96
+LOCKIN_SIGNAL_VALUE_SAMPLES = ("-999.999 deg", "-999.999 mV")
 SNAPSHOT_FIELD_COLUMN_WIDTH = 100
 LEFT_PANEL_WIDTH_MARGIN = 4
 LEFT_PANEL_CONTENT_MARGIN = 6
@@ -294,8 +295,17 @@ class ReplayGui(TRKRGui):
         for label in value_labels:
             label.setFixedWidth(width)
             label.setAlignment(alignment)
+        signal_width = max(
+            LOCKIN_SIGNAL_VALUE_WIDTH,
+            max(
+                label.fontMetrics().horizontalAdvance(text)
+                for label in self.signal_labels.values()
+                for text in LOCKIN_SIGNAL_VALUE_SAMPLES
+            )
+            + 8,
+        )
         for label in self.signal_labels.values():
-            label.setFixedWidth(LOCKIN_SIGNAL_VALUE_WIDTH)
+            label.setFixedWidth(signal_width)
             label.setAlignment(alignment)
 
     def _compact_left_panel_controls(self) -> None:

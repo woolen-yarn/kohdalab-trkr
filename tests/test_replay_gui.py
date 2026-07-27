@@ -334,12 +334,10 @@ def test_replay_gui_uses_original_layout_and_disables_hardware_controls():
         (label.minimumWidth(), label.maximumWidth())
         for label in window.signal_labels.values()
     }
-    assert signal_widths == {
-        (
-            replay_gui.LOCKIN_SIGNAL_VALUE_WIDTH,
-            replay_gui.LOCKIN_SIGNAL_VALUE_WIDTH,
-        )
-    }
+    assert len(signal_widths) == 1
+    signal_width = next(iter(signal_widths))
+    assert signal_width[0] == signal_width[1]
+    assert signal_width[0] >= replay_gui.LOCKIN_SIGNAL_VALUE_WIDTH
     theta_label = window.signal_labels["Theta"]
     assert (
         theta_label.fontMetrics().horizontalAdvance(theta_label.text())
