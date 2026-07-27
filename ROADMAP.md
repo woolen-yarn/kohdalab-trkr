@@ -27,6 +27,13 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Keep lock-in signal, settings, and overload status responsive during manual motion.
 - Preserve per-device I/O serialization while polling unrelated hardware concurrently.
 
+## v0.2.4 - Maintained Replay Demo
+
+- Provide hardware-free TRKR/SRKR/STRKR/SRKR 2D replay in the production GUI
+  layout.
+- Separate normal and Demo defaults while preserving user config profiles across
+  upgrades.
+
 ## v0.2.3 - Optional Instrument Configurations
 
 - Allow unused lock-in, delay-stage, and scanner groups to be omitted from local configurations.

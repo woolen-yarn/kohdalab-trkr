@@ -84,10 +84,9 @@ uv build --no-sources
 
 ## Project Status
 
-The current development version is `0.2.3`. It supports partial instrument
-configurations, disables measurements and motion controls whose required
-hardware is not configured, keeps output filenames independent by measurement
-mode, and preserves responsive lock-in live status during manual motion.
+The current development version is `0.2.4`. It adds the maintained hardware-free
+CSV replay GUI, separates normal and Demo defaults, and preserves user-created
+config profiles across Git and package upgrades.
 Hardware operation still requires the checks described in
 [SAFETY.md](SAFETY.md) and the
 [hardware smoke-test guide](docs/hardware_smoke_test.md).
