@@ -298,11 +298,16 @@ def test_replay_gui_uses_original_layout_and_disables_hardware_controls():
     ) == fixed_width
     window.show()
     QtWidgets.QApplication.processEvents()
-    assert window.left_panel.width() == 384
-    assert (
-        window.left_panel.viewport().width()
-        >= window.left_panel.widget().sizeHint().width()
+    content = window.left_panel.widget()
+    expected_left_width = max(
+        384,
+        content.sizeHint().width()
+        + window.left_panel.verticalScrollBar().sizeHint().width()
+        + (2 * window.left_panel.frameWidth())
+        + replay_gui.LEFT_PANEL_WIDTH_MARGIN,
     )
+    assert window.left_panel.width() == expected_left_width
+    assert window.left_panel.viewport().width() >= content.sizeHint().width()
     assert (
         window.position_labels["t"].geometry().right()
         < window.move_t_spin.geometry().left()
