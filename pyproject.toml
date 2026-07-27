@@ -51,6 +51,7 @@ notebook = [
 [project.scripts]
 kohdalab-cli = "kohdalab.api.cli:main"
 kohdalab-gui = "kohdalab.apps.trkr_gui:main"
+kohdalab-replay-gui = "kohdalab.apps.replay_gui:main"
 
 [tool.uv]
 python-preference = "only-managed"

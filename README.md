@@ -29,6 +29,18 @@ uv run kohdalab-cli --help
 uv run kohdalab-gui
 ```
 
+Replay real measurement CSV files in a hardware-free, non-recording demo:
+
+```powershell
+uv run kohdalab-replay-gui
+```
+
+Loading the config automatically selects the TRKR, SRKR, STRKR, and SRKR 2D
+files found in `demo_csv`. Use `--data-dir` to select a different directory.
+Experimental CSV files are not included in the public woolen-yarn repository;
+see [`demo_csv/README.md`](demo_csv/README.md) for placement and data-handling
+notes.
+
 For a local installation without development tools:
 
 ```powershell
@@ -58,6 +70,8 @@ uv build --no-sources
 - [Usage guide](docs/usage.md): detailed setup, GUI, API, and measurement-sequence notes.
 - [API usage examples](docs/api_usage.md): practical public API examples.
 - [Measurement sequences](docs/measurement_sequences.md): sequence diagrams and experiment flow.
+- [Measurement CSV replay GUI](docs/replay_gui_ja.md): hardware-free repeating demo playback.
+- [Demo publishing guide](docs/demo_publishing_ja.md): keep experimental CSV files out of the public repository.
 - [Windows setup](docs/windows_setup.md): Windows instrument-PC preparation notes.
 - [Roadmap](ROADMAP.md): planned milestones.
 - [Safety notes](SAFETY.md): safety assumptions and operator responsibilities.

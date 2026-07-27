@@ -80,3 +80,11 @@ def test_pytest_configuration_fails_closed():
     assert "overrides" not in tools["mypy"]
     assert "ruff" in dev_dependencies
     assert "black" not in dev_dependencies
+
+
+def test_public_repository_ignores_experimental_demo_csv_files():
+    gitignore = Path(".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert "demo_csv/*.csv" in gitignore
+    assert Path("demo_csv/README.md").is_file()
+    assert Path("docs/demo_publishing_ja.md").is_file()

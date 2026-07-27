@@ -23,5 +23,10 @@ htmlcov/
 thermorack_log.csv
 trkr_test.csv
 
+# Experimental replay data. Never commit these files to the public
+# woolen-yarn repository. The private Kohdalab demo repository is prepared
+# separately when the recordings need to be bundled.
+demo_csv/*.csv
+
 # PC-specific configs should not be overwritten by git pulls.
 config/*.local.json
