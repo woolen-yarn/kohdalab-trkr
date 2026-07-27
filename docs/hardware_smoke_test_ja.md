@@ -11,8 +11,8 @@ uv run kohdalab-gui
 known config profiles:
 
 ```text
-config/default.json  CONEXAGAP / AG-M100D
-config/kikuchi.json  CONEXCC / TRA12CC
+src/kohdalab/config/default.json  CONEXAGAP / AG-M100D
+~/.kohdalab/config/kikuchi.json  CONEXCC / TRA12CC
 ```
 
 ## Record

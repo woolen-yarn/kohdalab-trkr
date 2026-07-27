@@ -47,11 +47,13 @@ uv sync --all-extras
 ## 4. Create a Local Config
 
 ```powershell
-Copy-Item config\default.json config\instrument.local.json
+$configDir = Join-Path $HOME ".kohdalab\config"
+Copy-Item (Join-Path $configDir "default.json") (Join-Path $configDir "instrument.json")
 ```
 
-Edit `config\instrument.local.json` for this PC's VISA and COM resource
-strings. Local configs are ignored by Git.
+Edit `$HOME\.kohdalab\config\instrument.json` for this PC's VISA and COM
+resource strings. The GUI refreshes only `default.json` and
+`default_demo.json`; user-created JSON files remain untouched by upgrades.
 
 ## 5. Check Hardware Safely
 

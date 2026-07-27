@@ -1139,7 +1139,9 @@ def test_gui_load_config_applies_fields_and_updates_experiment(
     )
     monkeypatch.setattr(gui_module, "load_config", lambda _path: candidate)
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda path: last_paths.append(path)
+        gui_module,
+        "write_last_config_path",
+        lambda path, _state_path: last_paths.append(path),
     )
     monkeypatch.setattr(
         gui_module.QtWidgets.QMessageBox,
@@ -1190,7 +1192,9 @@ def test_gui_load_config_rolls_back_when_field_application_fails(
     monkeypatch.setattr(gui_module, "load_config", lambda _path: candidate)
     monkeypatch.setattr(gui, "_load_config_into_fields", fail_for_candidate)
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda path: last_paths.append(path)
+        gui_module,
+        "write_last_config_path",
+        lambda path, _state_path: last_paths.append(path),
     )
     monkeypatch.setattr(
         gui_module.QtWidgets.QMessageBox,
@@ -1225,7 +1229,9 @@ def test_gui_save_config_validates_and_updates_experiment(monkeypatch, tmp_path:
     gui.trkr_max_spin.setValue(10.0)
     gui.trkr_step_spin.setValue(5.0)
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda path: last_paths.append(path)
+        gui_module,
+        "write_last_config_path",
+        lambda path, _state_path: last_paths.append(path),
     )
     monkeypatch.setattr(
         gui_module.QtWidgets.QMessageBox,
@@ -1873,7 +1879,9 @@ def test_gui_load_config_parse_failure_preserves_config_path_and_ui(
         lambda _path: (_ for _ in ()).throw(ValueError("invalid JSON config")),
     )
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda path: last_paths.append(path)
+        gui_module,
+        "write_last_config_path",
+        lambda path, _state_path: last_paths.append(path),
     )
     monkeypatch.setattr(
         gui_module.QtWidgets.QMessageBox,
@@ -1916,7 +1924,9 @@ def test_gui_save_config_io_failure_preserves_runtime_state_and_experiment(
         ),
     )
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda path: last_paths.append(path)
+        gui_module,
+        "write_last_config_path",
+        lambda path, _state_path: last_paths.append(path),
     )
     monkeypatch.setattr(
         gui_module.QtWidgets.QMessageBox,
@@ -2205,7 +2215,7 @@ def test_gui_startup_without_resolved_config_uses_normalized_defaults(monkeypatc
     monkeypatch.setattr(
         gui_module,
         "resolve_config_path",
-        lambda: ConfigPathResolution(None, "none", []),
+        lambda **_kwargs: ConfigPathResolution(None, "none", []),
     )
     monkeypatch.setattr(
         gui_module,
@@ -2336,11 +2346,13 @@ def test_gui_startup_loads_resolved_config_updates_fields_and_records_path(
     monkeypatch.setattr(
         gui_module,
         "resolve_config_path",
-        lambda: ConfigPathResolution(path, "last", []),
+        lambda **_kwargs: ConfigPathResolution(path, "last", []),
     )
     monkeypatch.setattr(gui_module, "load_config", lambda loaded_path: candidate)
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda value: recorded.append(value)
+        gui_module,
+        "write_last_config_path",
+        lambda value, _state_path: recorded.append(value),
     )
 
     gui = _new_gui(monkeypatch)
@@ -2365,7 +2377,7 @@ def test_gui_startup_load_failure_propagates_without_recording_last_path(
     monkeypatch.setattr(
         gui_module,
         "resolve_config_path",
-        lambda: ConfigPathResolution(path, "explicit", []),
+        lambda **_kwargs: ConfigPathResolution(path, "explicit", []),
     )
     monkeypatch.setattr(
         gui_module,
@@ -2373,7 +2385,9 @@ def test_gui_startup_load_failure_propagates_without_recording_last_path(
         lambda _path: (_ for _ in ()).throw(ValueError("startup config is corrupt")),
     )
     monkeypatch.setattr(
-        gui_module, "write_last_config_path", lambda value: recorded.append(value)
+        gui_module,
+        "write_last_config_path",
+        lambda value, _state_path: recorded.append(value),
     )
     QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
@@ -2766,7 +2780,11 @@ def test_gui_load_config_without_experiment_skips_runtime_update(
         lambda: pytest.fail("runtime update attempted without experiment"),
     )
     recorded: list[Path] = []
-    monkeypatch.setattr(gui_module, "write_last_config_path", recorded.append)
+    monkeypatch.setattr(
+        gui_module,
+        "write_last_config_path",
+        lambda value, _state_path: recorded.append(value),
+    )
 
     gui.load_config_file()
 
@@ -2791,7 +2809,11 @@ def test_gui_save_config_without_experiment_skips_experiment_update(
         lambda config, output, *, validate: saved.append((config, output, validate)),
     )
     recorded: list[Path] = []
-    monkeypatch.setattr(gui_module, "write_last_config_path", recorded.append)
+    monkeypatch.setattr(
+        gui_module,
+        "write_last_config_path",
+        lambda value, _state_path: recorded.append(value),
+    )
 
     gui.save_config_file()
 

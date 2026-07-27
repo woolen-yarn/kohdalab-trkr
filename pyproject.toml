@@ -51,6 +51,7 @@ notebook = [
 [project.scripts]
 kohdalab-cli = "kohdalab.api.cli:main"
 kohdalab-gui = "kohdalab.apps.trkr_gui:main"
+kohdalab-replay-gui = "kohdalab.apps.replay_gui:main"
 
 [tool.uv]
 python-preference = "only-managed"
@@ -66,7 +67,7 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 kohdalab = [
-    "resources/*.json",
+    "config/*.json",
     "instruments/delay_stage/*.toml",
     "instruments/scanner/*.toml",
 ]

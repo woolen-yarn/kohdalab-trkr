@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,11 +11,17 @@ from pathlib import Path
 from typing import Any
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PACKAGE_ROOT / "resources" / "default.json"
+PACKAGE_CONFIG_DIR = PACKAGE_ROOT / "config"
+DEFAULT_CONFIG_PATH = PACKAGE_CONFIG_DIR / "default.json"
+DEMO_DEFAULT_CONFIG_PATH = PACKAGE_CONFIG_DIR / "default_demo.json"
 CONFIG_PATH_ENV = "KOHDALAB_CONFIG"
 DEFAULT_CONFIG_PATH_ENV = "KOHDALAB_DEFAULT_CONFIG"
 CONFIG_STATE_DIR_ENV = "KOHDALAB_STATE_DIR"
 LAST_CONFIG_STATE_PATH_ENV = "KOHDALAB_LAST_CONFIG_STATE_PATH"
+MANAGED_DEFAULT_CONFIGS = {
+    "default.json": DEFAULT_CONFIG_PATH,
+    "default_demo.json": DEMO_DEFAULT_CONFIG_PATH,
+}
 MAX_SCAN_POINTS_PER_AXIS = 100_000
 MAX_SCAN_POINTS_TOTAL = 1_000_000
 
@@ -29,19 +36,69 @@ class ConfigPathResolution:
 def config_state_dir() -> Path:
     configured = os.environ.get(CONFIG_STATE_DIR_ENV)
     if configured:
-        return Path(configured)
+        return Path(configured).expanduser()
     return Path.home() / ".kohdalab"
 
 
-def last_config_state_path() -> Path:
+def user_config_dir() -> Path:
+    return config_state_dir() / "config"
+
+
+def _legacy_project_config_dir() -> Path | None:
+    candidate = PACKAGE_ROOT.parents[1] / "config"
+    return candidate if candidate.is_dir() else None
+
+
+def ensure_user_config_dir(
+    *,
+    destination: str | Path | None = None,
+    legacy_dir: str | Path | None = None,
+) -> Path:
+    """Install managed defaults and retain every user-created JSON profile."""
+
+    config_dir = (
+        Path(destination).expanduser() if destination is not None else user_config_dir()
+    )
+    config_dir.mkdir(parents=True, exist_ok=True)
+
+    for filename, template in MANAGED_DEFAULT_CONFIGS.items():
+        target = config_dir / filename
+        if not target.exists() or target.read_bytes() != template.read_bytes():
+            shutil.copyfile(template, target)
+
+    legacy = (
+        Path(legacy_dir).expanduser()
+        if legacy_dir is not None
+        else _legacy_project_config_dir()
+    )
+    if legacy is not None and legacy.resolve() != config_dir.resolve():
+        for source in legacy.glob("*.json"):
+            if source.name in MANAGED_DEFAULT_CONFIGS:
+                continue
+            target = config_dir / source.name
+            if not target.exists():
+                shutil.copyfile(source, target)
+
+    return config_dir
+
+
+def managed_default_config_path(*, demo: bool = False) -> Path:
+    filename = "default_demo.json" if demo else "default.json"
+    return ensure_user_config_dir() / filename
+
+
+def last_config_state_path(*, demo: bool = False) -> Path:
     configured = os.environ.get(LAST_CONFIG_STATE_PATH_ENV)
     if configured:
-        return Path(configured)
-    return config_state_dir() / "last_config.json"
+        return Path(configured).expanduser()
+    filename = "last_config_demo.json" if demo else "last_config.json"
+    return config_state_dir() / filename
 
 
 def read_last_config_path(path: str | Path | None = None) -> Path | None:
-    state_path = Path(path) if path is not None else last_config_state_path()
+    state_path = (
+        Path(path).expanduser() if path is not None else last_config_state_path()
+    )
     if not state_path.exists():
         return None
     try:
@@ -51,15 +108,17 @@ def read_last_config_path(path: str | Path | None = None) -> Path | None:
         value = state_path.read_text(encoding="utf-8").strip()
     if not value:
         return None
-    return Path(str(value))
+    return Path(str(value)).expanduser()
 
 
 def write_last_config_path(
     config_path: str | Path, path: str | Path | None = None
 ) -> Path:
-    state_path = Path(path) if path is not None else last_config_state_path()
+    state_path = (
+        Path(path).expanduser() if path is not None else last_config_state_path()
+    )
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved = Path(config_path)
+    resolved = Path(config_path).expanduser()
     state_path.write_text(
         json.dumps({"path": str(resolved)}, indent=2), encoding="utf-8"
     )
@@ -83,13 +142,13 @@ def resolve_config_path(
 ) -> ConfigPathResolution:
     candidates: list[dict[str, str]] = []
     if explicit_path:
-        path = Path(explicit_path)
+        path = Path(explicit_path).expanduser()
         _record_candidate(candidates, "explicit", path)
         return ConfigPathResolution(path=path, source="explicit", candidates=candidates)
 
     env_path = os.environ.get(env_var)
     if env_path:
-        path = Path(env_path)
+        path = Path(env_path).expanduser()
         _record_candidate(candidates, env_var, path)
         return ConfigPathResolution(path=path, source=env_var, candidates=candidates)
 
@@ -103,9 +162,9 @@ def resolve_config_path(
 
     default_from_env = os.environ.get(DEFAULT_CONFIG_PATH_ENV)
     default_path = (
-        Path(default_from_env)
+        Path(default_from_env).expanduser()
         if default_from_env
-        else Path(lab_default_path or DEFAULT_CONFIG_PATH)
+        else Path(lab_default_path or DEFAULT_CONFIG_PATH).expanduser()
     )
     _record_candidate(candidates, "lab_default", default_path)
     if default_path.exists():
@@ -716,7 +775,7 @@ def validate_config(config: dict[str, Any]) -> None:
 def load_config(
     path: str | Path = DEFAULT_CONFIG_PATH, *, validate: bool = True
 ) -> dict[str, Any]:
-    config_path = Path(path)
+    config_path = Path(path).expanduser()
     with config_path.open("r", encoding="utf-8") as f:
         config = normalize_config(json.load(f), source=config_path)
     if validate:
@@ -730,7 +789,7 @@ def save_config(
     config = normalize_config(config)
     if validate:
         validate_config(config)
-    output = Path(path)
+    output = Path(path).expanduser()
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return output

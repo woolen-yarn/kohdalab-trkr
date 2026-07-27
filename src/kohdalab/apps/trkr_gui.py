@@ -26,7 +26,8 @@ from kohdalab.api import (
     write_measurement_rows,
 )
 from kohdalab.api.config import (
-    DEFAULT_CONFIG_PATH,
+    last_config_state_path,
+    managed_default_config_path,
     normalize_config,
     normalize_delay_stage_name,
     resolve_config_path,
@@ -320,12 +321,17 @@ def _valid_scan2d_axes(mode: str, fast_axis: str, slow_axis: str) -> tuple[str, 
 class TRKRGui(QtWidgets.QMainWindow):
     device_command_requested = QtCore.Signal(object)
 
-    def __init__(self) -> None:
+    def __init__(self, *, demo: bool = False) -> None:
         super().__init__()
         self.setWindowTitle(f"KohdaLab TRKR v{__version__}")
         self.resize(1440, 820)
 
-        config_resolution = resolve_config_path()
+        self._default_config_path = managed_default_config_path(demo=demo)
+        self._last_config_state_path = last_config_state_path(demo=demo)
+        config_resolution = resolve_config_path(
+            last_state_path=self._last_config_state_path,
+            lab_default_path=self._default_config_path,
+        )
         self.config_path = QtWidgets.QLineEdit(str(config_resolution.path or ""))
         if config_resolution.path is None:
             self.config = normalize_config({})
@@ -334,7 +340,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             )
         else:
             self.config = load_config(config_resolution.path)
-            write_last_config_path(config_resolution.path)
+            write_last_config_path(config_resolution.path, self._last_config_state_path)
             self._startup_config_message = (
                 f"Loaded config ({config_resolution.source}): {config_resolution.path}"
             )
@@ -1902,7 +1908,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self._refresh_scan2d_role_hints("srkr_2d")
 
     def browse_config(self) -> None:
-        start_dir = self.config_path.text().strip() or str(DEFAULT_CONFIG_PATH)
+        start_dir = self.config_path.text().strip() or str(self._default_config_path)
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load Config", start_dir, "JSON Files (*.json)"
         )
@@ -1928,7 +1934,7 @@ class TRKRGui(QtWidgets.QMainWindow):
                 raise
             if self.experiment is not None:
                 self.experiment.config = self._runtime_config()
-            write_last_config_path(resolution.path)
+            write_last_config_path(resolution.path, self._last_config_state_path)
             self.append_log(f"Loaded config ({resolution.source}): {resolution.path}")
             missing_kinds = self._unconfigured_instrument_kinds()
             if missing_kinds:
@@ -1949,7 +1955,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.config = normalize_config(runtime_config)
             if self.experiment is not None:
                 self.experiment.config = deepcopy(self.config)
-            write_last_config_path(path)
+            write_last_config_path(path, self._last_config_state_path)
             self.append_log(f"Saved config: {path}")
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Config Error", str(e))

@@ -9,18 +9,21 @@ import pytest
 from kohdalab.api.config import (
     CONFIG_PATH_ENV,
     CONFIG_STATE_DIR_ENV,
+    DEMO_DEFAULT_CONFIG_PATH,
     DEFAULT_CONFIG_PATH_ENV,
     DEFAULT_CONFIG_PATH,
     LAST_CONFIG_STATE_PATH_ENV,
     MAX_SCAN_POINTS_PER_AXIS,
     build_range_points,
     config_state_dir,
+    ensure_user_config_dir,
     delay_stage_config_for,
     instrument_config,
     instrument_key,
     last_config_state_path,
     load_config,
     lockin_config_for,
+    managed_default_config_path,
     measurement_output_settings,
     measurement_settings,
     move_abs_settings,
@@ -33,6 +36,7 @@ from kohdalab.api.config import (
     save_config,
     scan_settings,
     scanner_config_for,
+    user_config_dir,
     validate_config,
     with_csv_suffix,
     write_last_config_path,
@@ -45,12 +49,12 @@ def test_packaged_default_config_exists_and_loads():
     assert load_config()["profile"]["name"] == "default"
 
 
-def test_packaged_default_config_matches_repository_sample():
-    repository_sample = DEFAULT_CONFIG_PATH.parents[3] / "config" / "default.json"
+def test_packaged_demo_default_config_exists_and_loads_without_hardware():
+    assert DEMO_DEFAULT_CONFIG_PATH.is_file()
+    config = load_config(DEMO_DEFAULT_CONFIG_PATH)
 
-    assert json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8")) == json.loads(
-        repository_sample.read_text(encoding="utf-8")
-    )
+    assert config["profile"]["name"] == "default_demo"
+    assert config["instruments"] == {}
 
 
 def test_normalize_config_adds_profile_measurement_defaults_and_legacy_scanner_scale():
@@ -661,7 +665,9 @@ def test_state_path_helpers_honor_environment_overrides(monkeypatch, tmp_path):
     monkeypatch.setenv(CONFIG_STATE_DIR_ENV, str(state_dir))
 
     assert config_state_dir() == state_dir
+    assert user_config_dir() == state_dir / "config"
     assert last_config_state_path() == state_dir / "last_config.json"
+    assert last_config_state_path(demo=True) == state_dir / "last_config_demo.json"
 
     monkeypatch.setenv(LAST_CONFIG_STATE_PATH_ENV, str(explicit_state))
     assert last_config_state_path() == explicit_state
@@ -672,7 +678,54 @@ def test_state_path_helpers_use_home_defaults_without_environment(monkeypatch):
     monkeypatch.delenv(LAST_CONFIG_STATE_PATH_ENV, raising=False)
 
     assert config_state_dir().name == ".kohdalab"
+    assert user_config_dir() == config_state_dir() / "config"
     assert last_config_state_path() == config_state_dir() / "last_config.json"
+
+
+def test_managed_defaults_refresh_without_overwriting_custom_configs(tmp_path):
+    destination = tmp_path / "state" / "config"
+    legacy = tmp_path / "project" / "config"
+    legacy.mkdir(parents=True)
+    (legacy / "default.json").write_text("legacy default", encoding="utf-8")
+    (legacy / "instrument.json").write_text('{"custom": 1}', encoding="utf-8")
+    destination.mkdir(parents=True)
+    (destination / "default.json").write_text("stale default", encoding="utf-8")
+    (destination / "personal.json").write_text('{"keep": true}', encoding="utf-8")
+
+    result = ensure_user_config_dir(destination=destination, legacy_dir=legacy)
+
+    assert result == destination
+    assert (
+        destination / "default.json"
+    ).read_bytes() == DEFAULT_CONFIG_PATH.read_bytes()
+    assert (
+        destination / "default_demo.json"
+    ).read_bytes() == DEMO_DEFAULT_CONFIG_PATH.read_bytes()
+    assert (destination / "personal.json").read_text(encoding="utf-8") == (
+        '{"keep": true}'
+    )
+    assert (destination / "instrument.json").read_text(encoding="utf-8") == (
+        '{"custom": 1}'
+    )
+
+    (legacy / "instrument.json").write_text('{"custom": 2}', encoding="utf-8")
+    ensure_user_config_dir(destination=destination, legacy_dir=legacy)
+    assert (destination / "instrument.json").read_text(encoding="utf-8") == (
+        '{"custom": 1}'
+    )
+    assert (
+        ensure_user_config_dir(destination=destination, legacy_dir=destination)
+        == destination
+    )
+
+
+def test_managed_default_path_selects_normal_and_demo(monkeypatch, tmp_path):
+    monkeypatch.setenv(CONFIG_STATE_DIR_ENV, str(tmp_path))
+
+    assert managed_default_config_path() == tmp_path / "config" / "default.json"
+    assert managed_default_config_path(demo=True) == (
+        tmp_path / "config" / "default_demo.json"
+    )
 
 
 @pytest.mark.parametrize("contents", ["", "{}", "null", '""'])

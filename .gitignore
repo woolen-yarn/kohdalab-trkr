@@ -23,5 +23,11 @@ htmlcov/
 thermorack_log.csv
 trkr_test.csv
 
-# PC-specific configs should not be overwritten by git pulls.
-config/*.local.json
+# Experimental replay data. Never commit these files to the public
+# woolen-yarn repository. The private Kohdalab demo repository is prepared
+# separately when the recordings need to be bundled.
+demo_csv/*.csv
+
+# Legacy project-local configs are migrated to ~/.kohdalab/config and ignored.
+# Keep this rule so arbitrary pre-migration profiles cannot be committed by mistake.
+/config/*.json

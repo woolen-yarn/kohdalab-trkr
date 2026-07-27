@@ -986,10 +986,12 @@ def test_gui_runtime_config_preserves_scanner_software_hysteresis(
     monkeypatch.setattr(
         gui_module,
         "resolve_config_path",
-        lambda: ConfigPathResolution(config_path, "test", []),
+        lambda **_kwargs: ConfigPathResolution(config_path, "test", []),
     )
     monkeypatch.setattr(gui_module, "load_config", lambda _path: loaded_config)
-    monkeypatch.setattr(gui_module, "write_last_config_path", lambda _path: None)
+    monkeypatch.setattr(
+        gui_module, "write_last_config_path", lambda _path, _state_path: None
+    )
     monkeypatch.setattr(TRKRGui, "refresh_all_ports", lambda self: None)
     monkeypatch.setattr(TRKRGui, "_install_log_streams", lambda self: None)
 
