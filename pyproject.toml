@@ -67,7 +67,7 @@ include-package-data = true
 
 [tool.setuptools.package-data]
 kohdalab = [
-    "resources/*.json",
+    "config/*.json",
     "instruments/delay_stage/*.toml",
     "instruments/scanner/*.toml",
 ]

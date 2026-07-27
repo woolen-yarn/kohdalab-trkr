@@ -64,7 +64,8 @@ uv run kohdalab-replay-gui --data-dir C:\path\to\demo-data --interval 0
 
 ## 操作手順
 
-1. 通常GUIと同様に `default.json` を選び、`Load` を押します。
+1. Demo専用の `~/.kohdalab/config/default_demo.json` が選択されていることを確認し、
+   `Load` を押します。通常版の `default.json` や最後に開いた設定とは分離されています。
 2. `Connect All` を押します。設定済み装置が仮想接続され、実機通信は行いません。
 3. TRKR、SRKR、STRKR、またはSRKR 2Dタブを選びます。
 4. Replay CSV欄には `demo_csv` の該当ファイルが選択済みです。変更する場合だけ

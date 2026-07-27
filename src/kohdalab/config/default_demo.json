@@ -1,0 +1,94 @@
+{
+  "profile": {
+    "name": "default_demo",
+    "description": "Hardware-free CSV replay profile."
+  },
+  "instruments": {},
+  "measurements": {
+    "move_abs": {
+      "coordinate": "measurement",
+      "zero": {
+        "t_ps": -122.0,
+        "x_um": 61.5756,
+        "y_um": 477.0136
+      },
+      "targets": {
+        "t": 0.0,
+        "x": 0.0,
+        "y": 0.0
+      }
+    },
+    "trkr": {
+      "coordinate": "measurement",
+      "scan": {
+        "min": -50.0,
+        "max": 300.0,
+        "step": 5.0
+      },
+      "wait_s": 2.0,
+      "return_to_zero": true
+    },
+    "srkr": {
+      "coordinate": "measurement",
+      "scan": {
+        "axis": "x",
+        "min": -30.0,
+        "max": 30.0,
+        "step": 1.0
+      },
+      "wait_s": 2.0,
+      "return_to_zero": true
+    },
+    "strkr": {
+      "scan": {
+        "fast_axis": "t",
+        "slow_axis": "x",
+        "ranges": {
+          "t": {
+            "min": -50.0,
+            "max": 300.0,
+            "step": 5.0
+          },
+          "x": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          },
+          "y": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          }
+        }
+      },
+      "wait_s": 2.0,
+      "return_to_zero": {
+        "fast_axis": true,
+        "slow_axis": true
+      }
+    },
+    "srkr_2d": {
+      "scan": {
+        "fast_axis": "x",
+        "slow_axis": "y",
+        "ranges": {
+          "x": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          },
+          "y": {
+            "min": -30.0,
+            "max": 30.0,
+            "step": 1.0
+          }
+        }
+      },
+      "wait_s": 2.0,
+      "return_to_zero": {
+        "fast_axis": true,
+        "slow_axis": true
+      }
+    }
+  }
+}

@@ -29,7 +29,7 @@ The central object is `Experiment`.
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("config/kikuchi.json")
+config = load_config("~/.kohdalab/config/kikuchi.json")
 experiment = Experiment(config)
 experiment.connect_all()
 status = experiment.read_live_status()
@@ -100,9 +100,9 @@ tree. Their history remains available in version control.
 
 Two main config profiles exist:
 
-- `config/kikuchi.json`
+- `~/.kohdalab/config/kikuchi.json`
   CONEXCC scanner setup with TRA12CC actuators.
-- `config/default.json`
+- `src/kohdalab/config/default.json`
   CONEXAGAP scanner setup with AG-M100D actuators on shared COM port axes U/V.
 
 Normalized config contains:

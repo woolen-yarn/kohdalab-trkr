@@ -28,5 +28,6 @@ trkr_test.csv
 # separately when the recordings need to be bundled.
 demo_csv/*.csv
 
-# PC-specific configs should not be overwritten by git pulls.
-config/*.local.json
+# Legacy project-local configs are migrated to ~/.kohdalab/config and ignored.
+# Keep this rule so arbitrary pre-migration profiles cannot be committed by mistake.
+/config/*.json

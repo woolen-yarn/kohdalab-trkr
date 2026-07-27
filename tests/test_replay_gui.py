@@ -577,11 +577,11 @@ def test_config_load_virtual_connect_and_disconnect_flow(tmp_path):
 
     window = ReplayGui(initial_dir=tmp_path)
     window.datasets["trkr"] = dataset()
-    window.config_path.setText(str(Path("config/default.json").resolve()))
+    window.config_path.setText(str(window._default_config_path))
 
     window.load_config_file()
     assert not window.virtual_connected
-    assert window.lockin_model_combo.currentText() == "SR7265"
+    assert window.config["profile"]["name"] == "default_demo"
     assert window.status_label.text() == "config loaded; click Connect All"
     assert window.datasets == {}
     assert window.selected_paths == expected_paths

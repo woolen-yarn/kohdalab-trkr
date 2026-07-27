@@ -28,7 +28,8 @@ REQUIRED_SDIST_FILES = {
     "uv.lock",
 }
 REQUIRED_RESOURCES = {
-    "kohdalab/resources/default.json",
+    "kohdalab/config/default.json",
+    "kohdalab/config/default_demo.json",
     "kohdalab/instruments/delay_stage/stages.toml",
     "kohdalab/instruments/scanner/actuator.toml",
 }

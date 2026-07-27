@@ -37,6 +37,11 @@ uv run kohdalab-replay-gui
 
 Loading the config automatically selects the TRKR, SRKR, STRKR, and SRKR 2D
 files found in `demo_csv`. Use `--data-dir` to select a different directory.
+Packaged config templates live in `src/kohdalab/config`. At startup, the GUI
+refreshes only `default.json` and `default_demo.json` under
+`~/.kohdalab/config`; all user-created JSON profiles in that directory are
+preserved across Git and package upgrades. The normal and replay GUIs keep
+separate default and last-used config state.
 Experimental CSV files are not included in the public woolen-yarn repository;
 see [`demo_csv/README.md`](demo_csv/README.md) for placement and data-handling
 notes.

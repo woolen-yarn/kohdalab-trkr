@@ -11,7 +11,7 @@ English version: [`api_usage.md`](api_usage.md).
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("config/kikuchi.json")
+config = load_config("~/.kohdalab/config/kikuchi.json")
 experiment = Experiment(config)
 
 plan = trkr_plan_from_config(config)
@@ -188,11 +188,11 @@ Signal Monitor は `fast_axis=elapsed_s` と `target_elapsed_s` を使います�
 ## CLI
 
 ```powershell
-kohdalab-cli --config config\kikuchi.json signal-monitor
-kohdalab-cli --config config\kikuchi.json trkr
-kohdalab-cli --config config\kikuchi.json srkr --axis x
-kohdalab-cli --config config\kikuchi.json strkr --fast-axis t --slow-axis x
-kohdalab-cli --config config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json signal-monitor
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json trkr
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json srkr --axis x
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json strkr --fast-axis t --slow-axis x
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
 ```
 
 CLI は start/status/point progress を表示し、各 measurement の output 設定に従って CSV を書きます。最終的な `Saved` は device cleanup 成功後だけ表示します。終了コードは、完了が `0`、実行時または cleanup 失敗が `1`、引数/config 不正が `2`、キーボード割り込みが `130` です。

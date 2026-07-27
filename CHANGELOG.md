@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Promoted the hardware-free CSV replay GUI to a maintained application alongside
+  the normal hardware GUI.
+- Moved packaged config templates under `src/kohdalab/config` and added a
+  hardware-free `default_demo.json` profile.
+- Added a persistent `~/.kohdalab/config` profile directory that refreshes only
+  the managed normal and Demo defaults while preserving every user-created JSON
+  file across Git and package upgrades.
+- Separated the normal and Demo GUI last-used config state.
+
 ## [0.2.3] - 2026-07-23
 
 - Kept output filenames independent for TRKR, SRKR, STRKR, and SRKR 2D instead

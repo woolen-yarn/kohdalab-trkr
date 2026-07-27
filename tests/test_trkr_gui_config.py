@@ -700,7 +700,11 @@ def test_gui_load_config_updates_existing_experiment_and_last_path(
         lambda _path: ConfigPathResolution(path, "explicit", [path]),
     )
     monkeypatch.setattr(gui_module, "load_config", lambda _path: candidate)
-    monkeypatch.setattr(gui_module, "write_last_config_path", remembered.append)
+    monkeypatch.setattr(
+        gui_module,
+        "write_last_config_path",
+        lambda value, _state_path: remembered.append(value),
+    )
 
     gui.load_config_file()
 

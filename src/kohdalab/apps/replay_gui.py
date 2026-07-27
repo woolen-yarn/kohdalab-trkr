@@ -200,7 +200,7 @@ class ReplayGui(TRKRGui):
         self.initial_dir = Path(initial_dir).expanduser()
         self.virtual_connected = False
         self.replay_worker: ReplayWorker | None = None
-        super().__init__()
+        super().__init__(demo=True)
         if interval_s is not None:
             for spin in (
                 self.trkr_wait_spin,

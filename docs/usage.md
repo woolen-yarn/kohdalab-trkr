@@ -118,16 +118,18 @@ Python package とは別に、実機 PC 側に以下が必要です。
 uv run kohdalab-gui
 ```
 
-その PC 用に config を編集する場合は、Git 管理されている `config\default.json` を直接上書きせず、
-先にローカル用ファイルへコピーします。`config\*.local.json` は Git 管理外なので、`git pull` で上書きされません。
+同梱テンプレートは `src\kohdalab\config` にあります。GUI起動時に
+`$HOME\.kohdalab\config` へ `default.json` と `default_demo.json` だけを更新し、
+それ以外のJSONは残します。そのPC用の設定は、通常版の既定値を別名へコピーして編集します。
 
 ```powershell
-Copy-Item config\default.json config\kikuchi.local.json
+$configDir = Join-Path $HOME ".kohdalab\config"
+Copy-Item (Join-Path $configDir "default.json") (Join-Path $configDir "kikuchi.json")
 ```
 
 GUI が起動したら:
 
-1. `Load` で `config\kikuchi.local.json` を開いて確認します。
+1. `Load` で `$HOME\.kohdalab\config\kikuchi.json` を開いて確認します。
 2. Lock-in resource と各 COM port を `Refresh` して選び直します。
 3. `Save` でその PC 用の config に保存します。
 4. `Connect All` または個別 `Connect` で接続します。
@@ -141,7 +143,7 @@ GUI が起動したら:
 CLI:
 
 ```powershell
-uv run kohdalab-cli --config config\kikuchi.local.json trkr
+uv run kohdalab-cli --config "$HOME\.kohdalab\config\kikuchi.json" trkr
 ```
 
 Notebook:
@@ -198,8 +200,9 @@ uv run kohdalab-gui
 
 `git status` で `working tree clean` ならそのまま更新できます。`uv sync --all-extras` は、最新版で依存パッケージが変わった場合に `.venv` を合わせるためです。
 
-PC ごとの設定は `config\*.local.json` に保存してください。このファイルは Git 管理外なので、
-`git pull` では上書きされません。
+PCごとの設定は `$HOME\.kohdalab\config` に既定名以外で保存してください。
+`git pull` や既定テンプレートの更新では、`default.json` と
+`default_demo.json` 以外のJSONを削除・上書きしません。
 
 デスクトップのショートカットは、repo の場所を変えない限り作り直さなくて大丈夫です。
 `.vbs` は `.venv\Scripts\pythonw.exe` があればそれを使い、なければ `uv run --extra gui python -m kohdalab.apps.trkr_gui` で最新版を起動します。
@@ -305,17 +308,19 @@ needs:
 uv run kohdalab-gui
 ```
 
-For PC-specific settings, copy the tracked default config to a local config
-first. `config\*.local.json` is ignored by Git, so `git pull` will not overwrite
-it.
+Packaged templates live in `src\kohdalab\config`. At GUI startup, only
+`default.json` and `default_demo.json` are refreshed under
+`$HOME\.kohdalab\config`; every other JSON profile is preserved. Copy the
+normal default to a PC-specific name before editing it.
 
 ```powershell
-Copy-Item config\default.json config\kikuchi.local.json
+$configDir = Join-Path $HOME ".kohdalab\config"
+Copy-Item (Join-Path $configDir "default.json") (Join-Path $configDir "kikuchi.json")
 ```
 
 After the GUI opens:
 
-1. Open `config\kikuchi.local.json` with `Load` and check the config.
+1. Open `$HOME\.kohdalab\config\kikuchi.json` with `Load` and check the config.
 2. Use `Refresh` to select the lock-in resource and COM ports for this PC.
 3. Save the PC-specific config with `Save`.
 4. Connect devices with `Connect All` or individual `Connect` buttons.
@@ -330,7 +335,7 @@ Use `hardware_smoke_test.md` for the hardware verification checklist.
 CLI:
 
 ```powershell
-uv run kohdalab-cli --config config\kikuchi.local.json trkr
+uv run kohdalab-cli --config "$HOME\.kohdalab\config\kikuchi.json" trkr
 ```
 
 Notebook:
@@ -425,7 +430,7 @@ Python API
 ```python
 from kohdalab.api import Experiment, load_config, trkr_plan_from_config
 
-config = load_config("config/kikuchi.local.json")
+config = load_config("~/.kohdalab/config/kikuchi.json")
 experiment = Experiment(config)
 experiment.connect_all()
 status = experiment.read_live_status()
@@ -444,19 +449,19 @@ can also be started from a terminal:
 For post-change hardware verification, use `hardware_smoke_test.md`.
 
 ```powershell
-kohdalab-cli --config config\kikuchi.local.json signal-monitor
-kohdalab-cli --config config\kikuchi.local.json trkr
-kohdalab-cli --config config\kikuchi.local.json srkr --axis x
-kohdalab-cli --config config\kikuchi.local.json strkr --fast-axis t --slow-axis x
-kohdalab-cli --config config\kikuchi.local.json srkr-2d --fast-axis x --slow-axis y
-kohdalab-cli --config config\kikuchi.local.json move-abs --axis x --coordinate measurement --value 10
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json signal-monitor
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json trkr
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json srkr --axis x
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json strkr --fast-axis t --slow-axis x
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json srkr-2d --fast-axis x --slow-axis y
+kohdalab-cli --config $HOME\.kohdalab\config\kikuchi.json move-abs --axis x --coordinate measurement --value 10
 ```
 
 If the package script is not installed, run the module directly:
 
 ```powershell
 $env:PYTHONPATH='src'
-uv run python -m kohdalab.api.cli --config config\kikuchi.local.json trkr
+uv run python -m kohdalab.api.cli --config $HOME\.kohdalab\config\kikuchi.json trkr
 ```
 
 The CLI prints start/status/point progress, writes measurement rows to the
