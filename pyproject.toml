@@ -44,7 +44,7 @@ notebook = [
     "matplotlib>=3.11.0",
     "mistune>=3.3.3",
     "pandas>=3.0.2",
-    "soupsieve>=2.8.4",
+    "soupsieve>=2.9.1",
     "tornado>=6.5.7",
 ]
 
@@ -142,7 +142,7 @@ dev = [
     "pyside6>=6.11.1",
     "pyqtgraph>=0.14.0",
     "mistune>=3.3.3",
-    "soupsieve>=2.8.4",
+    "soupsieve>=2.9.1",
     "tornado>=6.5.7",
 ]
 package = [
