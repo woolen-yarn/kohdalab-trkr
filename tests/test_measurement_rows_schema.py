@@ -99,6 +99,89 @@ def test_scan2d_row_carries_targets_for_both_axes():
     assert row["x_cor_um"] == 5.0
 
 
+def test_rotated_scan_row_preserves_lockin_theta_and_records_spatial_targets():
+    row = scan2d_row(
+        timestamp="t0",
+        measurement="srkr_2d",
+        fast_axis="u",
+        slow_axis="v",
+        targets={"u": 2.0, "v": 3.0},
+        physical_targets={"x": 7.0, "y": 6.0},
+        position=Position(x_um=7.0, y_um=6.0),
+        zero={"x_um": 5.0, "y_um": 3.0},
+        signal=SIGNAL,
+        theta_deg=90.0,
+    )
+
+    assert row["Theta_deg"] == 4.0
+    assert row["spatial_theta_deg"] == 90.0
+    assert row["target_u_cor_um"] == 2.0
+    assert row["target_v_cor_um"] == 3.0
+    assert row["target_x_cor_um"] == 2.0
+    assert row["target_y_cor_um"] == 3.0
+
+
+def test_rotated_rows_omit_unavailable_physical_details():
+    srkr = srkr_row(
+        timestamp="t0",
+        fast_axis="u",
+        target_cor_um=2.0,
+        cor_um=None,
+        position_um=None,
+        signal=SIGNAL,
+        coordinate="measurement",
+        scanner_unit=None,
+        scanner_value=None,
+        x_um=3.0,
+        y_um=4.0,
+        physical_targets={"x": 3.0},
+        x_scanner_unit="invalid",
+        y_scanner_unit=None,
+    )
+    assert srkr["target_x_cor_um"] == 3.0
+    assert srkr["target_y_cor_um"] is None
+    assert srkr["x_scanner_deg"] is None
+
+    scan2d = scan2d_row(
+        timestamp="t0",
+        measurement="srkr_2d",
+        fast_axis="u",
+        slow_axis="v",
+        targets={"u": 1.0, "v": 2.0},
+        physical_targets={"x": 3.0},
+        position=Position(),
+        zero={"x_um": 1.0, "y_um": 2.0},
+        signal=SIGNAL,
+    )
+    assert scan2d["target_x_cor_um"] == 2.0
+    assert scan2d["target_y_cor_um"] is None
+    assert scan2d["u_cor_um"] is None
+    assert scan2d["spatial_theta_deg"] == 0.0
+
+
+def test_rotated_srkr_row_records_both_physical_scanner_values():
+    row = srkr_row(
+        timestamp="t0",
+        fast_axis="v",
+        target_cor_um=2.0,
+        cor_um=None,
+        position_um=None,
+        signal=SIGNAL,
+        coordinate="measurement",
+        scanner_unit=None,
+        scanner_value=None,
+        x_um=3.0,
+        y_um=4.0,
+        x_scanner_unit="mm",
+        x_scanner_value=0.1,
+        y_scanner_unit="deg",
+        y_scanner_value=0.2,
+    )
+
+    assert row["x_scanner_mm"] == 0.1
+    assert row["y_scanner_deg"] == 0.2
+
+
 def test_fields_for_rows_uses_unified_columns():
     signal = signal_monitor_row(
         timestamp="t0", target_elapsed_s=0.0, elapsed_s=0.0, signal=SIGNAL

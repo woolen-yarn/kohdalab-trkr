@@ -3,6 +3,11 @@
     "name": "default_demo",
     "description": "Hardware-free CSV replay profile."
   },
+  "coordinates": {
+    "spatial": {
+      "theta_deg": 0.0
+    }
+  },
   "instruments": {},
   "measurements": {
     "move_abs": {

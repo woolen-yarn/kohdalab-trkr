@@ -134,14 +134,22 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("trkr", help="Run TRKR scan.")
     srkr_parser = subparsers.add_parser("srkr", help="Run SRKR scan.")
     srkr_parser.add_argument(
-        "--axis", choices=("x", "y"), default=None, help="Scan axis."
+        "--axis", choices=("x", "y", "u", "v"), default=None, help="Scan axis."
     )
     strkr_parser = subparsers.add_parser("strkr", help="Run STRKR 2D scan.")
-    strkr_parser.add_argument("--fast-axis", choices=("t", "x", "y"), default=None)
-    strkr_parser.add_argument("--slow-axis", choices=("t", "x", "y"), default=None)
+    strkr_parser.add_argument(
+        "--fast-axis", choices=("t", "x", "y", "u", "v"), default=None
+    )
+    strkr_parser.add_argument(
+        "--slow-axis", choices=("t", "x", "y", "u", "v"), default=None
+    )
     srkr_2d_parser = subparsers.add_parser("srkr-2d", help="Run SRKR 2D scan.")
-    srkr_2d_parser.add_argument("--fast-axis", choices=("x", "y"), default=None)
-    srkr_2d_parser.add_argument("--slow-axis", choices=("x", "y"), default=None)
+    srkr_2d_parser.add_argument(
+        "--fast-axis", choices=("x", "y", "u", "v"), default=None
+    )
+    srkr_2d_parser.add_argument(
+        "--slow-axis", choices=("x", "y", "u", "v"), default=None
+    )
     move_parser = subparsers.add_parser(
         "move-abs", help="Move one axis to an absolute position."
     )

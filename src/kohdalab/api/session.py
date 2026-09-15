@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from copy import deepcopy
 from threading import RLock
 from types import TracebackType
@@ -20,6 +20,7 @@ from kohdalab.api.devices import (
     initialize_scanner as service_initialize_scanner,
     move_delay_stage_abs,
     move_scanner_abs,
+    move_scanners_xy_abs,
     read_delay_stage,
     read_lockin_overload,
     read_lockin_settings,
@@ -33,6 +34,7 @@ from kohdalab.api.status import (
     StatusCallback,
     moving_scanner_status,
 )
+from kohdalab.instruments.scanner.conexcc import ConexCC
 
 
 class DeviceSession:
@@ -493,6 +495,50 @@ class DeviceSession:
                 on_position=on_position,
             )
         return Position.from_rows(row)
+
+    def move_scanners_xy(
+        self,
+        x_um: float,
+        y_um: float,
+        *,
+        apply_software_hysteresis: bool = True,
+        on_status: StatusCallback | None = None,
+    ) -> Position:
+        scanners: dict[str, Any] = {}
+        keys: dict[str, str] = {}
+        for axis in ("x", "y"):
+            key = self.resolve_ref(f"scanner.{axis}", default_kind="scanner")[1]
+            config = self._instrument_config("scanner", key)
+            scanner = self._connected_handle("scanner", key)
+            if scanner is None:
+                scanner = self._require_or_auto_connect("scanner", key, config)
+            keys[axis] = key
+            scanners[axis] = scanner
+        x_controller = scanners["x"].controller
+        y_controller = scanners["y"].controller
+        if x_controller is y_controller or (
+            isinstance(x_controller, ConexCC)
+            and isinstance(y_controller, ConexCC)
+            and x_controller.ser is y_controller.ser
+            and x_controller.controller_address == y_controller.controller_address
+        ):
+            raise ValueError("scanner x and y must address distinct controller axes")
+        locks: dict[int, AbstractContextManager[Any]] = {}
+        for axis in ("x", "y"):
+            lock = self._device_lock("scanner", keys[axis])
+            locks[id(lock)] = lock
+        with ExitStack() as stack:
+            for lock_id in sorted(locks):
+                stack.enter_context(locks[lock_id])
+            for axis in ("x", "y"):
+                self._ensure_handle_connected("scanner", keys[axis], scanners[axis])
+            rows = move_scanners_xy_abs(
+                scanners=scanners,
+                targets_um={"x": x_um, "y": y_um},
+                apply_software_hysteresis=apply_software_hysteresis,
+                on_status=on_status,
+            )
+        return Position.from_rows(rows["x"], rows["y"])
 
     def resolve_ref(self, ref: str, default_kind: str | None = None) -> tuple[str, str]:
         aliases = {

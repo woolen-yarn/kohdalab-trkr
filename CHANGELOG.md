@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## [0.2.5] - 2026-09-15
+
+- Updated Tornado and pip to resolve dependency-audit findings.
+- Added shared rotated u/v coordinates and a configurable angle to SRKR, STRKR,
+  and SRKR 2D, using the existing X/Y scanner offsets as the spatial origin.
+- Added physical target preflight checks, u/v-aware measurement rows, CLI and
+  replay support, and axis-aware plots for rotated scans.
+- Overlapped X/Y absolute target moves on CONEX-AGAP and CONEX-CC by starting
+  both axes before waiting for their stop states; retained CC hysteresis
+  pre-approach and stop attempts on launch failures.
+- Moved the angle control beside the scan axis selection, showing it only when
+  u/v is in use and sharing its value across the three spatial scan tabs.
+
 ## [0.2.4] - 2026-07-27
 
 - Promoted the hardware-free CSV replay GUI to a maintained application alongside

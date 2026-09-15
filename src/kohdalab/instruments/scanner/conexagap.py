@@ -252,13 +252,21 @@ class ConexAgap:
     ) -> float:
         if isinstance(pos_raw, bool) or not math.isfinite(float(pos_raw)):
             raise ValueError("CONEX-AGAP absolute target must be finite.")
-        self._ensure_ready()
-        self.write(f"PA{self.axis}{float(pos_raw):.4f}")
+        self.prepare_move()
+        self.start_abs_raw(pos_raw)
         self.wait_until_stopped(timeout=timeout, on_position=on_position)
         pos = self.get_pos_raw()
         if on_position is not None:
             on_position(pos)
         return pos
+
+    def prepare_move(self) -> None:
+        self._ensure_ready()
+
+    def start_abs_raw(self, pos_raw: float) -> None:
+        if isinstance(pos_raw, bool) or not math.isfinite(float(pos_raw)):
+            raise ValueError("CONEX-AGAP absolute target must be finite.")
+        self.write(f"PA{self.axis}{float(pos_raw):.4f}")
 
     def move_rel_raw(
         self,

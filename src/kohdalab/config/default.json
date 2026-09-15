@@ -3,6 +3,11 @@
     "name": "default",
     "description": "Default TRKR/SRKR setup using CONEXAGAP scanners."
   },
+  "coordinates": {
+    "spatial": {
+      "theta_deg": 0.0
+    }
+  },
   "instruments": {
     "lockin": {
       "main": {

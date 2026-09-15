@@ -18,7 +18,7 @@ from kohdalab.api.status import (
     moving_axis_status,
 )
 from kohdalab.apps import replay_gui
-from kohdalab.apps.replay import ReplayDataset
+from kohdalab.apps.replay import ReplayDataset, load_replay_csv
 from kohdalab.apps.replay_gui import ReplayGui, ReplayWorker, build_parser
 from kohdalab.apps.trkr_gui import TRKRGui
 
@@ -87,6 +87,54 @@ def write_dataset_csv(path: Path, replay_dataset: ReplayDataset) -> None:
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(replay_dataset.rows)
+
+
+@pytest.mark.parametrize(
+    ("measurement", "fast", "slow"),
+    [("srkr", "u", None), ("strkr", "t", "v"), ("srkr_2d", "u", "v")],
+)
+def test_replay_loads_uv_axes(tmp_path, measurement, fast, slow):
+    source = dataset(measurement)
+    row = dict(source.rows[0])
+    row["fast_axis"] = fast
+    row["slow_axis"] = slow
+    for axis in (fast, slow):
+        if axis is None or axis == "t":
+            continue
+        row[f"{axis}_cor_um"] = 0.0
+        row[f"target_{axis}_cor_um"] = 0.0
+    path = tmp_path / f"{measurement}.csv"
+    write_dataset_csv(
+        path,
+        ReplayDataset(path, measurement, (row,), fast, slow),
+    )
+    loaded = load_replay_csv(path)
+    assert (loaded.fast_axis, loaded.slow_axis) == (fast, slow)
+
+
+def test_replay_worker_runs_uv_scan_without_hardware_axis_status_error():
+    source = dataset("srkr_2d")
+    row = dict(source.rows[0])
+    row.update(
+        fast_axis="u",
+        slow_axis="v",
+        u_cor_um=0.0,
+        v_cor_um=10.0,
+        target_u_cor_um=0.0,
+        target_v_cor_um=10.0,
+    )
+    worker = ReplayWorker(
+        ReplayDataset(source.path, "srkr_2d", (row,), "u", "v"),
+        interval_s=0.001,
+    )
+    errors: list[str] = []
+    statuses: list[str] = []
+    worker.error_occurred.connect(errors.append)
+    worker.status_changed.connect(statuses.append)
+    worker.point_ready.connect(lambda _point: worker.stop())
+    worker.run()
+    assert errors == []
+    assert any("spatial" in status for status in statuses)
 
 
 def test_parser_defaults_to_demo_csv():

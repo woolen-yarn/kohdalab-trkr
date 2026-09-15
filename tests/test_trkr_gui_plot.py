@@ -50,6 +50,8 @@ def test_signal_scale_leaves_theta_unscaled():
 def test_scan2d_equal_spatial_units_only_for_xy():
     assert scan2d_uses_equal_spatial_units("x", "y")
     assert scan2d_uses_equal_spatial_units("y", "x")
+    assert scan2d_uses_equal_spatial_units("u", "v")
+    assert scan2d_uses_equal_spatial_units("v", "u")
     assert not scan2d_uses_equal_spatial_units("t", "x")
 
 

@@ -123,6 +123,8 @@ def test_extract_loaded_gui_config_from_api_config_resolves_refs_and_sections():
 def test_build_saved_config_from_snapshot():
     config = build_saved_config(snapshot())
 
+    assert config["coordinates"]["spatial"]["theta_deg"] == 0.0
+
     assert config["instruments"]["lockin"] == {
         "main": {"model": "SR7265", "resource": "GPIB0::12::INSTR"},
         "aux": {"model": "SR7265", "resource": "GPIB0::12::INSTR"},
@@ -475,6 +477,7 @@ def test_gui_runtime_config_snapshot_updates_fields_and_preserves_extensions():
         t_zero_spin=DummyValue(10.0),
         x_zero_spin=DummyValue(20.0),
         y_zero_spin=DummyValue(30.0),
+        spatial_theta_spin=DummyValue(45.0),
         move_t_spin=DummyValue(1.0),
         move_x_spin=DummyValue(2.0),
         move_y_spin=DummyValue(3.0),
@@ -505,6 +508,7 @@ def test_gui_runtime_config_snapshot_updates_fields_and_preserves_extensions():
     )
 
     config = TRKRGui._runtime_config(dummy)
+    assert config["coordinates"]["spatial"]["theta_deg"] == 45.0
 
     assert config["extension"] == {"keep": True}
     assert config["measurements"]["trkr"]["custom"] == "preserved"

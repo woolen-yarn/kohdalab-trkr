@@ -69,7 +69,9 @@ strkr = strkr_plan_from_config(config, fast_axis="t", slow_axis="x")
 srkr_2d = srkr_2d_plan_from_config(config, fast_axis="x", slow_axis="y")
 ```
 
-STRKR は `t` と `x/y` の時空間 2D scan です。fast/slow の組み合わせは `(t,x)`, `(t,y)`, `(x,t)`, `(y,t)` です。SRKR 2D は `x/y` の空間 2D scan で、組み合わせは `(x,y)` または `(y,x)` です。
+STRKR は `t` と `x/y/u/v` の時空間 2D scan です。SRKR 2D は `(x,y)`, `(y,x)`, `(u,v)`, `(v,u)` の空間 2D scan です。
+
+共通の空間座標系 `coordinates.spatial.theta_deg` を指定すると、SRKR は `u` または `v` に沿った直線 scan、STRKR は `t/u` または `t/v` の時空間 scan、SRKR 2D は `u/v` の回転格子 scan も選べます。原点は従来どおり `measurements.move_abs.zero.x_um/y_um` です。`theta_deg` は試料座標の +x から +y 方向へ測る角度で、初期値は 0 度です。`u/v` の target は `x=x_zero+u cosθ−v sinθ`, `y=y_zero+u sinθ+v cosθ` に変換され、両 scanner を動かします。AGAP/CC とも x/y へ目標を連続送信して移動を重ね、両軸の停止を確認してから測定します。開始時刻や移動中の軌跡は厳密には同期しません。`x/y` scan の挙動は変わりません。
 
 2D plan は corrected coordinate を使います。scan しない軸は触らず、operator が事前に move した位置のままです。`Scan2DPlan` には `fast_point_count`, `slow_point_count`, `total_points` があります。
 

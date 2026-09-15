@@ -1,6 +1,6 @@
 [project]
 name = "kohdalab"
-version = "0.2.4"
+version = "0.2.5"
 description = "Experiment control and data acquisition for time-resolved Kerr rotation systems"
 readme = "README.md"
 requires-python = ">=3.13,<3.15"
@@ -45,7 +45,7 @@ notebook = [
     "mistune>=3.3.3",
     "pandas>=3.0.2",
     "soupsieve>=2.8.4",
-    "tornado>=6.5.7",
+    "tornado>=6.5.8",
 ]
 
 [project.scripts]
@@ -143,7 +143,7 @@ dev = [
     "pyqtgraph>=0.14.0",
     "mistune>=3.3.3",
     "soupsieve>=2.8.4",
-    "tornado>=6.5.7",
+    "tornado>=6.5.8",
 ]
 package = [
     "check-wheel-contents",

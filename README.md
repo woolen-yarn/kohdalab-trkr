@@ -84,9 +84,10 @@ uv build --no-sources
 
 ## Project Status
 
-The current development version is `0.2.4`. It adds the maintained hardware-free
-CSV replay GUI, separates normal and Demo defaults, and preserves user-created
-config profiles across Git and package upgrades.
+The current development version is `0.2.5`. It adds rotated u/v spatial scans
+to SRKR, STRKR, and SRKR 2D, with a shared angle and the existing X/Y offsets
+as the origin. CONEX-AGAP and CONEX-CC now overlap X/Y target moves and wait for
+both axes to stop before acquisition.
 Hardware operation still requires the checks described in
 [SAFETY.md](SAFETY.md) and the
 [hardware smoke-test guide](docs/hardware_smoke_test.md).

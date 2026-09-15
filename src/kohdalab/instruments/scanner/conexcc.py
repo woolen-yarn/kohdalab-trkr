@@ -301,14 +301,22 @@ class ConexCC:
     ) -> float:
         if isinstance(pos_raw, bool) or not math.isfinite(float(pos_raw)):
             raise ValueError("CONEX-CC absolute target must be finite.")
-        self._ensure_ready_closed_loop()
-        self.write(f"PA{float(pos_raw):.4f}")
+        self.prepare_move()
+        self.start_abs_raw(pos_raw)
         self.wait_until_stopped(timeout=timeout, on_position=on_position)
         self._check_error()
         pos = self.get_pos_raw()
         if on_position is not None:
             on_position(pos)
         return pos
+
+    def prepare_move(self) -> None:
+        self._ensure_ready_closed_loop()
+
+    def start_abs_raw(self, pos_raw: float) -> None:
+        if isinstance(pos_raw, bool) or not math.isfinite(float(pos_raw)):
+            raise ValueError("CONEX-CC absolute target must be finite.")
+        self.write(f"PA{float(pos_raw):.4f}")
 
     def move_rel_raw(
         self,

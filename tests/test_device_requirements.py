@@ -30,6 +30,11 @@ def test_required_devices_for_each_measurement():
     assert required_devices(config, "trkr") == ["lockin.main", "delay_stage.t"]
     assert required_devices(config, "srkr", axis="x") == ["lockin.main", "scanner.x"]
     assert required_devices(config, "srkr", axis="y") == ["lockin.main", "scanner.y"]
+    assert required_devices(config, "srkr", axis="u") == [
+        "lockin.main",
+        "scanner.x",
+        "scanner.y",
+    ]
     assert required_devices(config, "strkr", fast_axis="t", slow_axis="y") == [
         "lockin.main",
         "delay_stage.t",
@@ -77,6 +82,11 @@ def test_required_devices_respects_measurement_device_keys():
     ]
     assert required_devices(config, "srkr", axis="y") == [
         "lockin.pump",
+        "scanner.slow_y",
+    ]
+    assert required_devices(config, "srkr", axis="v") == [
+        "lockin.pump",
+        "scanner.fast_x",
         "scanner.slow_y",
     ]
     assert required_devices(config, "strkr") == [
