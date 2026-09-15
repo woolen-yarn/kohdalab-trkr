@@ -4,7 +4,7 @@
 
 ## [0.2.5] - 2026-09-15
 
-- Updated Tornado and pip to resolve dependency-audit findings.
+- Updated Tornado, pip, and cryptography to resolve dependency-audit findings.
 - Added shared rotated u/v coordinates and a configurable angle to SRKR, STRKR,
   and SRKR 2D, using the existing X/Y scanner offsets as the spatial origin.
 - Added physical target preflight checks, u/v-aware measurement rows, CLI and
