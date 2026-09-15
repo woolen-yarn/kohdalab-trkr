@@ -36,6 +36,14 @@ TAB_INDEX = {
     "strkr": 3,
     "srkr_2d": 4,
 }
+
+
+def _replay_motion_status(axis: str) -> str:
+    if axis in {"u", "v"}:
+        return f"moving spatial {axis} (scanner x/y)"
+    return moving_axis_status(axis)
+
+
 FAST_REPLAY_BATCH_SIZE = 16
 FAST_REPLAY_FRAME_S = 1.0 / 60.0
 LEFT_PANEL_VALUE_SAMPLES = ("-9999.999", "Moving...")
@@ -109,7 +117,7 @@ class ReplayWorker(QtCore.QObject):
                 slow = replay_axis_value(row, self.dataset.slow_axis)
                 if slow != previous_slow:
                     if self._status_phase(
-                        moving_axis_status(self.dataset.slow_axis), 0.075
+                        _replay_motion_status(self.dataset.slow_axis), 0.075
                     ):
                         return True
                     self.status_changed.emit(STATUS_SLOW_AXIS_READY)
@@ -117,7 +125,7 @@ class ReplayWorker(QtCore.QObject):
                     slow_moved = True
             fast_motion_fraction = 0.075 if slow_moved else 0.15
             if self._status_phase(
-                moving_axis_status(self.dataset.fast_axis),
+                _replay_motion_status(self.dataset.fast_axis),
                 fast_motion_fraction,
             ):
                 return True
@@ -141,10 +149,12 @@ class ReplayWorker(QtCore.QObject):
             if self.dataset.slow_axis is not None:
                 slow = replay_axis_value(last_row, self.dataset.slow_axis)
                 if slow != previous_slow:
-                    self.status_changed.emit(moving_axis_status(self.dataset.slow_axis))
+                    self.status_changed.emit(
+                        _replay_motion_status(self.dataset.slow_axis)
+                    )
                     self.status_changed.emit(STATUS_SLOW_AXIS_READY)
                     previous_slow = slow
-            self.status_changed.emit(moving_axis_status(self.dataset.fast_axis))
+            self.status_changed.emit(_replay_motion_status(self.dataset.fast_axis))
             self.status_changed.emit(STATUS_WAITING)
             self.status_changed.emit(STATUS_READING_LOCKIN)
             points = [

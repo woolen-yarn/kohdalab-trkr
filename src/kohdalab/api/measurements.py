@@ -38,10 +38,16 @@ from kohdalab.api.scan_plan import (
     TrkrPlan,
     normalize_coordinate,
     normalize_scanner_coordinate,
+    rotated_to_xy,
+    spatial_theta_deg,
     srkr_2d_plan_from_config,
     strkr_plan_from_config,
 )
-from kohdalab.api.scan_limits import preflight_axis_targets
+from kohdalab.api.scan_limits import (
+    preflight_axis_bounds,
+    preflight_axis_min_step,
+    preflight_axis_targets,
+)
 from kohdalab.api.session import DeviceSession
 from kohdalab.api.status import (
     STATUS_READING_LOCKIN,
@@ -347,6 +353,56 @@ def _move_axis(
     raise ValueError(f"Unsupported scan axis: {axis}")
 
 
+def _rotated_targets(
+    zero: dict[str, float], theta_deg: float, *, u: float, v: float
+) -> dict[str, float]:
+    x_cor, y_cor = rotated_to_xy(u_um=u, v_um=v, theta_deg=theta_deg)
+    return {
+        "x": float(zero.get("x_um", 0.0)) + x_cor,
+        "y": float(zero.get("y_um", 0.0)) + y_cor,
+    }
+
+
+def _rotated_terminal(plan: Scan2DPlan) -> tuple[dict[str, float], bool]:
+    terminal = {"u": 0.0, "v": 0.0}
+    returning = False
+    for role, axis, points in (
+        ("fast_axis", plan.fast_axis, plan.fast_target_points),
+        ("slow_axis", plan.slow_axis, plan.slow_target_points),
+    ):
+        if axis in {"u", "v"}:
+            do_return = plan.return_to_zero.get(role, False)
+            terminal[axis] = 0.0 if do_return else points[-1]
+            returning |= do_return
+    return terminal, returning
+
+
+def _move_rotated(
+    session: DeviceSession,
+    *,
+    targets: dict[str, float],
+    on_status: StatusCallback | None,
+    apply_hysteresis: bool,
+) -> None:
+    move_xy = getattr(session, "move_scanners_xy", None)
+    if callable(move_xy):
+        move_xy(
+            targets["x"],
+            targets["y"],
+            apply_software_hysteresis=apply_hysteresis,
+            on_status=on_status,
+        )
+        return
+    for axis in ("x", "y"):
+        session.move_scanner(
+            axis,
+            targets[axis],
+            coordinate="measurement",
+            apply_software_hysteresis=apply_hysteresis,
+            on_status=on_status,
+        )
+
+
 def _run_scan2d(
     config: dict[str, Any],
     *,
@@ -368,10 +424,98 @@ def _run_scan2d(
         raise ValueError(
             f"{measurement_name} scan point count must be between 1 and {MAX_SCAN_POINTS_TOTAL}."
         )
+    rotated = bool({plan.fast_axis, plan.slow_axis} & {"u", "v"})
+    if rotated:
+        terminal, returning_virtual = _rotated_terminal(plan)
+        u_points = (
+            plan.fast_target_points
+            if plan.fast_axis == "u"
+            else plan.slow_target_points
+            if plan.slow_axis == "u"
+            else [0.0]
+        )
+        v_points = (
+            plan.fast_target_points
+            if plan.fast_axis == "v"
+            else plan.slow_target_points
+            if plan.slow_axis == "v"
+            else [0.0]
+        )
+        corners = [
+            _rotated_targets(plan.zero, plan.theta_deg, u=u, v=v)
+            for u in (min(u_points), max(u_points))
+            for v in (min(v_points), max(v_points))
+        ]
+        if returning_virtual:
+            corners.append(
+                _rotated_targets(
+                    plan.zero, plan.theta_deg, u=terminal["u"], v=terminal["v"]
+                )
+            )
+        for axis in ("x", "y"):
+            preflight_axis_bounds(
+                config,
+                measurement_name=measurement_name,
+                axis=axis,
+                minimum=min(
+                    target[axis]
+                    for target in corners + [{axis: plan.zero[f"{axis}_um"]}]
+                ),
+                maximum=max(
+                    target[axis]
+                    for target in corners + [{axis: plan.zero[f"{axis}_um"]}]
+                ),
+                coordinate="measurement",
+            )
+        for virtual_axis, axis_points in (
+            (plan.fast_axis, plan.fast_target_points),
+            (plan.slow_axis, plan.slow_target_points),
+        ):
+            if virtual_axis not in {"u", "v"}:
+                continue
+            for before, after in zip(axis_points, axis_points[1:], strict=False):
+                before_target = _rotated_targets(
+                    plan.zero,
+                    plan.theta_deg,
+                    u=before if virtual_axis == "u" else 0.0,
+                    v=before if virtual_axis == "v" else 0.0,
+                )
+                after_target = _rotated_targets(
+                    plan.zero,
+                    plan.theta_deg,
+                    u=after if virtual_axis == "u" else 0.0,
+                    v=after if virtual_axis == "v" else 0.0,
+                )
+                for axis in ("x", "y"):
+                    preflight_axis_min_step(
+                        config,
+                        measurement_name=measurement_name,
+                        axis=axis,
+                        step=after_target[axis] - before_target[axis],
+                    )
+        if returning_virtual:
+            last = _rotated_targets(
+                plan.zero,
+                plan.theta_deg,
+                u=u_points[-1],
+                v=v_points[-1],
+            )
+            final = _rotated_targets(
+                plan.zero, plan.theta_deg, u=terminal["u"], v=terminal["v"]
+            )
+            for axis in ("x", "y"):
+                preflight_axis_min_step(
+                    config,
+                    measurement_name=measurement_name,
+                    axis=axis,
+                    step=final[axis] - last[axis],
+                )
     for axis, corrected_targets, return_key in (
         (plan.fast_axis, plan.fast_target_points, "fast_axis"),
         (plan.slow_axis, plan.slow_target_points, "slow_axis"),
     ):
+        if rotated and axis in {"u", "v"}:
+            continue
         absolute_targets = [
             _absolute_measurement_target(plan.zero, axis, value)
             for value in corrected_targets
@@ -404,19 +548,39 @@ def _run_scan2d(
             for slow_index, slow_target in enumerate(plan.slow_target_points):
                 if not _continue(should_continue):
                     break
-                slow_apply_hysteresis = (
-                    plan.slow_axis in {"x", "y"}
-                    and plan.slow_axis not in scanner_axes_approached
-                )
-                _move_axis(
-                    session,
-                    plan.slow_axis,
-                    slow_target,
-                    zero=zero,
-                    apply_software_hysteresis=slow_apply_hysteresis,
-                    on_status=on_status,
-                )
-                if plan.slow_axis in {"x", "y"}:
+                if plan.slow_axis == "t":
+                    _move_axis(
+                        session, "t", slow_target, zero=zero, on_status=on_status
+                    )
+                elif rotated and plan.fast_axis == "t":
+                    targets = {plan.slow_axis: slow_target}
+                    _move_rotated(
+                        session,
+                        targets=_rotated_targets(
+                            zero,
+                            plan.theta_deg,
+                            u=targets.get("u", 0.0),
+                            v=targets.get("v", 0.0),
+                        ),
+                        on_status=on_status,
+                        apply_hysteresis=not scanner_axes_approached,
+                    )
+                    scanner_axes_approached.update({"x", "y"})
+                elif not rotated:
+                    slow_apply_hysteresis = (
+                        plan.slow_axis in {"x", "y"}
+                        and plan.slow_axis not in scanner_axes_approached
+                    )
+                if not rotated and plan.slow_axis != "t":
+                    _move_axis(
+                        session,
+                        plan.slow_axis,
+                        slow_target,
+                        zero=zero,
+                        apply_software_hysteresis=slow_apply_hysteresis,
+                        on_status=on_status,
+                    )
+                if not rotated and plan.slow_axis in {"x", "y"}:
                     scanner_axes_approached.add(plan.slow_axis)
                 _emit_status(on_status, STATUS_SLOW_AXIS_READY)
                 for fast_target in plan.fast_target_points:
@@ -427,15 +591,38 @@ def _run_scan2d(
                         plan.fast_axis in {"x", "y"}
                         and plan.fast_axis not in scanner_axes_approached
                     )
-                    _move_axis(
-                        session,
-                        plan.fast_axis,
-                        fast_target,
-                        zero=zero,
-                        apply_software_hysteresis=fast_apply_hysteresis,
-                        on_status=on_status,
-                    )
-                    if plan.fast_axis in {"x", "y"}:
+                    if plan.fast_axis == "t":
+                        _move_axis(
+                            session, "t", fast_target, zero=zero, on_status=on_status
+                        )
+                    elif rotated:
+                        targets = {
+                            plan.fast_axis: fast_target,
+                            plan.slow_axis: slow_target,
+                        }
+                        _move_rotated(
+                            session,
+                            targets=_rotated_targets(
+                                zero,
+                                plan.theta_deg,
+                                u=targets.get("u", 0.0),
+                                v=targets.get("v", 0.0),
+                            ),
+                            on_status=on_status,
+                            apply_hysteresis=not scanner_axes_approached,
+                        )
+                    else:
+                        _move_axis(
+                            session,
+                            plan.fast_axis,
+                            fast_target,
+                            zero=zero,
+                            apply_software_hysteresis=fast_apply_hysteresis,
+                            on_status=on_status,
+                        )
+                    if rotated:
+                        scanner_axes_approached.update({"x", "y"})
+                    elif plan.fast_axis in {"x", "y"}:
                         scanner_axes_approached.add(plan.fast_axis)
                     _emit_status(on_status, STATUS_WAITING)
                     if not _sleep_interruptible(wait, should_continue):
@@ -455,10 +642,31 @@ def _run_scan2d(
                         position=position,
                         zero=zero,
                         signal=signal,
+                        theta_deg=plan.theta_deg,
+                        physical_targets=(
+                            _rotated_targets(
+                                zero,
+                                plan.theta_deg,
+                                u=fast_target
+                                if plan.fast_axis == "u"
+                                else slow_target
+                                if plan.slow_axis == "u"
+                                else 0.0,
+                                v=fast_target
+                                if plan.fast_axis == "v"
+                                else slow_target
+                                if plan.slow_axis == "v"
+                                else 0.0,
+                            )
+                            if rotated
+                            else None
+                        ),
                     )
                     yield MeasurementPoint(index=index, total_points=total, row=row)
-                if slow_index < len(plan.slow_target_points) - 1 and _continue(
-                    should_continue
+                if (
+                    not rotated
+                    and slow_index < len(plan.slow_target_points) - 1
+                    and _continue(should_continue)
                 ):
                     _move_axis(
                         session,
@@ -468,7 +676,27 @@ def _run_scan2d(
                         apply_software_hysteresis=False,
                         on_status=on_status,
                     )
-            if _continue(should_continue):
+            if _continue(should_continue) and rotated:
+                terminal, returning_virtual = _rotated_terminal(plan)
+                if returning_virtual:
+                    _move_rotated(
+                        session,
+                        targets=_rotated_targets(
+                            zero,
+                            plan.theta_deg,
+                            u=terminal["u"],
+                            v=terminal["v"],
+                        ),
+                        on_status=on_status,
+                        apply_hysteresis=True,
+                    )
+                for return_key, axis in (
+                    ("fast_axis", plan.fast_axis),
+                    ("slow_axis", plan.slow_axis),
+                ):
+                    if axis == "t" and plan.return_to_zero.get(return_key, False):
+                        _move_axis(session, axis, 0.0, zero=zero, on_status=on_status)
+            elif _continue(should_continue):
                 if plan.return_to_zero.get("fast_axis", False):
                     _move_axis(
                         session,
@@ -735,8 +963,8 @@ def run_srkr(
         .strip()
         .lower()
     )
-    if fast_axis not in {"x", "y"}:
-        raise ValueError("SRKR axis must be 'x' or 'y'.")
+    if fast_axis not in {"x", "y", "u", "v"}:
+        raise ValueError("SRKR axis must be 'x' or 'y' (or 'u' or 'v').")
     if plan is not None:
         points_list = plan.scan_points
         targets_list = plan.target_points
@@ -757,16 +985,40 @@ def run_srkr(
         else settings.get("return_to_zero", True)
     )
     zeros = move_abs_zero(config)
-    zero_x = float(zeros.get("x_um", 0.0))
-    zero_y = float(zeros.get("y_um", 0.0))
-    preflight_axis_targets(
-        config,
-        measurement_name="srkr",
-        axis=fast_axis,
-        targets=points_list,
-        coordinate=coord,
-    )
-    if do_return:
+    zero_x = float(plan.zero["x"] if plan is not None else zeros.get("x_um", 0.0))
+    zero_y = float(plan.zero["y"] if plan is not None else zeros.get("y_um", 0.0))
+    theta_deg = plan.theta_deg if plan is not None else spatial_theta_deg(config)
+    rotated = fast_axis in {"u", "v"}
+    if rotated:
+        if coord != "measurement":
+            raise ValueError("SRKR u/v scans require measurement coordinates.")
+        targets_by_axis = [
+            _rotated_targets(
+                {"x_um": zero_x, "y_um": zero_y},
+                theta_deg,
+                u=target if fast_axis == "u" else 0.0,
+                v=target if fast_axis == "v" else 0.0,
+            )
+            for target in points_list
+        ]
+        for physical_axis in ("x", "y"):
+            preflight_axis_targets(
+                config,
+                measurement_name="srkr",
+                axis=physical_axis,
+                targets=[target[physical_axis] for target in targets_by_axis]
+                + [zero_x if physical_axis == "x" else zero_y],
+                coordinate="measurement",
+            )
+    else:
+        preflight_axis_targets(
+            config,
+            measurement_name="srkr",
+            axis=fast_axis,
+            targets=points_list,
+            coordinate=coord,
+        )
+    if do_return and not rotated:
         preflight_axis_targets(
             config,
             measurement_name="srkr return",
@@ -789,20 +1041,37 @@ def run_srkr(
                 if not _continue(should_continue):
                     break
                 row_target = targets_list[index - 1]
-                session.move_scanner(
-                    fast_axis,
-                    float(target),
-                    coordinate=coord,
-                    apply_software_hysteresis=index == 1,
-                    on_status=on_status,
-                )
+                if rotated:
+                    physical_targets = _rotated_targets(
+                        {"x_um": zero_x, "y_um": zero_y},
+                        theta_deg,
+                        u=float(target) if fast_axis == "u" else 0.0,
+                        v=float(target) if fast_axis == "v" else 0.0,
+                    )
+                    _move_rotated(
+                        session,
+                        targets=physical_targets,
+                        on_status=on_status,
+                        apply_hysteresis=index == 1,
+                    )
+                else:
+                    physical_targets = None
+                    session.move_scanner(
+                        fast_axis,
+                        float(target),
+                        coordinate=coord,
+                        apply_software_hysteresis=index == 1,
+                        on_status=on_status,
+                    )
                 _emit_status(on_status, STATUS_WAITING)
                 if not _sleep_interruptible(wait, should_continue):
                     break
                 _emit_status(on_status, STATUS_READING_LOCKIN)
                 position = session.read_position()
                 signal = session.read_lockin_signal()
-                position_um = position.x_um if fast_axis == "x" else position.y_um
+                position_um = (
+                    position.x_um if fast_axis in {"x", "u"} else position.y_um
+                )
                 row = srkr_row(
                     timestamp=utc_now_iso(),
                     fast_axis=fast_axis,
@@ -811,21 +1080,37 @@ def run_srkr(
                     if position_um is None
                     else (
                         position_um - zero_x
-                        if fast_axis == "x"
+                        if fast_axis in {"x", "u"}
                         else position_um - zero_y
                     ),
                     position_um=position_um,
                     signal=signal,
                     coordinate=coord,
                     scanner_unit=position.scanner_x_unit
-                    if fast_axis == "x"
+                    if fast_axis in {"x", "u"}
                     else position.scanner_y_unit,
                     scanner_value=position.scanner_x_value
-                    if fast_axis == "x"
+                    if fast_axis in {"x", "u"}
                     else position.scanner_y_value,
+                    theta_deg=theta_deg if rotated else None,
+                    x_um=position.x_um if rotated else None,
+                    y_um=position.y_um if rotated else None,
+                    zero={"x": zero_x, "y": zero_y},
+                    physical_targets=physical_targets,
+                    x_scanner_unit=position.scanner_x_unit if rotated else None,
+                    x_scanner_value=position.scanner_x_value if rotated else None,
+                    y_scanner_unit=position.scanner_y_unit if rotated else None,
+                    y_scanner_value=position.scanner_y_value if rotated else None,
                 )
                 yield MeasurementPoint(index=index, total_points=total, row=row)
-            if do_return and _continue(should_continue):
+            if do_return and rotated and _continue(should_continue):
+                _move_rotated(
+                    session,
+                    targets={"x": zero_x, "y": zero_y},
+                    on_status=on_status,
+                    apply_hysteresis=True,
+                )
+            elif do_return and _continue(should_continue):
                 zero = zero_x if fast_axis == "x" else zero_y
                 session.move_scanner(
                     fast_axis,

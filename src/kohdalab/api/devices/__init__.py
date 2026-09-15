@@ -25,6 +25,7 @@ from .scanner import (
     initialize_scanner,
     list_actuators,
     move_scanner_abs,
+    move_scanners_xy_abs,
     read_scanner,
 )
 
@@ -44,6 +45,7 @@ __all__ = [
     "list_stages",
     "move_delay_stage_abs",
     "move_scanner_abs",
+    "move_scanners_xy_abs",
     "read_delay_stage",
     "read_lockin_overload",
     "read_lockin_settings",

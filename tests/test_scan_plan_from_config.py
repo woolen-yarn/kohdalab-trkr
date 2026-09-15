@@ -12,7 +12,7 @@ from kohdalab.api import (
     trkr_plan_from_config,
 )
 from kohdalab.api.config import MAX_SCAN_POINTS_TOTAL
-from kohdalab.api.scan_plan import srkr_plan, trkr_plan
+from kohdalab.api.scan_plan import rotated_to_xy, srkr_plan, trkr_plan
 
 
 def config() -> dict:
@@ -137,6 +137,39 @@ def test_srkr_plan_from_config_uses_axis_scan_and_zero():
     assert plan.zero == {"x": 61.5, "y": 477.0}
 
 
+def test_rotated_spatial_plans_use_shared_theta_and_uv_ranges():
+    settings = config()
+    settings["coordinates"] = {"spatial": {"theta_deg": 90.0}}
+    settings["measurements"]["srkr"]["scan"].update({"axis": "u"})
+    settings["measurements"]["strkr"]["scan"].update(
+        {
+            "fast_axis": "t",
+            "slow_axis": "v",
+            "ranges": {
+                "t": {"min": 0, "max": 0, "step": 1},
+                "v": {"min": -2, "max": 2, "step": 2},
+            },
+        }
+    )
+    settings["measurements"]["srkr_2d"]["scan"].update(
+        {
+            "fast_axis": "u",
+            "slow_axis": "v",
+            "ranges": {
+                "u": {"min": 0, "max": 1, "step": 1},
+                "v": {"min": 0, "max": 1, "step": 1},
+            },
+        }
+    )
+
+    assert srkr_plan_from_config(settings).theta_deg == 90.0
+    assert strkr_plan_from_config(settings).slow_axis == "v"
+    assert srkr_2d_plan_from_config(settings).theta_deg == 90.0
+    assert rotated_to_xy(u_um=2.0, v_um=0.0, theta_deg=90.0) == pytest.approx(
+        (0.0, 2.0)
+    )
+
+
 def test_plan_from_config_allows_runtime_overrides():
     plan = srkr_plan_from_config(
         config(),
@@ -174,6 +207,28 @@ def test_direct_srkr_plan_rejects_invalid_axis_coordinate_and_zero(
             step_um=1.0,
             zero_by_axis=zero,
             coordinate=coordinate,
+        )
+
+
+def test_rotated_srkr_plan_requires_measurement_coordinates_and_finite_theta():
+    with pytest.raises(ValueError, match="u/v scans require measurement"):
+        srkr_plan(
+            axis="u",
+            minimum_um=0.0,
+            maximum_um=1.0,
+            step_um=1.0,
+            zero_by_axis={"x": 0.0, "y": 0.0},
+            coordinate="interface",
+        )
+    with pytest.raises(ValueError, match="theta_deg must be finite"):
+        srkr_plan(
+            axis="u",
+            minimum_um=0.0,
+            maximum_um=1.0,
+            step_um=1.0,
+            zero_by_axis={"x": 0.0, "y": 0.0},
+            coordinate="measurement",
+            theta_deg=math.nan,
         )
 
 
@@ -266,3 +321,17 @@ def test_2d_plan_uses_default_return_policy_for_invalid_policy_type():
 def test_2d_plan_rejects_unknown_axis_name():
     with pytest.raises(ValueError, match="axis must be"):
         strkr_plan_from_config(config(), fast_axis="z", slow_axis="t")
+
+
+@pytest.mark.parametrize(
+    ("factory", "fast_axis", "slow_axis", "message"),
+    [
+        (strkr_plan_from_config, "t", "u", "STRKR theta_deg must be finite"),
+        (srkr_2d_plan_from_config, "u", "v", "SRKR_2D theta_deg must be finite"),
+    ],
+)
+def test_rotated_2d_plans_reject_non_finite_theta(
+    factory, fast_axis, slow_axis, message
+):
+    with pytest.raises(ValueError, match=message):
+        factory(config(), fast_axis=fast_axis, slow_axis=slow_axis, theta_deg=math.inf)

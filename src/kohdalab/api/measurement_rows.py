@@ -16,6 +16,8 @@ MEASUREMENT_FIELDS = [
     "target_t_cor_ps",
     "target_x_cor_um",
     "target_y_cor_um",
+    "target_u_cor_um",
+    "target_v_cor_um",
     "elapsed_s",
     "t_cor_ps",
     "t_ps",
@@ -23,10 +25,13 @@ MEASUREMENT_FIELDS = [
     "x_um",
     "y_cor_um",
     "y_um",
+    "u_cor_um",
+    "v_cor_um",
     "X_V",
     "Y_V",
     "R_V",
     "Theta_deg",
+    "spatial_theta_deg",
     "coordinate",
     "delay_stage_mm",
     "delay_stage_pulse",
@@ -40,7 +45,7 @@ SIGNAL_MONITOR_FIELDS = MEASUREMENT_FIELDS
 TRKR_FIELDS = MEASUREMENT_FIELDS
 STRKR_FIELDS = MEASUREMENT_FIELDS
 SRKR_2D_FIELDS = MEASUREMENT_FIELDS
-SRKR_FIELDS_BY_AXIS = {"x": MEASUREMENT_FIELDS, "y": MEASUREMENT_FIELDS}
+SRKR_FIELDS_BY_AXIS = {axis: MEASUREMENT_FIELDS for axis in ("x", "y", "u", "v")}
 
 
 def signal_row(signal: dict[str, Any]) -> dict[str, Any]:
@@ -151,24 +156,70 @@ def srkr_row(
     coordinate: str,
     scanner_unit: str | None,
     scanner_value: float | None,
+    theta_deg: float | None = None,
+    x_um: float | None = None,
+    y_um: float | None = None,
+    zero: dict[str, float] | None = None,
+    physical_targets: dict[str, float] | None = None,
+    x_scanner_unit: str | None = None,
+    x_scanner_value: float | None = None,
+    y_scanner_unit: str | None = None,
+    y_scanner_value: float | None = None,
 ) -> dict[str, Any]:
     axis = fast_axis.strip().lower()
     unit_key = "mm" if scanner_unit == "mm" else "deg"
-    return ordered_row(
-        {
-            "timestamp": timestamp,
-            "measurement": "srkr",
-            "fast_axis": axis,
-            "slow_axis": None,
-            f"target_{axis}_cor_um": target_cor_um,
-            f"{axis}_cor_um": cor_um,
-            f"{axis}_um": position_um,
-            **signal_row(signal),
-            "coordinate": coordinate,
-            f"{axis}_scanner_{unit_key}": scanner_value,
-        },
-        SRKR_FIELDS_BY_AXIS[axis],
-    )
+    row = {
+        "timestamp": timestamp,
+        "measurement": "srkr",
+        "fast_axis": axis,
+        "slow_axis": None,
+        f"target_{axis}_cor_um": target_cor_um,
+        **signal_row(signal),
+        "coordinate": coordinate,
+    }
+    if axis in {"x", "y"}:
+        row.update(
+            {
+                f"{axis}_cor_um": cor_um,
+                f"{axis}_um": position_um,
+                f"{axis}_scanner_{unit_key}": scanner_value,
+            }
+        )
+    if axis in {"u", "v"} and x_um is not None and y_um is not None:
+        from kohdalab.api.scan_plan import xy_to_rotated
+
+        origin = zero or {}
+        x_cor = float(x_um) - float(origin.get("x", origin.get("x_um", 0.0)))
+        y_cor = float(y_um) - float(origin.get("y", origin.get("y_um", 0.0)))
+        u_cor, v_cor = xy_to_rotated(
+            x_um=x_cor, y_um=y_cor, theta_deg=float(theta_deg or 0.0)
+        )
+        row.update(
+            {
+                "x_um": x_um,
+                "y_um": y_um,
+                "x_cor_um": x_cor,
+                "y_cor_um": y_cor,
+                "u_cor_um": u_cor,
+                "v_cor_um": v_cor,
+                "spatial_theta_deg": theta_deg,
+            }
+        )
+        for physical_axis, scanner_unit_value, scanner_value_value in (
+            ("x", x_scanner_unit, x_scanner_value),
+            ("y", y_scanner_unit, y_scanner_value),
+        ):
+            if scanner_unit_value in {"mm", "deg"}:
+                row[f"{physical_axis}_scanner_{scanner_unit_value}"] = (
+                    scanner_value_value
+                )
+    if physical_targets is not None:
+        for physical_axis in ("x", "y"):
+            if physical_axis in physical_targets:
+                row[f"target_{physical_axis}_cor_um"] = float(
+                    physical_targets[physical_axis]
+                ) - float((zero or {}).get(physical_axis, 0.0))
+    return ordered_row(row, SRKR_FIELDS_BY_AXIS[axis])
 
 
 def axis_target_key(axis: str) -> str:
@@ -177,7 +228,7 @@ def axis_target_key(axis: str) -> str:
         return "target_elapsed_s"
     if axis == "t":
         return "target_t_cor_ps"
-    if axis in {"x", "y"}:
+    if axis in {"x", "y", "u", "v"}:
         return f"target_{axis}_cor_um"
     raise ValueError(f"Unsupported axis: {axis}")
 
@@ -221,6 +272,8 @@ def scan2d_row(
     zero: dict[str, float],
     signal: dict[str, Any],
     coordinate: str = "measurement",
+    theta_deg: float = 0.0,
+    physical_targets: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     row: dict[str, Any] = {
         "timestamp": timestamp,
@@ -233,4 +286,19 @@ def scan2d_row(
     }
     for axis, target in targets.items():
         row[axis_target_key(axis)] = target
+    if physical_targets is not None:
+        for axis in ("x", "y"):
+            if axis in physical_targets:
+                row[f"target_{axis}_cor_um"] = float(physical_targets[axis]) - float(
+                    zero.get(f"{axis}_um", 0.0)
+                )
+    if {fast_axis.strip().lower(), slow_axis.strip().lower()} & {"u", "v"}:
+        from kohdalab.api.scan_plan import xy_to_rotated
+
+        x_cor, y_cor = row.get("x_cor_um"), row.get("y_cor_um")
+        if x_cor is not None and y_cor is not None:
+            row["u_cor_um"], row["v_cor_um"] = xy_to_rotated(
+                x_um=x_cor, y_um=y_cor, theta_deg=theta_deg
+            )
+        row["spatial_theta_deg"] = theta_deg
     return ordered_row(row, MEASUREMENT_FIELDS)

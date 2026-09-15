@@ -335,6 +335,85 @@ def move_scanner_abs(
     }
 
 
+def move_scanners_xy_abs(
+    *,
+    scanners: dict[str, Scanner],
+    targets_um: dict[str, float],
+    apply_software_hysteresis: bool = True,
+    on_status: Callable[[str], None] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Launch both physical axes before waiting for either one to stop."""
+    control_targets: dict[str, float] = {}
+    pre_targets: dict[str, float | None] = {}
+    units: dict[str, str] = {}
+    targets: dict[str, float] = {}
+    for axis in ("x", "y"):
+        scanner = scanners[axis]
+        target = _finite_float(targets_um[axis], f"scanner {axis} target")
+        unit, _ = _control_pos(scanner)
+        control = sample_um_to_actuator_pos(scanner.config, unit, target)
+        pre = (
+            _software_hysteresis_pre_target(
+                scanner_config=scanner.config, unit=unit, control_target=control
+            )
+            if apply_software_hysteresis
+            else None
+        )
+        scanner.validate_pos_raw(control)
+        if pre is not None:
+            scanner.validate_pos_raw(pre)
+        targets[axis] = target
+        units[axis] = unit
+        control_targets[axis] = control
+        pre_targets[axis] = pre
+
+    for axis in ("x", "y"):
+        pre = pre_targets[axis]
+        if pre is not None:
+            if on_status is not None:
+                on_status(f"moving scanner {axis} software hysteresis")
+            _move_control(scanners[axis], pre)
+
+    # Preparation may issue controller commands; do it before either PA command.
+    for axis in ("x", "y"):
+        scanners[axis].prepare_move()
+    started: list[str] = []
+    try:
+        if on_status is not None:
+            for axis in ("x", "y"):
+                on_status(f"moving scanner {axis}")
+        for axis in ("x", "y"):
+            started.append(axis)
+            scanners[axis].start_pos_raw(control_targets[axis])
+        for axis in ("x", "y"):
+            scanners[axis].wait_until_stopped()
+    except BaseException as error:
+        for axis in started:
+            try:
+                scanners[axis].stop()
+            except Exception as stop_error:
+                error.add_note(f"Could not stop scanner {axis}: {stop_error}")
+        raise
+
+    rows: dict[str, dict[str, Any]] = {}
+    for axis in ("x", "y"):
+        scanner = scanners[axis]
+        unit = units[axis]
+        _, control = _control_pos(scanner)
+        sample_um = float(actuator_pos_to_sample_um(scanner.config, unit, control))
+        rows[axis] = {
+            "timestamp": utc_now_iso(),
+            "axis": axis,
+            "coordinate": "measurement",
+            "target": targets[axis],
+            "actual": sample_um,
+            "unit": "um",
+            f"{axis}_um": sample_um,
+            f"{axis}_{unit}": control,
+        }
+    return rows
+
+
 def _normalize_move_coordinate(coordinate: str, unit: str) -> str:
     if coordinate in {"um", "sample_um"}:
         return "measurement"

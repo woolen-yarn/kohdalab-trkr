@@ -248,3 +248,52 @@ def preflight_axis_targets(
                     f"{measurement_name} {axis}-axis step {distance:g} {limits.unit} is smaller than "
                     f"the device minimum {limits.minimum_step:g} {limits.unit}."
                 )
+
+
+def preflight_axis_bounds(
+    config: dict[str, Any],
+    *,
+    measurement_name: str,
+    axis: str,
+    minimum: float,
+    maximum: float,
+    coordinate: str = "measurement",
+) -> None:
+    """Check a continuous target interval without materializing every waypoint."""
+    axis = axis.strip().lower()
+    if axis not in {"t", "x", "y"}:
+        raise ValueError("axis must be one of 't', 'x', or 'y'.")
+    minimum, maximum = float(minimum), float(maximum)
+    if not math.isfinite(minimum) or not math.isfinite(maximum):
+        raise ValueError(f"{measurement_name} {axis}-axis targets must be finite.")
+    minimum, maximum = _sorted_limits(minimum, maximum)
+    limits = _axis_limits(
+        config, measurement_name=measurement_name, axis=axis, coordinate=coordinate
+    )
+    if limits.minimum is None or limits.maximum is None:
+        raise ValueError(
+            f"Cannot preflight {measurement_name} {axis}-axis: configured device has no complete {limits.unit} limits."
+        )
+    tolerance = max(abs(limits.minimum), abs(limits.maximum), 1.0) * 1e-12
+    if minimum < limits.minimum - tolerance or maximum > limits.maximum + tolerance:
+        raise ValueError(
+            f"{measurement_name} {axis}-axis target interval [{minimum:g}, {maximum:g}] {limits.unit} is outside "
+            f"[{limits.minimum:g}, {limits.maximum:g}] {limits.unit}."
+        )
+
+
+def preflight_axis_min_step(
+    config: dict[str, Any], *, measurement_name: str, axis: str, step: float
+) -> None:
+    """Check a physical step without constructing an entire scan trajectory."""
+    step = abs(float(step))
+    if not math.isfinite(step):
+        raise ValueError(f"{measurement_name} {axis}-axis step must be finite.")
+    limits = _axis_limits(
+        config, measurement_name=measurement_name, axis=axis, coordinate="measurement"
+    )
+    if limits.minimum_step is not None and 0 < step < limits.minimum_step:
+        raise ValueError(
+            f"{measurement_name} {axis}-axis step {step:g} {limits.unit} is smaller than "
+            f"the device minimum {limits.minimum_step:g} {limits.unit}."
+        )

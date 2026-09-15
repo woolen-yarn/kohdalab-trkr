@@ -44,6 +44,8 @@ window は左 device/session pane、中央 measurement/plot pane、右 log/snaps
 - `STRKR`
 - `SRKR 2D`
 
+`u/v` を選ぶと Fast Axis の横に `θ (deg)` が現れます。STRKR で Slow Axis が `u/v` の場合も表示され、角度は SRKR・STRKR・SRKR 2D の間で共有されます。原点は Scanner X/Y の offset です。SRKR の Fast Axis では `x/y/u/v`、STRKR では `t` と `x/y/u/v`、SRKR 2D では `x/y` または `u/v` の fast/slow ペアを選びます。`u/v` は両 scanner を動かすため、測定前に x/y の接続と変換後の範囲を確認してください。
+
 各 tab は左に measurement settings、右に Output/Run controls を持ちます。Output の Directory/File/Auto suffix は measurement mode ごとに保持されます。Start 時には、その run が持つ rows だけを clear します。SRKR は active fast axis の rows だけを clear し、反対軸は残します。
 
 右 pane は Log output と Snapshot table です。

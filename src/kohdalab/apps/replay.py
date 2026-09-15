@@ -68,11 +68,11 @@ def _normalize_target(row: dict[str, Any], axis: str, row_number: int) -> None:
 
 def _infer_srkr_axis(row: dict[str, Any], row_number: int) -> str:
     explicit = str(row.get("fast_axis") or "").strip().lower()
-    if explicit in {"x", "y"}:
+    if explicit in {"x", "y", "u", "v"}:
         return explicit
     populated = [
         axis
-        for axis in ("x", "y")
+        for axis in ("x", "y", "u", "v")
         if any(
             row.get(key) is not None
             for key in (
@@ -104,9 +104,10 @@ def _validate_axes(
     fast_axis = str(row.get("fast_axis") or "").strip().lower()
     slow_axis = str(row.get("slow_axis") or "").strip().lower()
     allowed = (
-        {("t", "x"), ("t", "y"), ("x", "t"), ("y", "t")}
+        {("t", axis) for axis in ("x", "y", "u", "v")}
+        | {(axis, "t") for axis in ("x", "y", "u", "v")}
         if measurement == "strkr"
-        else {("x", "y"), ("y", "x")}
+        else {("x", "y"), ("y", "x"), ("u", "v"), ("v", "u")}
     )
     if (fast_axis, slow_axis) not in allowed:
         raise ValueError(

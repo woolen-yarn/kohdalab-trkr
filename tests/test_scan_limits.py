@@ -7,6 +7,8 @@ import pytest
 import kohdalab.api.scan_limits as scan_limits_module
 from kohdalab.api.scan_limits import (
     delay_stage_scan_limits,
+    preflight_axis_bounds,
+    preflight_axis_min_step,
     preflight_axis_targets,
     scanner_scan_limits,
 )
@@ -249,3 +251,46 @@ def test_preflight_rejects_steps_below_scanner_resolution():
             targets=[0.0, 0.05],
             coordinate="measurement",
         )
+
+
+@pytest.mark.parametrize("axis", ["u", "v", "z"])
+def test_preflight_axis_bounds_rejects_non_physical_axes(axis):
+    with pytest.raises(ValueError, match="axis must be one of"):
+        preflight_axis_bounds(
+            config(), measurement_name="srkr", axis=axis, minimum=0.0, maximum=1.0
+        )
+
+
+def test_preflight_axis_bounds_rejects_non_finite_and_unavailable_or_out_of_range_limits():
+    with pytest.raises(ValueError, match="must be finite"):
+        preflight_axis_bounds(
+            config(), measurement_name="srkr", axis="x", minimum=math.nan, maximum=1.0
+        )
+
+    unavailable = config()
+    unavailable["instruments"]["scanner"]["x"]["actuator"] = "missing"
+    with pytest.raises(ValueError, match="no complete um limits"):
+        preflight_axis_bounds(
+            unavailable, measurement_name="srkr", axis="x", minimum=0.0, maximum=1.0
+        )
+
+    with pytest.raises(ValueError, match="outside"):
+        preflight_axis_bounds(
+            config(), measurement_name="srkr", axis="x", minimum=-4000.0, maximum=0.0
+        )
+
+
+def test_preflight_axis_min_step_rejects_non_finite_and_subresolution_step():
+    with pytest.raises(ValueError, match="must be finite"):
+        preflight_axis_min_step(
+            config(), measurement_name="srkr", axis="x", step=math.inf
+        )
+    with pytest.raises(ValueError, match="smaller than the device minimum"):
+        preflight_axis_min_step(config(), measurement_name="srkr", axis="x", step=0.05)
+
+
+def test_preflight_axis_bounds_and_min_step_accept_valid_scanner_values():
+    preflight_axis_bounds(
+        config(), measurement_name="srkr", axis="x", minimum=0.0, maximum=1.0
+    )
+    preflight_axis_min_step(config(), measurement_name="srkr", axis="x", step=0.1)

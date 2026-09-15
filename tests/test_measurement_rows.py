@@ -745,6 +745,110 @@ def test_srkr_accepts_scan_plan(tmp_path):
     assert session.scanner_hysteresis_flags[:2] == [True, False]
 
 
+def test_srkr_u_plan_rotates_about_plan_zero_and_preserves_lockin_theta(tmp_path):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = srkr_plan(
+        axis="u",
+        minimum_um=0.0,
+        maximum_um=1.0,
+        step_um=1.0,
+        zero_by_axis={"x": 3.0, "y": 4.0},
+        coordinate="measurement",
+        theta_deg=90.0,
+    )
+
+    rows = measurements.run_srkr(
+        config, plan=plan, wait_s=0.0, return_to_zero=False, session=session
+    )
+
+    assert session.moves == [
+        ("x", 3.0, "measurement"),
+        ("y", 4.0, "measurement"),
+        ("x", 3.0, "measurement"),
+        ("y", 5.0, "measurement"),
+    ]
+    assert [row["target_u_cor_um"] for row in rows] == [0.0, 1.0]
+    assert rows[1]["u_cor_um"] == pytest.approx(1.0)
+    assert rows[1]["target_x_cor_um"] == pytest.approx(0.0)
+    assert rows[1]["target_y_cor_um"] == pytest.approx(1.0)
+    assert rows[1]["spatial_theta_deg"] == 90.0
+    assert rows[1]["Theta_deg"] == 4.0
+
+
+def test_srkr_uv_rejects_interface_coordinate_before_motion(tmp_path):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = srkr_plan(
+        axis="v",
+        minimum_um=0.0,
+        maximum_um=0.0,
+        step_um=1.0,
+        zero_by_axis={"x": 1.0, "y": 2.0},
+        coordinate="measurement",
+        theta_deg=30.0,
+    )
+
+    with pytest.raises(ValueError, match="require measurement coordinates"):
+        measurements.run_srkr(
+            config,
+            plan=plan,
+            coordinate="interface",
+            wait_s=0.0,
+            session=session,
+        )
+
+    assert session.moves == []
+
+
+def test_srkr_uv_return_moves_both_physical_axes_back_to_offsets(tmp_path):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = srkr_plan(
+        axis="u",
+        minimum_um=0.0,
+        maximum_um=1.0,
+        step_um=1.0,
+        zero_by_axis={"x": 3.0, "y": 4.0},
+        coordinate="measurement",
+        theta_deg=45.0,
+    )
+
+    rows = measurements.run_srkr(
+        config, plan=plan, wait_s=0.0, return_to_zero=True, session=session
+    )
+
+    assert len(rows) == 2
+    assert session.moves[-2:] == [
+        ("x", 3.0, "measurement"),
+        ("y", 4.0, "measurement"),
+    ]
+    assert (session.position.x_um, session.position.y_um) == (3.0, 4.0)
+
+
+def test_srkr_uv_raw_scan_points_control_motion_separately_from_display_targets(
+    tmp_path,
+):
+    config = base_config(tmp_path)
+    config["coordinates"] = {"spatial": {"theta_deg": 90.0}}
+    session = FakeSession(config)
+
+    rows = measurements.run_srkr(
+        config,
+        axis="u",
+        scan_points=[2.0],
+        target_points=[1.0],
+        wait_s=0.0,
+        return_to_zero=False,
+        session=session,
+    )
+
+    assert [move[0] for move in session.moves] == ["x", "y"]
+    assert [move[1] for move in session.moves] == pytest.approx([1.0, 4.0])
+    assert rows[0]["target_u_cor_um"] == 1.0
+    assert rows[0]["target_y_cor_um"] == pytest.approx(2.0)
+
+
 def test_srkr_uses_provided_session_without_disconnect(tmp_path):
     session = FakeSession(base_config(tmp_path))
 
@@ -1043,6 +1147,152 @@ def test_srkr_rejects_invalid_axis_before_session_creation(monkeypatch, tmp_path
         measurements.run_srkr(
             base_config(tmp_path), axis="z", scan_points=[0.0], wait_s=0.0
         )
+
+
+def test_strkr_t_fast_u_slow_moves_spatial_pose_for_each_slow_line(tmp_path):
+    session = FakeSession(base_config(tmp_path))
+    plan = strkr_plan(
+        fast_axis="t",
+        slow_axis="u",
+        ranges={
+            "t": {"min": 0.0, "max": 1.0, "step": 1.0},
+            "u": {"min": 0.0, "max": 1.0, "step": 1.0},
+        },
+        zero_by_axis={"t_ps": 10.0, "x_um": 1.0, "y_um": 2.0},
+        return_to_zero=False,
+        theta_deg=0.0,
+    )
+
+    rows = measurements.run_strkr(
+        base_config(tmp_path), plan=plan, wait_s=0.0, session=session
+    )
+
+    assert session.moves == [
+        ("x", 1.0, "measurement"),
+        ("y", 2.0, "measurement"),
+        ("t", 10.0, "measurement"),
+        ("t", 11.0, "measurement"),
+        ("x", 2.0, "measurement"),
+        ("y", 2.0, "measurement"),
+        ("t", 10.0, "measurement"),
+        ("t", 11.0, "measurement"),
+    ]
+    assert rows[2]["target_x_cor_um"] == 1.0
+
+
+def test_strkr_u_fast_t_slow_moves_rotated_scanners_for_each_point(tmp_path):
+    session = FakeSession(base_config(tmp_path))
+    plan = strkr_plan(
+        fast_axis="u",
+        slow_axis="t",
+        ranges={
+            "u": {"min": 0.0, "max": 1.0, "step": 1.0},
+            "t": {"min": 0.0, "max": 0.0, "step": 1.0},
+        },
+        zero_by_axis={"t_ps": 10.0, "x_um": 1.0, "y_um": 2.0},
+        return_to_zero=False,
+        theta_deg=90.0,
+    )
+
+    rows = measurements.run_strkr(
+        base_config(tmp_path), plan=plan, wait_s=0.0, session=session
+    )
+
+    assert session.moves == [
+        ("t", 10.0, "measurement"),
+        ("x", 1.0, "measurement"),
+        ("y", 2.0, "measurement"),
+        ("x", 1.0, "measurement"),
+        ("y", 3.0, "measurement"),
+    ]
+    assert rows[1]["target_y_cor_um"] == pytest.approx(1.0)
+
+
+def test_strkr_rotated_scan_returns_temporal_axis_without_spatial_return(tmp_path):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = strkr_plan(
+        fast_axis="u",
+        slow_axis="t",
+        ranges={
+            "u": {"min": 1.0, "max": 1.0, "step": 1.0},
+            "t": {"min": 2.0, "max": 2.0, "step": 1.0},
+        },
+        zero_by_axis={"t_ps": 10.0, "x_um": 1.0, "y_um": 2.0},
+        return_to_zero={"fast_axis": False, "slow_axis": True},
+        theta_deg=30.0,
+    )
+
+    rows = measurements.run_strkr(config, plan=plan, wait_s=0.0, session=session)
+
+    assert len(rows) == 1
+    assert session.moves[-1] == ("t", 10.0, "measurement")
+    assert not any(
+        axis == "x" and target == 1.0 for axis, target, _ in session.moves[1:]
+    )
+
+
+@pytest.mark.parametrize(
+    ("return_roles", "final_xy"),
+    [
+        ({"fast_axis": True, "slow_axis": False}, (1.0, 3.0)),
+        ({"fast_axis": False, "slow_axis": True}, (2.0, 2.0)),
+    ],
+)
+def test_srkr_2d_uv_partial_return_preserves_other_virtual_axis(
+    tmp_path, return_roles, final_xy
+):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = srkr_2d_plan(
+        fast_axis="u",
+        slow_axis="v",
+        ranges={
+            "u": {"min": 0.0, "max": 1.0, "step": 1.0},
+            "v": {"min": 0.0, "max": 1.0, "step": 1.0},
+        },
+        zero_by_axis={"t_ps": 10.0, "x_um": 1.0, "y_um": 2.0},
+        return_to_zero=return_roles,
+        theta_deg=0.0,
+    )
+
+    rows = measurements.run_srkr_2d(config, plan=plan, wait_s=0.0, session=session)
+
+    assert len(rows) == 4
+    assert session.moves[-2:] == [
+        ("x", final_xy[0], "measurement"),
+        ("y", final_xy[1], "measurement"),
+    ]
+
+
+def test_srkr_2d_uv_grid_rotates_targets_and_measured_positions(tmp_path):
+    config = base_config(tmp_path)
+    session = FakeSession(config)
+    plan = srkr_2d_plan(
+        fast_axis="u",
+        slow_axis="v",
+        ranges={
+            "u": {"min": 0.0, "max": 1.0, "step": 1.0},
+            "v": {"min": 0.0, "max": 1.0, "step": 1.0},
+        },
+        zero_by_axis={"t_ps": 10.0, "x_um": 1.0, "y_um": 2.0},
+        return_to_zero=False,
+        theta_deg=90.0,
+    )
+
+    rows = measurements.run_srkr_2d(config, plan=plan, wait_s=0.0, session=session)
+
+    assert [(row["target_u_cor_um"], row["target_v_cor_um"]) for row in rows] == [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (1.0, 1.0),
+    ]
+    assert rows[-1]["target_x_cor_um"] == pytest.approx(-1.0)
+    assert rows[-1]["target_y_cor_um"] == pytest.approx(1.0)
+    assert rows[-1]["u_cor_um"] == pytest.approx(1.0)
+    assert rows[-1]["v_cor_um"] == pytest.approx(1.0)
+    assert (session.position.x_um, session.position.y_um) == pytest.approx((0.0, 3.0))
 
 
 def test_metadata_creation_failure_removes_new_csv_before_borrowed_session_io(

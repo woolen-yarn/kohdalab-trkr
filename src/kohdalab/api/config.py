@@ -273,6 +273,8 @@ DEFAULT_MEASUREMENTS: dict[str, Any] = {
                 "t": {"min": -50.0, "max": 300.0, "step": 5.0},
                 "x": {"min": -30.0, "max": 30.0, "step": 1.0},
                 "y": {"min": -30.0, "max": 30.0, "step": 1.0},
+                "u": {"min": -30.0, "max": 30.0, "step": 1.0},
+                "v": {"min": -30.0, "max": 30.0, "step": 1.0},
             },
         },
         "wait_s": 2.0,
@@ -290,6 +292,8 @@ DEFAULT_MEASUREMENTS: dict[str, Any] = {
             "ranges": {
                 "x": {"min": -30.0, "max": 30.0, "step": 1.0},
                 "y": {"min": -30.0, "max": 30.0, "step": 1.0},
+                "u": {"min": -30.0, "max": 30.0, "step": 1.0},
+                "v": {"min": -30.0, "max": 30.0, "step": 1.0},
             },
         },
         "wait_s": 2.0,
@@ -377,6 +381,14 @@ def normalize_config(
                 if legacy_scale is not None:
                     scanner["sample_um_per_unit"] = legacy_scale
 
+    coordinates = normalized.setdefault("coordinates", {})
+    if not isinstance(coordinates, dict):
+        coordinates = normalized["coordinates"] = {}
+    spatial = coordinates.setdefault("spatial", {})
+    if not isinstance(spatial, dict):
+        spatial = coordinates["spatial"] = {}
+    spatial.setdefault("theta_deg", 0.0)
+
     measurements = normalized.setdefault("measurements", {})
     for name, defaults in DEFAULT_MEASUREMENTS.items():
         current = measurements.get(name, {})
@@ -408,6 +420,12 @@ def validate_config(config: dict[str, Any]) -> None:
     measurements = config.get("measurements")
     if not isinstance(measurements, dict):
         raise ValueError("config must contain a 'measurements' object.")
+    coordinates = config.get("coordinates", {})
+    spatial = coordinates.get("spatial", {}) if isinstance(coordinates, dict) else {}
+    if not isinstance(spatial, dict) or not math.isfinite(
+        float(spatial.get("theta_deg", 0.0))
+    ):
+        raise ValueError("coordinates.spatial.theta_deg must be finite.")
     for name in ("move_abs", "signal_monitor", "trkr", "srkr", "strkr", "srkr_2d"):
         if name not in measurements:
             raise ValueError(f"config must contain measurements.{name}.")
@@ -667,8 +685,10 @@ def validate_config(config: dict[str, Any]) -> None:
         )
 
     srkr_axis = str(measurements["srkr"]["scan"].get("axis", "x")).strip().lower()
-    if srkr_axis not in {"x", "y"}:
-        raise ValueError("measurements.srkr.scan.axis must be 'x' or 'y'.")
+    if srkr_axis not in {"x", "y", "u", "v"}:
+        raise ValueError(
+            "measurements.srkr.scan.axis must be 'x' or 'y' (or 'u' or 'v')."
+        )
     srkr_coordinate = (
         str(measurements["srkr"].get("coordinate", "measurement")).strip().lower()
     )
@@ -683,7 +703,10 @@ def validate_config(config: dict[str, Any]) -> None:
             "measurements.srkr.coordinate must be measurement or interface."
         )
 
-    for name, allowed_axes in (("strkr", {"t", "x", "y"}), ("srkr_2d", {"x", "y"})):
+    for name, allowed_axes in (
+        ("strkr", {"t", "x", "y", "u", "v"}),
+        ("srkr_2d", {"x", "y", "u", "v"}),
+    ):
         settings = measurements[name]
         wait = float(settings.get("wait_s", 1.0))
         if not math.isfinite(wait) or wait < 0:
@@ -706,8 +729,14 @@ def validate_config(config: dict[str, Any]) -> None:
             raise ValueError(
                 f"measurements.{name} must define two different supported scan axes."
             )
-        if name == "strkr" and "t" not in {fast, slow}:
-            raise ValueError("measurements.strkr axes must combine t with x or y.")
+        if name == "strkr" and (
+            "t" not in {fast, slow} or not ({fast, slow} & {"x", "y", "u", "v"})
+        ):
+            raise ValueError(
+                "measurements.strkr axes must combine t with a spatial axis."
+            )
+        if name == "srkr_2d" and {fast, slow} not in ({"x", "y"}, {"u", "v"}):
+            raise ValueError("measurements.srkr_2d axes must be x/y or u/v.")
         total_points = 1
         for axis in (fast, slow):
             axis_range = ranges.get(axis, {}) if isinstance(ranges, dict) else {}

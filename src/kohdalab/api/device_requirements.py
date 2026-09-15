@@ -65,17 +65,25 @@ def required_devices(
     if measurement == "trkr":
         return [_lockin_ref(config, measurement), _delay_stage_ref(config, measurement)]
     if measurement == "srkr":
+        scan_axis = (axis or "x").strip().lower()
+        if scan_axis in {"u", "v"}:
+            return [
+                _lockin_ref(config, measurement),
+                _scanner_ref(config, "x", measurement),
+                _scanner_ref(config, "y", measurement),
+            ]
         return [
             _lockin_ref(config, measurement),
-            _scanner_ref(config, axis or "x", measurement),
+            _scanner_ref(config, scan_axis, measurement),
         ]
     if measurement == "strkr":
         config_fast, config_slow = _scan_axes(config, measurement)
         axes = {fast_axis or config_fast or "t", slow_axis or config_slow or "x"}
-        if "t" not in axes or not (axes & {"x", "y"}):
-            raise ValueError("STRKR axes must combine t with x or y.")
+        if "t" not in axes or not (axes & {"x", "y", "u", "v"}):
+            raise ValueError("STRKR axes must combine t with a spatial axis.")
         refs = [_lockin_ref(config, measurement), _delay_stage_ref(config, measurement)]
-        for scan_axis in sorted(axes & {"x", "y"}):
+        scanner_axes = {"x", "y"} if axes & {"u", "v"} else axes & {"x", "y"}
+        for scan_axis in sorted(scanner_axes):
             refs.append(_scanner_ref(config, scan_axis, measurement))
         return refs
     if measurement == "srkr_2d":

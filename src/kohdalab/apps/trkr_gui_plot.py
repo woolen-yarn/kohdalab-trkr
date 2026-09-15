@@ -22,7 +22,8 @@ def signal_scale(signal_key: str, voltage_scale: float) -> float:
 
 
 def scan2d_uses_equal_spatial_units(fast_axis: str, slow_axis: str) -> bool:
-    return {fast_axis.strip().lower(), slow_axis.strip().lower()} == {"x", "y"}
+    axes = {fast_axis.strip().lower(), slow_axis.strip().lower()}
+    return axes in ({"x", "y"}, {"u", "v"})
 
 
 @dataclass(frozen=True)

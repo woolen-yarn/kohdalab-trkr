@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
+import math
 from pathlib import Path
 from threading import RLock
 from typing import Any, cast
@@ -257,6 +258,19 @@ class Scanner:
         if self.max_pos is not None and pos > self.max_pos:
             raise ValueError(f"pos={pos} is above limit {self.max_pos}")
 
+    def validate_pos_raw(self, pos: float) -> float:
+        if isinstance(pos, bool) or not math.isfinite(float(pos)):
+            raise ValueError("scanner control target must be finite.")
+        target = self._round_pos(float(pos))
+        self._check_pos_range(target)
+        return target
+
+    def prepare_move(self) -> None:
+        self.controller.prepare_move()
+
+    def start_pos_raw(self, pos: float) -> None:
+        self.controller.start_abs_raw(self.validate_pos_raw(pos))
+
     def initialize(self, home: bool = False, timeout: float = 30.0) -> dict[str, Any]:
         if home:
             self.home()
@@ -283,8 +297,7 @@ class Scanner:
         *,
         on_position: Callable[[float], None] | None = None,
     ) -> float:
-        target = self._round_pos(float(pos))
-        self._check_pos_range(target)
+        target = self.validate_pos_raw(pos)
         if on_position is None:
             return self._round_pos(
                 self.controller.move_abs_raw(target, timeout=timeout)

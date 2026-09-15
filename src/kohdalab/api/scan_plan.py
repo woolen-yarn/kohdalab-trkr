@@ -12,8 +12,10 @@ from kohdalab.api.config import (
     scan_settings,
 )
 
-AXES = {"t", "x", "y"}
-SPATIAL_AXES = {"x", "y"}
+AXES = {"t", "x", "y", "u", "v"}
+SPATIAL_AXES = {"x", "y", "u", "v"}
+PHYSICAL_SPATIAL_AXES = {"x", "y"}
+ROTATED_SPATIAL_AXES = {"u", "v"}
 
 
 def normalize_coordinate(coordinate: str | None) -> str:
@@ -30,6 +32,28 @@ def normalize_scanner_coordinate(coordinate: str | None) -> str:
     if normalized == "instrument":
         return "interface"
     return normalized
+
+
+def spatial_theta_deg(config: dict[str, Any]) -> float:
+    coordinates = config.get("coordinates", {})
+    spatial = coordinates.get("spatial", {}) if isinstance(coordinates, dict) else {}
+    return float(spatial.get("theta_deg", 0.0)) if isinstance(spatial, dict) else 0.0
+
+
+def rotated_to_xy(*, u_um: float, v_um: float, theta_deg: float) -> tuple[float, float]:
+    angle = math.radians(float(theta_deg))
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return float(u_um) * cosine - float(v_um) * sine, float(u_um) * sine + float(
+        v_um
+    ) * cosine
+
+
+def xy_to_rotated(*, x_um: float, y_um: float, theta_deg: float) -> tuple[float, float]:
+    angle = math.radians(float(theta_deg))
+    cosine, sine = math.cos(angle), math.sin(angle)
+    return float(x_um) * cosine + float(y_um) * sine, -float(x_um) * sine + float(
+        y_um
+    ) * cosine
 
 
 @dataclass(frozen=True)
@@ -56,6 +80,7 @@ class SrkrPlan:
     target_points: list[float]
     zero: dict[str, float]
     summary: str
+    theta_deg: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +92,7 @@ class Scan2DPlan:
     fast_target_points: list[float]
     slow_target_points: list[float]
     zero: dict[str, float]
+    theta_deg: float
     return_to_zero: dict[str, bool]
     summary: str
 
@@ -200,23 +226,29 @@ def srkr_plan(
     step_um: float,
     zero_by_axis: dict[str, float],
     coordinate: str,
+    theta_deg: float = 0.0,
 ) -> SrkrPlan:
     axis = axis.strip().lower()
-    if axis not in {"x", "y"}:
-        raise ValueError("SRKR axis must be 'x' or 'y'.")
+    if axis not in SPATIAL_AXES:
+        raise ValueError("SRKR axis must be 'x', 'y', 'u', or 'v'.")
     coordinate = normalize_scanner_coordinate(coordinate)
     if coordinate not in {"measurement", "interface"}:
         raise ValueError("SRKR coordinate must be measurement or interface.")
+    if axis in ROTATED_SPATIAL_AXES and coordinate != "measurement":
+        raise ValueError("SRKR u/v scans require measurement coordinates.")
     zero = {
         "x": float(zero_by_axis["x"]),
         "y": float(zero_by_axis["y"]),
     }
     if not all(math.isfinite(value) for value in zero.values()):
         raise ValueError("SRKR zero values must be finite.")
+    theta_deg = float(theta_deg)
+    if not math.isfinite(theta_deg):
+        raise ValueError("SRKR theta_deg must be finite.")
     target_points = build_range_points(
         float(minimum_um), float(maximum_um), float(step_um)
     )
-    if coordinate == "measurement":
+    if coordinate == "measurement" and axis in PHYSICAL_SPATIAL_AXES:
         axis_zero = zero[axis]
         scan_points = [axis_zero + point for point in target_points]
     else:
@@ -227,6 +259,7 @@ def srkr_plan(
         scan_points=scan_points,
         target_points=target_points,
         zero=zero,
+        theta_deg=theta_deg,
         summary=f"{axis.upper()} {coordinate}, {len(scan_points)} points",
     )
 
@@ -240,6 +273,7 @@ def srkr_plan_from_config(
     step_um: float | None = None,
     zero_by_axis: dict[str, float] | None = None,
     coordinate: str | None = None,
+    theta_deg: float | None = None,
 ) -> SrkrPlan:
     settings = measurement_settings(config, "srkr")
     scan = scan_settings(config, "srkr")
@@ -262,6 +296,9 @@ def srkr_plan_from_config(
             coordinate
             if coordinate is not None
             else settings.get("coordinate", "measurement")
+        ),
+        theta_deg=float(
+            theta_deg if theta_deg is not None else spatial_theta_deg(config)
         ),
     )
 
@@ -287,7 +324,7 @@ def _axis_range_from_config(
 def _normalize_axis(axis: str) -> str:
     normalized = axis.strip().lower()
     if normalized not in AXES:
-        raise ValueError("axis must be one of 't', 'x', or 'y'.")
+        raise ValueError("axis must be one of 't', 'x', 'y', 'u', or 'v'.")
     return normalized
 
 
@@ -339,6 +376,12 @@ def _strkr_ranges(ranges: dict[str, Any]) -> dict[str, dict[str, float]]:
         "y": _axis_range_from_config(
             ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0
         ),
+        "u": _axis_range_from_config(
+            ranges, "u", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
+        "v": _axis_range_from_config(
+            ranges, "v", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
     }
 
 
@@ -350,6 +393,12 @@ def _srkr_2d_ranges(ranges: dict[str, Any]) -> dict[str, dict[str, float]]:
         "y": _axis_range_from_config(
             ranges, "y", default_min=-30.0, default_max=30.0, default_step=1.0
         ),
+        "u": _axis_range_from_config(
+            ranges, "u", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
+        "v": _axis_range_from_config(
+            ranges, "v", default_min=-30.0, default_max=30.0, default_step=1.0
+        ),
     }
 
 
@@ -360,10 +409,14 @@ def strkr_plan(
     ranges: dict[str, Any],
     zero_by_axis: dict[str, float] | None = None,
     return_to_zero: Any = None,
+    theta_deg: float = 0.0,
 ) -> StrkrPlan:
     fast, slow = _normalize_2d_axes(fast_axis, slow_axis)
     if "t" not in {fast, slow} or not ({fast, slow} & SPATIAL_AXES):
-        raise ValueError("STRKR axes must combine t with x or y.")
+        raise ValueError("STRKR axes must combine t with a spatial axis.")
+    theta_deg = float(theta_deg)
+    if not math.isfinite(theta_deg):
+        raise ValueError("STRKR theta_deg must be finite.")
     scan_ranges = _strkr_ranges(ranges)
     fast_points = _target_points(scan_ranges, fast)
     slow_points = _target_points(scan_ranges, slow)
@@ -379,6 +432,7 @@ def strkr_plan(
         fast_target_points=fast_points,
         slow_target_points=slow_points,
         zero=_zero_from_config({}, zero_by_axis),
+        theta_deg=theta_deg,
         return_to_zero=_normalize_return_to_zero(return_to_zero, default=True),
         summary=f"STRKR {fast.upper()} fast / {slow.upper()} slow, {len(fast_points) * len(slow_points)} points",
     )
@@ -392,6 +446,7 @@ def strkr_plan_from_config(
     ranges: dict[str, Any] | None = None,
     zero_by_axis: dict[str, float] | None = None,
     return_to_zero: Any = None,
+    theta_deg: float | None = None,
 ) -> StrkrPlan:
     settings = measurement_settings(config, "strkr")
     scan = scan_settings(config, "strkr")
@@ -408,6 +463,9 @@ def strkr_plan_from_config(
         return_to_zero=return_to_zero
         if return_to_zero is not None
         else settings.get("return_to_zero"),
+        theta_deg=float(
+            theta_deg if theta_deg is not None else spatial_theta_deg(config)
+        ),
     )
 
 
@@ -418,10 +476,14 @@ def srkr_2d_plan(
     ranges: dict[str, Any],
     zero_by_axis: dict[str, float] | None = None,
     return_to_zero: Any = None,
+    theta_deg: float = 0.0,
 ) -> Srkr2DPlan:
     fast, slow = _normalize_2d_axes(fast_axis, slow_axis)
-    if {fast, slow} != SPATIAL_AXES:
-        raise ValueError("SRKR_2D axes must be x and y.")
+    if {fast, slow} not in (PHYSICAL_SPATIAL_AXES, ROTATED_SPATIAL_AXES):
+        raise ValueError("SRKR_2D axes must be x and y, or u and v.")
+    theta_deg = float(theta_deg)
+    if not math.isfinite(theta_deg):
+        raise ValueError("SRKR_2D theta_deg must be finite.")
     scan_ranges = _srkr_2d_ranges(ranges)
     fast_points = _target_points(scan_ranges, fast)
     slow_points = _target_points(scan_ranges, slow)
@@ -437,6 +499,7 @@ def srkr_2d_plan(
         fast_target_points=fast_points,
         slow_target_points=slow_points,
         zero=_zero_from_config({}, zero_by_axis),
+        theta_deg=theta_deg,
         return_to_zero=_normalize_return_to_zero(return_to_zero, default=True),
         summary=f"SRKR 2D {fast.upper()} fast / {slow.upper()} slow, {len(fast_points) * len(slow_points)} points",
     )
@@ -450,6 +513,7 @@ def srkr_2d_plan_from_config(
     ranges: dict[str, Any] | None = None,
     zero_by_axis: dict[str, float] | None = None,
     return_to_zero: Any = None,
+    theta_deg: float | None = None,
 ) -> Srkr2DPlan:
     settings = measurement_settings(config, "srkr_2d")
     scan = scan_settings(config, "srkr_2d")
@@ -466,4 +530,7 @@ def srkr_2d_plan_from_config(
         return_to_zero=return_to_zero
         if return_to_zero is not None
         else settings.get("return_to_zero"),
+        theta_deg=float(
+            theta_deg if theta_deg is not None else spatial_theta_deg(config)
+        ),
     )

@@ -27,6 +27,14 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Keep lock-in signal, settings, and overload status responsive during manual motion.
 - Preserve per-device I/O serialization while polling unrelated hardware concurrently.
 
+## v0.2.5 - Rotated Spatial Scans
+
+- Add u/v spatial coordinates with one shared angle and the existing X/Y offsets
+  as the origin across SRKR, STRKR, and SRKR 2D.
+- Start both scanner axes before waiting for either to stop on CONEX-AGAP and
+  CONEX-CC, retaining target checks and CC software hysteresis pre-approach.
+- Show the angle beside the scan axis selections when u/v is active.
+
 ## v0.2.4 - Maintained Replay Demo
 
 - Provide hardware-free TRKR/SRKR/STRKR/SRKR 2D replay in the production GUI

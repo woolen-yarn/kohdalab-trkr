@@ -35,6 +35,10 @@ class ScannerController(Protocol):
         on_position: Callable[[float], None] | None = None,
     ) -> None: ...
 
+    def prepare_move(self) -> None: ...
+
+    def start_abs_raw(self, pos_raw: float) -> None: ...
+
     def move_abs_raw(
         self,
         pos_raw: float,

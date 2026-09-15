@@ -12,6 +12,22 @@ from kohdalab.api.models import MeasurementPoint, Position
 from kohdalab.api.status import STATUS_RUNNING, STATUS_STOPPED
 
 
+@pytest.mark.parametrize(
+    ("command", "flags", "expected"),
+    [
+        ("srkr", ["--axis", "u"], ("u", None)),
+        ("strkr", ["--fast-axis", "t", "--slow-axis", "v"], ("t", "v")),
+        ("srkr-2d", ["--fast-axis", "u", "--slow-axis", "v"], ("u", "v")),
+    ],
+)
+def test_cli_parser_accepts_uv_scan_axes(command, flags, expected):
+    args = cli.build_parser().parse_args([command, *flags])
+    assert (
+        getattr(args, "axis", getattr(args, "fast_axis", None)),
+        getattr(args, "slow_axis", None),
+    ) == expected
+
+
 class FakeExperiment:
     calls: list[tuple[str, object]] = []
     close_count = 0

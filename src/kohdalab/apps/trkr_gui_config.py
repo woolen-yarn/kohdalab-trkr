@@ -280,6 +280,7 @@ class GuiConfigSnapshot:
     srkr_wait_s: float
     srkr_return_to_zero: bool
     output_settings: dict[str, dict[str, Any]]
+    spatial_theta_deg: float = 0.0
 
 
 def build_saved_config(snapshot: GuiConfigSnapshot) -> dict[str, Any]:
@@ -331,6 +332,7 @@ def build_saved_config(snapshot: GuiConfigSnapshot) -> dict[str, Any]:
         srkr_settings["scanner_keys"] = scanner_keys
 
     return {
+        "coordinates": {"spatial": {"theta_deg": snapshot.spatial_theta_deg}},
         "instruments": {
             "lockin": {
                 lockin_name: dict(snapshot.lockin_config),
@@ -359,6 +361,7 @@ def build_measurement_config(
 ) -> dict[str, Any]:
     lockin_name = _lockin_ref(snapshot, measurement_name)
     config: dict[str, Any] = {
+        "coordinates": {"spatial": {"theta_deg": snapshot.spatial_theta_deg}},
         "instruments": {
             "lockin": {
                 lockin_name: dict(snapshot.lockin_config),

@@ -1007,6 +1007,35 @@ def test_normalize_config_exercises_legacy_scale_fallback_endpoints(scanner, exp
     assert normalized.get("sample_um_per_unit") == expected
 
 
+def test_normalize_config_replaces_non_object_spatial_coordinate_settings():
+    normalized = normalize_config({"coordinates": []})
+    assert normalized["coordinates"]["spatial"] == {"theta_deg": 0.0}
+
+    normalized = normalize_config({"coordinates": {"spatial": []}})
+    assert normalized["coordinates"]["spatial"] == {"theta_deg": 0.0}
+
+
+@pytest.mark.parametrize("theta", [math.nan, math.inf])
+def test_validate_config_rejects_non_finite_spatial_theta(theta):
+    config = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    config["coordinates"] = {"spatial": {"theta_deg": theta}}
+
+    with pytest.raises(
+        ValueError, match="coordinates.spatial.theta_deg must be finite"
+    ):
+        validate_config(config)
+
+
+def test_validate_config_rejects_mixed_physical_and_rotated_srkr_2d_axes():
+    config = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    config["measurements"]["srkr_2d"]["scan"].update(
+        {"fast_axis": "x", "slow_axis": "u"}
+    )
+
+    with pytest.raises(ValueError, match="axes must be x/y or u/v"):
+        validate_config(config)
+
+
 def test_resolve_config_path_uses_default_when_last_state_is_absent(tmp_path):
     default = tmp_path / "default.json"
     default.write_text("{}", encoding="utf-8")

@@ -185,6 +185,86 @@ def _close_gui(gui: TRKRGui):
     gui.close()
 
 
+def test_theta_appears_beside_fast_axis_for_uv_and_is_shared(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    assert gui._axis_hint_values("u") == (None, None, None)
+    assert gui._axis_hint_values("v") == (None, None, None)
+    for mode in ("srkr", "strkr", "srkr_2d"):
+        assert gui.theta_editors[mode].isHidden()
+    assert (
+        gui.theta_editors["srkr"].parentWidget().parentWidget()
+        is gui.srkr_axis_combo.parentWidget()
+    )
+    assert (
+        gui.theta_editors["strkr"].parentWidget().parentWidget()
+        is gui.strkr_fast_axis_combo.parentWidget()
+    )
+    assert (
+        gui.theta_editors["srkr_2d"].parentWidget().parentWidget()
+        is gui.srkr_2d_fast_axis_combo.parentWidget()
+    )
+
+    gui.srkr_axis_combo.setCurrentText("u")
+    assert not gui.theta_editors["srkr"].isHidden()
+    gui.strkr_slow_axis_combo.setCurrentText("u")
+    assert gui.strkr_fast_axis_combo.currentText() == "t"
+    assert not gui.theta_editors["strkr"].isHidden()
+    gui.srkr_2d_fast_axis_combo.setCurrentText("v")
+    assert not gui.theta_editors["srkr_2d"].isHidden()
+
+    gui.strkr_theta_spin.setValue(27.5)
+    assert gui.spatial_theta_spin.value() == 27.5
+    assert gui.srkr_2d_theta_spin.value() == 27.5
+    gui.srkr_2d_theta_spin.setValue(-15.0)
+    assert gui.spatial_theta_spin.value() == -15.0
+    assert gui.strkr_theta_spin.value() == -15.0
+
+    gui.srkr_axis_combo.setCurrentText("x")
+    assert gui.theta_editors["srkr"].isHidden()
+    _close_gui(gui)
+
+
+def test_scan_axis_boxes_match_min_cor_input_width(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    gui.show()
+    for index, pairs in (
+        (1, ((gui.trkr_axis_combo, gui.trkr_min_spin),)),
+        (2, ((gui.srkr_axis_combo, gui.srkr_min_spin),)),
+        (
+            3,
+            (
+                (gui.strkr_fast_axis_combo, gui.strkr_role_spins["fast_axis"]["min"]),
+                (gui.strkr_slow_axis_combo, gui.strkr_role_spins["slow_axis"]["min"]),
+            ),
+        ),
+        (
+            4,
+            (
+                (
+                    gui.srkr_2d_fast_axis_combo,
+                    gui.srkr_2d_role_spins["fast_axis"]["min"],
+                ),
+                (
+                    gui.srkr_2d_slow_axis_combo,
+                    gui.srkr_2d_role_spins["slow_axis"]["min"],
+                ),
+            ),
+        ),
+    ):
+        gui.measurement_tabs.setCurrentIndex(index)
+        for _ in range(10):
+            QtWidgets.QApplication.processEvents()
+        for combo, min_spin in pairs:
+            assert abs(combo.width() - min_spin.width()) <= 2
+
+    gui.srkr_axis_combo.setCurrentText("u")
+    gui.measurement_tabs.setCurrentIndex(2)
+    for _ in range(10):
+        QtWidgets.QApplication.processEvents()
+    assert abs(gui.srkr_axis_combo.width() - gui.srkr_min_spin.width()) <= 2
+    _close_gui(gui)
+
+
 def test_gui_measurement_start_stop_error_and_cleanup(monkeypatch, tmp_path: Path):
     gui = _new_gui(monkeypatch)
     experiment = object()

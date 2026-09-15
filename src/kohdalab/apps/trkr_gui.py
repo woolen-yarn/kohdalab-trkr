@@ -191,8 +191,8 @@ def _validated_measurement_point(
         _finite_row_value(row, "target_t_cor_ps")
     elif measurement == "srkr":
         axis = str(row.get("fast_axis", "")).strip().lower()
-        if axis not in {"x", "y"}:
-            raise ValueError("SRKR point fast_axis must be 'x' or 'y'.")
+        if axis not in {"x", "y", "u", "v"}:
+            raise ValueError("SRKR point fast_axis must be x, y, u, or v.")
         _finite_row_value(row, axis_target_key(axis))
     elif measurement in {"strkr", "srkr_2d"}:
         fast_axis = str(row.get("fast_axis", "")).strip().lower()
@@ -291,30 +291,29 @@ def _valid_scan2d_axes(mode: str, fast_axis: str, slow_axis: str) -> tuple[str, 
     fast_axis = str(fast_axis or "").strip().lower()
     slow_axis = str(slow_axis or "").strip().lower()
     allowed = (
-        {("t", "x"), ("t", "y"), ("x", "t"), ("y", "t")}
+        {("t", a) for a in ("x", "y", "u", "v")}
+        | {(a, "t") for a in ("x", "y", "u", "v")}
         if mode == "strkr"
-        else {("x", "y"), ("y", "x")}
+        else {("x", "y"), ("y", "x"), ("u", "v"), ("v", "u")}
     )
     if (fast_axis, slow_axis) in allowed:
         return fast_axis, slow_axis
     if mode == "strkr":
         if fast_axis == "t":
             return "t", "x"
-        if fast_axis in {"x", "y"}:
+        if fast_axis in {"x", "y", "u", "v"}:
             return fast_axis, "t"
         if slow_axis == "t":
             return "x", "t"
-        if slow_axis in {"x", "y"}:
+        if slow_axis in {"x", "y", "u", "v"}:
             return "t", slow_axis
     else:
-        if fast_axis == "x":
-            return "x", "y"
-        if fast_axis == "y":
-            return "y", "x"
-        if slow_axis == "x":
-            return "y", "x"
-        if slow_axis == "y":
-            return "x", "y"
+        for pair in (("x", "y"), ("y", "x"), ("u", "v"), ("v", "u")):
+            if fast_axis == pair[0]:
+                return pair
+        for pair in (("y", "x"), ("x", "y"), ("v", "u"), ("u", "v")):
+            if slow_axis == pair[1]:
+                return pair
     return ("t", "x") if mode == "strkr" else ("x", "y")
 
 
@@ -412,6 +411,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.refresh_all_ports()
         self._refresh_plot_labels()
         self._refresh_scan_limit_hints()
+        self._refresh_theta_visibility()
 
         self.live_timer = QtCore.QTimer(self)
         self.live_timer.setInterval(500)
@@ -528,6 +528,20 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.t_zero_spin = self._spin(-1_000_000, 1_000_000, 3, 0.0)
         self.x_zero_spin = self._spin(-1_000_000, 1_000_000, 3, 0.0)
         self.y_zero_spin = self._spin(-1_000_000, 1_000_000, 3, 0.0)
+        self.spatial_theta_spin = self._spin(-360.0, 360.0, 3, 0.0)
+        self.strkr_theta_spin = self._spin(-360.0, 360.0, 3, 0.0)
+        self.srkr_2d_theta_spin = self._spin(-360.0, 360.0, 3, 0.0)
+        self.theta_spins = (
+            self.spatial_theta_spin,
+            self.strkr_theta_spin,
+            self.srkr_2d_theta_spin,
+        )
+        self.theta_editors: dict[str, QtWidgets.QWidget] = {}
+        for theta_spin in self.theta_spins:
+            theta_spin.setToolTip(
+                "u/v rotation in degrees, from +x toward +y; "
+                "origin is the Scanner X/Y offsets"
+            )
         self.use_current_t_button = QtWidgets.QPushButton("Use Current")
         self.use_current_x_button = QtWidgets.QPushButton("Use Current")
         self.use_current_y_button = QtWidgets.QPushButton("Use Current")
@@ -559,7 +573,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.trkr_return_check.setChecked(True)
 
         self.srkr_axis_combo = QtWidgets.QComboBox()
-        self.srkr_axis_combo.addItems(["x", "y"])
+        self.srkr_axis_combo.addItems(["x", "y", "u", "v"])
         self.srkr_min_spin = self._spin(-1_000_000, 1_000_000, 3, -30.0)
         self.srkr_max_spin = self._spin(-1_000_000, 1_000_000, 3, 30.0)
         self.srkr_step_spin = self._spin(-1_000_000, 1_000_000, 3, 10.0)
@@ -571,8 +585,8 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.srkr_return_check = QtWidgets.QCheckBox("Return to origin")
         self.srkr_return_check.setChecked(True)
 
-        self.strkr_fast_axis_combo = self._combo(["t", "x", "y"])
-        self.strkr_slow_axis_combo = self._combo(["x", "t", "y"])
+        self.strkr_fast_axis_combo = self._combo(["t", "x", "y", "u", "v"])
+        self.strkr_slow_axis_combo = self._combo(["x", "t", "y", "u", "v"])
         self.strkr_fast_axis_combo.setEditable(False)
         self.strkr_slow_axis_combo.setEditable(False)
         self.strkr_range_spins = self._axis_range_spins(
@@ -580,6 +594,8 @@ class TRKRGui(QtWidgets.QMainWindow):
                 "t": (-50.0, 300.0, 5.0),
                 "x": (-30.0, 30.0, 1.0),
                 "y": (-30.0, 30.0, 1.0),
+                "u": (-30.0, 30.0, 1.0),
+                "v": (-30.0, 30.0, 1.0),
             }
         )
         self.strkr_role_spins = {
@@ -591,14 +607,16 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.strkr_wait_spin = self._spin(0.0, 3600, 2, 2.0)
         self.strkr_tc_button = QtWidgets.QPushButton("Use TC*4")
 
-        self.srkr_2d_fast_axis_combo = self._combo(["x", "y"])
-        self.srkr_2d_slow_axis_combo = self._combo(["y", "x"])
+        self.srkr_2d_fast_axis_combo = self._combo(["x", "y", "u", "v"])
+        self.srkr_2d_slow_axis_combo = self._combo(["y", "x", "v", "u"])
         self.srkr_2d_fast_axis_combo.setEditable(False)
         self.srkr_2d_slow_axis_combo.setEditable(False)
         self.srkr_2d_range_spins = self._axis_range_spins(
             {
                 "x": (-30.0, 30.0, 1.0),
                 "y": (-30.0, 30.0, 1.0),
+                "u": (-30.0, 30.0, 1.0),
+                "v": (-30.0, 30.0, 1.0),
             }
         )
         self.srkr_2d_role_spins = {
@@ -678,7 +696,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.srkr_plots: dict[tuple[str, int], pg.PlotWidget] = {}
         self.srkr_curves = {}
         colors = {1: "#1f77b4", 2: "#d62728"}
-        for col, axis in enumerate(("x", "y")):
+        for col, axis in enumerate(("x", "y", "u", "v")):
             for row, signal_index in enumerate((1, 2)):
                 plot = pg.PlotWidget()
                 plot.showGrid(x=True, y=True, alpha=0.25)
@@ -1046,6 +1064,37 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.addLayout(grid)
         return group
 
+    def _axis_with_trailing(
+        self,
+        axis_combo: QtWidgets.QComboBox,
+        theta_spin: QtWidgets.QDoubleSpinBox | None = None,
+        *,
+        mode: str | None = None,
+    ) -> QtWidgets.QWidget:
+        row = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(axis_combo, 1)
+        trailing = QtWidgets.QWidget()
+        trailing.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
+        if theta_spin is not None and mode is not None:
+            trailing_layout = QtWidgets.QHBoxLayout(trailing)
+            trailing_layout.setContentsMargins(0, 0, 0, 0)
+            editor = QtWidgets.QWidget()
+            editor_layout = QtWidgets.QHBoxLayout(editor)
+            editor_layout.setContentsMargins(0, 0, 0, 0)
+            editor_layout.setSpacing(4)
+            editor_layout.addWidget(QtWidgets.QLabel("θ"))
+            theta_spin.setSuffix("°")
+            theta_spin.setFixedWidth(78)
+            editor_layout.addWidget(theta_spin)
+            trailing_layout.addWidget(editor)
+            trailing_layout.addStretch(1)
+            self.theta_editors[mode] = editor
+        layout.addWidget(trailing, 0)
+        return row
+
     def _measurement_group(self) -> QtWidgets.QWidget:
         group = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(group)
@@ -1071,7 +1120,7 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _trkr_tab(self) -> QtWidgets.QWidget:
         settings = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(settings)
-        layout.addRow("Fast Axis", self.trkr_axis_combo)
+        layout.addRow("Fast Axis", self._axis_with_trailing(self.trkr_axis_combo))
         layout.addRow(
             "t min cor (ps)", self._with_hint(self.trkr_min_spin, self.trkr_min_hint)
         )
@@ -1089,7 +1138,12 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _srkr_tab(self) -> QtWidgets.QWidget:
         settings = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(settings)
-        layout.addRow("Fast Axis", self.srkr_axis_combo)
+        layout.addRow(
+            "Fast Axis",
+            self._axis_with_trailing(
+                self.srkr_axis_combo, self.spatial_theta_spin, mode="srkr"
+            ),
+        )
         layout.addRow(
             "min cor (um)", self._with_hint(self.srkr_min_spin, self.srkr_min_hint)
         )
@@ -1113,11 +1167,14 @@ class TRKRGui(QtWidgets.QMainWindow):
         role_hints: dict[str, QtWidgets.QLabel],
         wait_spin: QtWidgets.QDoubleSpinBox | None = None,
         wait_button: QtWidgets.QPushButton | None = None,
+        theta_spin: QtWidgets.QDoubleSpinBox | None = None,
+        mode: str | None = None,
     ) -> QtWidgets.QWidget:
         group = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(group)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addRow("Fast Axis" if title == "Fast" else "Slow Axis", axis_combo)
+        axis_widget = self._axis_with_trailing(axis_combo, theta_spin, mode=mode)
+        layout.addRow("Fast Axis" if title == "Fast" else "Slow Axis", axis_widget)
         for key in RANGE_KEYS:
             layout.addRow(
                 role_labels[key], self._with_hint(role_spins[key], role_hints[key])
@@ -1141,6 +1198,8 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.strkr_role_hints["fast_axis"],
                 self.strkr_wait_spin,
                 self.strkr_tc_button,
+                theta_spin=self.strkr_theta_spin,
+                mode="strkr",
             ),
             1,
         )
@@ -1173,6 +1232,8 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.srkr_2d_role_hints["fast_axis"],
                 self.srkr_2d_wait_spin,
                 self.srkr_2d_tc_button,
+                theta_spin=self.srkr_2d_theta_spin,
+                mode="srkr_2d",
             ),
             1,
         )
@@ -1406,9 +1467,11 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.y_zero_spin.valueChanged.connect(
             lambda _value: self._refresh_scan_limit_hints()
         )
-        self.srkr_axis_combo.currentTextChanged.connect(
-            lambda _text: self._refresh_scan_limit_hints()
-        )
+        self.srkr_axis_combo.currentTextChanged.connect(self._handle_srkr_axis_changed)
+        for spin in self.theta_spins:
+            spin.valueChanged.connect(
+                lambda value, source=spin: self._sync_theta_spins(value, source)
+            )
         self.strkr_fast_axis_combo.currentTextChanged.connect(
             lambda _text: self._handle_2d_axis_changed("strkr")
         )
@@ -1469,6 +1532,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             measurement = self._measurement_name()
             self._normalize_2d_axis_controls(measurement)
             self._load_scan2d_role_ranges(measurement)
+            self._refresh_theta_visibility()
             self._last_measurement_for_output = measurement
             self._apply_output_settings(measurement)
             self._refresh_measurement_availability()
@@ -1479,13 +1543,41 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.status_label.setText("tab error")
             self.append_log(f"Tab change error: {e}")
 
+    def _handle_srkr_axis_changed(self, _text: str) -> None:
+        self._refresh_scan_limit_hints()
+        self._refresh_theta_visibility()
+
     def _handle_2d_axis_changed(self, mode: str) -> None:
         self._sync_scan2d_role_values_to_axis_ranges(mode)
         self._normalize_2d_axis_controls(mode)
         self._load_scan2d_role_ranges(mode)
+        self._refresh_theta_visibility()
         self._refresh_scan_limit_hints()
         if mode == self._measurement_name():
             self._update_curves()
+
+    def _sync_theta_spins(self, value: float, source: QtWidgets.QDoubleSpinBox) -> None:
+        for spin in self.theta_spins:
+            if spin is source:
+                continue
+            blocked = spin.blockSignals(True)
+            try:
+                spin.setValue(value)
+            finally:
+                spin.blockSignals(blocked)
+
+    def _refresh_theta_visibility(self) -> None:
+        self.theta_editors["srkr"].setVisible(
+            self.srkr_axis_combo.currentText().lower() in {"u", "v"}
+        )
+        for mode, fast_combo, slow_combo in (
+            ("strkr", self.strkr_fast_axis_combo, self.strkr_slow_axis_combo),
+            ("srkr_2d", self.srkr_2d_fast_axis_combo, self.srkr_2d_slow_axis_combo),
+        ):
+            self.theta_editors[mode].setVisible(
+                fast_combo.currentText().lower() in {"u", "v"}
+                or slow_combo.currentText().lower() in {"u", "v"}
+            )
 
     def _normalize_2d_axis_controls(self, mode: str) -> None:
         if mode == "strkr":
@@ -1871,6 +1963,8 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _axis_hint_values(
         self, axis: str
     ) -> tuple[float | None, float | None, float | None]:
+        if axis in {"u", "v"}:
+            return None, None, None
         return (
             self._delay_stage_hint_values()
             if axis == "t"
@@ -1883,8 +1977,12 @@ class TRKRGui(QtWidgets.QMainWindow):
         hints = self._scan2d_role_hint_widgets(mode)
         for role in SCAN2D_ROLES:
             axis = self.scan2d_role_axes.get(mode, {}).get(role, "x")
-            if axis not in {"t", "x", "y"}:
+            if axis not in {"t", "x", "y", "u", "v"}:
                 axis = "x"
+            if axis in {"u", "v"}:
+                for key in RANGE_KEYS:
+                    hints[role][key].setText("checks x/y")
+                continue
             low, high, step = self._axis_hint_values(axis)
             unit = _axis_unit(axis)
             hints[role]["min"].setText(f"min > {_fmt_bound(low, unit)}")
@@ -1898,9 +1996,13 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.trkr_step_hint.setText(f"step > {_fmt_bound(trkr_step, 'ps')}")
 
         axis = self.srkr_axis_combo.currentText().strip().lower() or "x"
-        srkr_low, srkr_high, srkr_step = self._scanner_hint_values(
-            axis if axis in {"x", "y"} else "x"
-        )
+        if axis in {"u", "v"}:
+            for hint in (self.srkr_min_hint, self.srkr_max_hint, self.srkr_step_hint):
+                hint.setText("checks x/y")
+            self._refresh_scan2d_role_hints("strkr")
+            self._refresh_scan2d_role_hints("srkr_2d")
+            return
+        srkr_low, srkr_high, srkr_step = self._axis_hint_values(axis)
         self.srkr_min_hint.setText(f"min > {_fmt_bound(srkr_low, 'um')}")
         self.srkr_max_hint.setText(f"max < {_fmt_bound(srkr_high, 'um')}")
         self.srkr_step_hint.setText(f"step > {_fmt_bound(srkr_step, 'um')}")
@@ -2035,6 +2137,8 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.t_zero_spin.setValue(float(zero.get("t_ps", self.t_zero_spin.value())))
         self.x_zero_spin.setValue(float(zero.get("x_um", self.x_zero_spin.value())))
         self.y_zero_spin.setValue(float(zero.get("y_um", self.y_zero_spin.value())))
+        spatial = config.get("coordinates", {}).get("spatial", {})
+        self.spatial_theta_spin.setValue(float(spatial.get("theta_deg", 0.0)))
         targets = move_abs.get("targets", {}) if isinstance(move_abs, dict) else {}
         self.move_t_spin.setValue(float(targets.get("t", self.move_t_spin.value())))
         self.move_x_spin.setValue(float(targets.get("x", self.move_x_spin.value())))
@@ -2149,6 +2253,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         )
         self._last_measurement_for_output = self._measurement_name()
         self._apply_output_settings(self._last_measurement_for_output)
+        self._refresh_theta_visibility()
         self._refresh_measurement_availability()
 
     def _settings_from_measurement_output(
@@ -2250,6 +2355,9 @@ class TRKRGui(QtWidgets.QMainWindow):
         self._sync_scan2d_role_values_to_axis_ranges("strkr")
         self._sync_scan2d_role_values_to_axis_ranges("srkr_2d")
         config = deepcopy(self.config)
+        config.setdefault("coordinates", {}).setdefault("spatial", {})["theta_deg"] = (
+            self.spatial_theta_spin.value()
+        )
         instruments = config.setdefault("instruments", {})
         lockins = instruments.get("lockin", {})
         if isinstance(lockins, dict) and "main" in lockins:
@@ -3116,12 +3224,13 @@ class TRKRGui(QtWidgets.QMainWindow):
                         "y": self.y_zero_spin.value(),
                     },
                     coordinate="measurement",
+                    theta_deg=self.spatial_theta_spin.value(),
                 )
                 wait_s = self.srkr_wait_spin.value()
                 return_to_zero = self.srkr_return_check.isChecked()
                 summary = f"SRKR {axis.upper()} {len(scan_plan.scan_points)} points"
                 self.running_srkr_axis = axis
-                self.running_motion_axes = {axis}
+                self.running_motion_axes = {"x", "y"} if axis in {"u", "v"} else {axis}
             elif measurement == "strkr":
                 scan_plan = strkr_plan(
                     fast_axis=self.strkr_fast_axis_combo.currentText(),
@@ -3133,11 +3242,16 @@ class TRKRGui(QtWidgets.QMainWindow):
                         "y_um": self.y_zero_spin.value(),
                     },
                     return_to_zero=self._return_roles_payload(),
+                    theta_deg=self.spatial_theta_spin.value(),
                 )
                 wait_s = self.strkr_wait_spin.value()
                 summary = scan_plan.summary
                 self.running_srkr_axis = None
-                self.running_motion_axes = {scan_plan.fast_axis, scan_plan.slow_axis}
+                self.running_motion_axes = (
+                    {"t", "x", "y"}
+                    if {scan_plan.fast_axis, scan_plan.slow_axis} & {"u", "v"}
+                    else {scan_plan.fast_axis, scan_plan.slow_axis}
+                )
                 self._scan2d_fast_point_count = scan_plan.fast_point_count
                 self._scan2d_slow_point_count = scan_plan.slow_point_count
             elif measurement == "srkr_2d":
@@ -3151,11 +3265,16 @@ class TRKRGui(QtWidgets.QMainWindow):
                         "y_um": self.y_zero_spin.value(),
                     },
                     return_to_zero=self._return_roles_payload(),
+                    theta_deg=self.spatial_theta_spin.value(),
                 )
                 wait_s = self.srkr_2d_wait_spin.value()
                 summary = scan_plan.summary
                 self.running_srkr_axis = None
-                self.running_motion_axes = {scan_plan.fast_axis, scan_plan.slow_axis}
+                self.running_motion_axes = (
+                    {"x", "y"}
+                    if {scan_plan.fast_axis, scan_plan.slow_axis} & {"u", "v"}
+                    else {scan_plan.fast_axis, scan_plan.slow_axis}
+                )
                 self._scan2d_fast_point_count = scan_plan.fast_point_count
                 self._scan2d_slow_point_count = scan_plan.slow_point_count
             else:
@@ -3342,6 +3461,8 @@ class TRKRGui(QtWidgets.QMainWindow):
 
     def _set_running(self, running: bool) -> None:
         self.save_rows_button.setEnabled(not running)
+        for spin in self.theta_spins:
+            spin.setEnabled(not running and self.move_thread is None)
         if self.move_thread is not None:
             self.start_button.setEnabled(False)
             self.stop_button.setEnabled(running)
@@ -3458,6 +3579,8 @@ class TRKRGui(QtWidgets.QMainWindow):
             widget.setEnabled(not running)
 
     def _set_move_running(self, running: bool) -> None:
+        for spin in self.theta_spins:
+            spin.setEnabled(not running and self.measurement_thread is None)
         if running:
             self.load_button.setEnabled(False)
             self.save_button.setEnabled(False)
@@ -3567,7 +3690,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.plot1.setLabel("top", "t", units="ps")
             self.plot2.setLabel("top", "t", units="ps")
         elif mode == "srkr":
-            for axis in ("x", "y"):
+            for axis in ("x", "y", "u", "v"):
                 for signal_index, title, unit in (
                     (1, view.title1, view.unit1),
                     (2, view.title2, view.unit2),
@@ -3640,7 +3763,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.curve2.setData(x_values, [row[view.signal2_key] * scale2 for row in rows])
 
     def _update_srkr_curves(self, rows: list[dict[str, Any]], view: Any) -> None:
-        for axis in ("x", "y"):
+        for axis in ("x", "y", "u", "v"):
             axis_rows = [
                 row
                 for row in rows
@@ -3654,7 +3777,13 @@ class TRKRGui(QtWidgets.QMainWindow):
                 _finite_row_value(row, f"{axis}_cor_um", axis_target_key(axis))
                 for row in axis_rows
             ]
-            zero = self.x_zero_spin.value() if axis == "x" else self.y_zero_spin.value()
+            zero = (
+                self.x_zero_spin.value()
+                if axis == "x"
+                else self.y_zero_spin.value()
+                if axis == "y"
+                else 0.0
+            )
             raw_values = [
                 float(row[f"{axis}_um"])
                 if row.get(f"{axis}_um") is not None
