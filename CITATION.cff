@@ -1,7 +1,7 @@
 cff-version: 1.2.0
 message: "If you use this software in research, please cite it using the metadata below."
 title: "KohdaLab TRKR"
-version: "0.2.6"
+version: "0.2.7"
 date-released: "2026-09-16"
 license: "MIT"
 repository-code: "https://github.com/woolen-yarn/kohdalab-trkr"

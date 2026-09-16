@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## [0.2.7] - 2026-09-16
+
+- Moved the STRKR angle input beside the selected u/v axis when Fast Axis is t.
+- Moved the SRKR 2D angle input beside u when the selected axes are v/u.
+
 ## [0.2.6] - 2026-09-16
 
 - Restored SRKR's four-panel plot layout, switching the displayed data and

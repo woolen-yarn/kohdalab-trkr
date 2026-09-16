@@ -27,6 +27,11 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Keep lock-in signal, settings, and overload status responsive during manual motion.
 - Preserve per-device I/O serialization while polling unrelated hardware concurrently.
 
+## v0.2.7 - Angle Input Placement
+
+- Place the STRKR angle input beside the selected u/v axis for t/u and t/v scans.
+- Place the SRKR 2D angle input beside u for both u/v and v/u scans.
+
 ## v0.2.6 - SRKR Plot Axis Switching
 
 - Keep the SRKR display at four plots, switching between x/y and u/v data
