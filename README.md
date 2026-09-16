@@ -84,10 +84,11 @@ uv build --no-sources
 
 ## Project Status
 
-The current development version is `0.2.5`. It adds rotated u/v spatial scans
+The current development version is `0.2.6`. It adds rotated u/v spatial scans
 to SRKR, STRKR, and SRKR 2D, with a shared angle and the existing X/Y offsets
 as the origin. CONEX-AGAP and CONEX-CC now overlap X/Y target moves and wait for
-both axes to stop before acquisition.
+both axes to stop before acquisition. SRKR now displays either x/y or u/v in
+the same four plot panels, based on the selected scan axis.
 Hardware operation still requires the checks described in
 [SAFETY.md](SAFETY.md) and the
 [hardware smoke-test guide](docs/hardware_smoke_test.md).

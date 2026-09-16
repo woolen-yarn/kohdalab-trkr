@@ -696,7 +696,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.srkr_plots: dict[tuple[str, int], pg.PlotWidget] = {}
         self.srkr_curves = {}
         colors = {1: "#1f77b4", 2: "#d62728"}
-        for col, axis in enumerate(("x", "y", "u", "v")):
+        for col, axis in enumerate(("x", "y")):
             for row, signal_index in enumerate((1, 2)):
                 plot = pg.PlotWidget()
                 plot.showGrid(x=True, y=True, alpha=0.25)
@@ -707,6 +707,9 @@ class TRKRGui(QtWidgets.QMainWindow):
                 )
                 self.srkr_plots[(axis, signal_index)] = plot
                 self.srkr_curves[(axis, signal_index)] = curve
+                virtual_axis = "u" if axis == "x" else "v"
+                self.srkr_plots[(virtual_axis, signal_index)] = plot
+                self.srkr_curves[(virtual_axis, signal_index)] = curve
                 srkr_layout.addWidget(plot, row, col)
 
         self.scan2d_plot_widget = QtWidgets.QWidget()
@@ -1085,9 +1088,11 @@ class TRKRGui(QtWidgets.QMainWindow):
             editor_layout = QtWidgets.QHBoxLayout(editor)
             editor_layout.setContentsMargins(0, 0, 0, 0)
             editor_layout.setSpacing(4)
-            editor_layout.addWidget(QtWidgets.QLabel("θ"))
-            theta_spin.setSuffix("°")
-            theta_spin.setFixedWidth(78)
+            theta_label = QtWidgets.QLabel("θ (deg)")
+            theta_label.setStyleSheet("font-size: 10px;")
+            editor_layout.addWidget(theta_label)
+            theta_spin.setSuffix("")
+            theta_spin.setFixedWidth(74)
             editor_layout.addWidget(theta_spin)
             trailing_layout.addWidget(editor)
             trailing_layout.addStretch(1)
@@ -1546,6 +1551,8 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _handle_srkr_axis_changed(self, _text: str) -> None:
         self._refresh_scan_limit_hints()
         self._refresh_theta_visibility()
+        if self._measurement_name() == "srkr":
+            self._update_curves()
 
     def _handle_2d_axis_changed(self, mode: str) -> None:
         self._sync_scan2d_role_values_to_axis_ranges(mode)
@@ -3690,7 +3697,12 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.plot1.setLabel("top", "t", units="ps")
             self.plot2.setLabel("top", "t", units="ps")
         elif mode == "srkr":
-            for axis in ("x", "y", "u", "v"):
+            axes = (
+                ("u", "v")
+                if self.srkr_axis_combo.currentText().lower() in {"u", "v"}
+                else ("x", "y")
+            )
+            for axis in axes:
                 for signal_index, title, unit in (
                     (1, view.title1, view.unit1),
                     (2, view.title2, view.unit2),
@@ -3763,7 +3775,12 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.curve2.setData(x_values, [row[view.signal2_key] * scale2 for row in rows])
 
     def _update_srkr_curves(self, rows: list[dict[str, Any]], view: Any) -> None:
-        for axis in ("x", "y", "u", "v"):
+        axes = (
+            ("u", "v")
+            if self.srkr_axis_combo.currentText().lower() in {"u", "v"}
+            else ("x", "y")
+        )
+        for axis in axes:
             axis_rows = [
                 row
                 for row in rows
