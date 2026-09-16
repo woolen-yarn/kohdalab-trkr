@@ -537,6 +537,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.srkr_2d_theta_spin,
         )
         self.theta_editors: dict[str, QtWidgets.QWidget] = {}
+        self.theta_trailing_layouts: dict[str, QtWidgets.QHBoxLayout] = {}
         for theta_spin in self.theta_spins:
             theta_spin.setToolTip(
                 "u/v rotation in degrees, from +x toward +y; "
@@ -1081,9 +1082,11 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.addWidget(axis_combo, 1)
         trailing = QtWidgets.QWidget()
         trailing.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
+        trailing_layout = QtWidgets.QHBoxLayout(trailing)
+        trailing_layout.setContentsMargins(0, 0, 0, 0)
+        if mode is not None:
+            self.theta_trailing_layouts[mode] = trailing_layout
         if theta_spin is not None and mode is not None:
-            trailing_layout = QtWidgets.QHBoxLayout(trailing)
-            trailing_layout.setContentsMargins(0, 0, 0, 0)
             editor = QtWidgets.QWidget()
             editor_layout = QtWidgets.QHBoxLayout(editor)
             editor_layout.setContentsMargins(0, 0, 0, 0)
@@ -1095,8 +1098,8 @@ class TRKRGui(QtWidgets.QMainWindow):
             theta_spin.setFixedWidth(74)
             editor_layout.addWidget(theta_spin)
             trailing_layout.addWidget(editor)
-            trailing_layout.addStretch(1)
             self.theta_editors[mode] = editor
+        trailing_layout.addStretch(1)
         layout.addWidget(trailing, 0)
         return row
 
@@ -1215,6 +1218,7 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.strkr_role_spins["slow_axis"],
                 self.strkr_role_labels["slow_axis"],
                 self.strkr_role_hints["slow_axis"],
+                mode="strkr_slow",
             ),
             1,
         )
@@ -1249,6 +1253,7 @@ class TRKRGui(QtWidgets.QMainWindow):
                 self.srkr_2d_role_spins["slow_axis"],
                 self.srkr_2d_role_labels["slow_axis"],
                 self.srkr_2d_role_hints["slow_axis"],
+                mode="srkr_2d_slow",
             ),
             1,
         )
@@ -1573,18 +1578,35 @@ class TRKRGui(QtWidgets.QMainWindow):
             finally:
                 spin.blockSignals(blocked)
 
+    def _position_theta_editor(self, mode: str, *, beside_slow: bool) -> None:
+        target_layout = self.theta_trailing_layouts[
+            f"{mode}_slow" if beside_slow else mode
+        ]
+        editor = self.theta_editors[mode]
+        if editor.parentWidget() is not target_layout.parentWidget():
+            source_layout = self.theta_trailing_layouts[
+                mode if beside_slow else f"{mode}_slow"
+            ]
+            source_layout.removeWidget(editor)
+            target_layout.insertWidget(0, editor)
+
     def _refresh_theta_visibility(self) -> None:
         self.theta_editors["srkr"].setVisible(
             self.srkr_axis_combo.currentText().lower() in {"u", "v"}
         )
-        for mode, fast_combo, slow_combo in (
-            ("strkr", self.strkr_fast_axis_combo, self.strkr_slow_axis_combo),
-            ("srkr_2d", self.srkr_2d_fast_axis_combo, self.srkr_2d_slow_axis_combo),
-        ):
-            self.theta_editors[mode].setVisible(
-                fast_combo.currentText().lower() in {"u", "v"}
-                or slow_combo.currentText().lower() in {"u", "v"}
-            )
+        fast_spatial = self.strkr_fast_axis_combo.currentText().lower() in {"u", "v"}
+        slow_spatial = self.strkr_slow_axis_combo.currentText().lower() in {"u", "v"}
+        self._position_theta_editor(
+            "strkr", beside_slow=slow_spatial and not fast_spatial
+        )
+        editor = self.theta_editors["strkr"]
+        editor.setVisible(fast_spatial or slow_spatial)
+        srkr_2d_fast = self.srkr_2d_fast_axis_combo.currentText().lower()
+        srkr_2d_slow = self.srkr_2d_slow_axis_combo.currentText().lower()
+        self._position_theta_editor("srkr_2d", beside_slow=srkr_2d_slow == "u")
+        self.theta_editors["srkr_2d"].setVisible(
+            srkr_2d_fast in {"u", "v"} or srkr_2d_slow in {"u", "v"}
+        )
 
     def _normalize_2d_axis_controls(self, mode: str) -> None:
         if mode == "strkr":

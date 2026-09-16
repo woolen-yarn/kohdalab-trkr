@@ -185,7 +185,7 @@ def _close_gui(gui: TRKRGui):
     gui.close()
 
 
-def test_theta_appears_beside_fast_axis_for_uv_and_is_shared(monkeypatch):
+def test_theta_appears_beside_rotated_axis_and_is_shared(monkeypatch):
     gui = _new_gui(monkeypatch)
     assert gui._axis_hint_values("u") == (None, None, None)
     assert gui._axis_hint_values("v") == (None, None, None)
@@ -214,8 +214,40 @@ def test_theta_appears_beside_fast_axis_for_uv_and_is_shared(monkeypatch):
     gui.strkr_slow_axis_combo.setCurrentText("u")
     assert gui.strkr_fast_axis_combo.currentText() == "t"
     assert not gui.theta_editors["strkr"].isHidden()
+    assert (
+        gui.theta_editors["strkr"].parentWidget().parentWidget()
+        is gui.strkr_slow_axis_combo.parentWidget()
+    )
+    gui.strkr_slow_axis_combo.setCurrentText("v")
+    assert (
+        gui.theta_editors["strkr"].parentWidget().parentWidget()
+        is gui.strkr_slow_axis_combo.parentWidget()
+    )
+    gui.strkr_fast_axis_combo.setCurrentText("u")
+    assert gui.strkr_slow_axis_combo.currentText() == "t"
+    assert (
+        gui.theta_editors["strkr"].parentWidget().parentWidget()
+        is gui.strkr_fast_axis_combo.parentWidget()
+    )
+    gui.strkr_fast_axis_combo.setCurrentText("t")
+    gui.strkr_slow_axis_combo.setCurrentText("x")
+    assert gui.strkr_fast_axis_combo.currentText() == "t"
+    assert gui.theta_editors["strkr"].isHidden()
     gui.srkr_2d_fast_axis_combo.setCurrentText("v")
+    assert gui.srkr_2d_slow_axis_combo.currentText() == "u"
     assert not gui.theta_editors["srkr_2d"].isHidden()
+    assert (
+        gui.theta_editors["srkr_2d"].parentWidget().parentWidget()
+        is gui.srkr_2d_slow_axis_combo.parentWidget()
+    )
+    gui.srkr_2d_fast_axis_combo.setCurrentText("u")
+    assert gui.srkr_2d_slow_axis_combo.currentText() == "v"
+    assert (
+        gui.theta_editors["srkr_2d"].parentWidget().parentWidget()
+        is gui.srkr_2d_fast_axis_combo.parentWidget()
+    )
+    gui.srkr_2d_fast_axis_combo.setCurrentText("x")
+    assert gui.theta_editors["srkr_2d"].isHidden()
 
     gui.strkr_theta_spin.setValue(27.5)
     assert gui.spatial_theta_spin.value() == 27.5
