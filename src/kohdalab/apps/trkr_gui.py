@@ -84,7 +84,6 @@ from kohdalab.instruments.scanner import SCANNER_CONTROLLERS
 
 LOCKIN_MODELS = ["SR7265", "SR830", "LI5640", "SR5210"]
 MEASUREMENT_ROW_TRAILING_WIDTH = 116
-THETA_ROW_TRAILING_WIDTH = 138
 MOVE_COMMAND_COOLDOWN_S = 0.35
 RANGE_KEYS = ("min", "max", "step")
 SCAN2D_ROLES = ("fast_axis", "slow_axis")
@@ -1081,11 +1080,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.setSpacing(6)
         layout.addWidget(axis_combo, 1)
         trailing = QtWidgets.QWidget()
-        trailing.setFixedWidth(
-            THETA_ROW_TRAILING_WIDTH
-            if theta_spin is not None
-            else MEASUREMENT_ROW_TRAILING_WIDTH
-        )
+        trailing.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
         if theta_spin is not None and mode is not None:
             trailing_layout = QtWidgets.QHBoxLayout(trailing)
             trailing_layout.setContentsMargins(0, 0, 0, 0)
@@ -1093,9 +1088,11 @@ class TRKRGui(QtWidgets.QMainWindow):
             editor_layout = QtWidgets.QHBoxLayout(editor)
             editor_layout.setContentsMargins(0, 0, 0, 0)
             editor_layout.setSpacing(4)
-            editor_layout.addWidget(QtWidgets.QLabel("θ (deg)"))
+            theta_label = QtWidgets.QLabel("θ (deg)")
+            theta_label.setStyleSheet("font-size: 10px;")
+            editor_layout.addWidget(theta_label)
             theta_spin.setSuffix("")
-            theta_spin.setFixedWidth(78)
+            theta_spin.setFixedWidth(74)
             editor_layout.addWidget(theta_spin)
             trailing_layout.addWidget(editor)
             trailing_layout.addStretch(1)
@@ -1146,8 +1143,6 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _srkr_tab(self) -> QtWidgets.QWidget:
         settings = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(settings)
-        for hint in (self.srkr_min_hint, self.srkr_max_hint, self.srkr_step_hint):
-            hint.setFixedWidth(THETA_ROW_TRAILING_WIDTH)
         layout.addRow(
             "Fast Axis",
             self._axis_with_trailing(
@@ -1164,12 +1159,7 @@ class TRKRGui(QtWidgets.QMainWindow):
             "step (um)", self._with_hint(self.srkr_step_spin, self.srkr_step_hint)
         )
         layout.addRow(
-            "Wait (s)",
-            self._with_button(
-                self.srkr_wait_spin,
-                self.srkr_tc_button,
-                trailing_width=THETA_ROW_TRAILING_WIDTH,
-            ),
+            "Wait (s)", self._with_button(self.srkr_wait_spin, self.srkr_tc_button)
         )
         return self._measurement_tab(settings)
 
@@ -1190,23 +1180,12 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         axis_widget = self._axis_with_trailing(axis_combo, theta_spin, mode=mode)
         layout.addRow("Fast Axis" if title == "Fast" else "Slow Axis", axis_widget)
-        trailing_width = (
-            THETA_ROW_TRAILING_WIDTH
-            if theta_spin is not None
-            else MEASUREMENT_ROW_TRAILING_WIDTH
-        )
         for key in RANGE_KEYS:
-            role_hints[key].setFixedWidth(trailing_width)
             layout.addRow(
                 role_labels[key], self._with_hint(role_spins[key], role_hints[key])
             )
         if wait_spin is not None and wait_button is not None:
-            layout.addRow(
-                "Wait (s)",
-                self._with_button(
-                    wait_spin, wait_button, trailing_width=trailing_width
-                ),
-            )
+            layout.addRow("Wait (s)", self._with_button(wait_spin, wait_button))
         return group
 
     def _strkr_tab(self) -> QtWidgets.QWidget:
@@ -1292,17 +1271,13 @@ class TRKRGui(QtWidgets.QMainWindow):
         return widget
 
     def _with_button(
-        self,
-        widget: QtWidgets.QWidget,
-        button: QtWidgets.QPushButton,
-        *,
-        trailing_width: int = MEASUREMENT_ROW_TRAILING_WIDTH,
+        self, widget: QtWidgets.QWidget, button: QtWidgets.QPushButton
     ) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        button.setFixedWidth(trailing_width)
+        button.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
         layout.addWidget(widget, 1)
         layout.addWidget(button, 0)
         return row
