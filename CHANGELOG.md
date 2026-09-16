@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## [0.2.6] - 2026-09-16
+
+- Restored SRKR's four-panel plot layout, switching the displayed data and
+  labels between x/y and u/v when the scan axis selection changes.
+- Labeled the conditional spatial angle input θ (deg) while keeping Fast Axis
+  selectors aligned with their scan range inputs.
+
 ## [0.2.5] - 2026-09-15
 
 - Updated Tornado, pip, and cryptography to resolve dependency-audit findings.

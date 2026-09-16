@@ -84,6 +84,7 @@ from kohdalab.instruments.scanner import SCANNER_CONTROLLERS
 
 LOCKIN_MODELS = ["SR7265", "SR830", "LI5640", "SR5210"]
 MEASUREMENT_ROW_TRAILING_WIDTH = 116
+THETA_ROW_TRAILING_WIDTH = 138
 MOVE_COMMAND_COOLDOWN_S = 0.35
 RANGE_KEYS = ("min", "max", "step")
 SCAN2D_ROLES = ("fast_axis", "slow_axis")
@@ -696,7 +697,7 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.srkr_plots: dict[tuple[str, int], pg.PlotWidget] = {}
         self.srkr_curves = {}
         colors = {1: "#1f77b4", 2: "#d62728"}
-        for col, axis in enumerate(("x", "y", "u", "v")):
+        for col, axis in enumerate(("x", "y")):
             for row, signal_index in enumerate((1, 2)):
                 plot = pg.PlotWidget()
                 plot.showGrid(x=True, y=True, alpha=0.25)
@@ -707,6 +708,9 @@ class TRKRGui(QtWidgets.QMainWindow):
                 )
                 self.srkr_plots[(axis, signal_index)] = plot
                 self.srkr_curves[(axis, signal_index)] = curve
+                virtual_axis = "u" if axis == "x" else "v"
+                self.srkr_plots[(virtual_axis, signal_index)] = plot
+                self.srkr_curves[(virtual_axis, signal_index)] = curve
                 srkr_layout.addWidget(plot, row, col)
 
         self.scan2d_plot_widget = QtWidgets.QWidget()
@@ -1077,7 +1081,11 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.setSpacing(6)
         layout.addWidget(axis_combo, 1)
         trailing = QtWidgets.QWidget()
-        trailing.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
+        trailing.setFixedWidth(
+            THETA_ROW_TRAILING_WIDTH
+            if theta_spin is not None
+            else MEASUREMENT_ROW_TRAILING_WIDTH
+        )
         if theta_spin is not None and mode is not None:
             trailing_layout = QtWidgets.QHBoxLayout(trailing)
             trailing_layout.setContentsMargins(0, 0, 0, 0)
@@ -1085,8 +1093,8 @@ class TRKRGui(QtWidgets.QMainWindow):
             editor_layout = QtWidgets.QHBoxLayout(editor)
             editor_layout.setContentsMargins(0, 0, 0, 0)
             editor_layout.setSpacing(4)
-            editor_layout.addWidget(QtWidgets.QLabel("θ"))
-            theta_spin.setSuffix("°")
+            editor_layout.addWidget(QtWidgets.QLabel("θ (deg)"))
+            theta_spin.setSuffix("")
             theta_spin.setFixedWidth(78)
             editor_layout.addWidget(theta_spin)
             trailing_layout.addWidget(editor)
@@ -1138,6 +1146,8 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _srkr_tab(self) -> QtWidgets.QWidget:
         settings = QtWidgets.QWidget()
         layout = QtWidgets.QFormLayout(settings)
+        for hint in (self.srkr_min_hint, self.srkr_max_hint, self.srkr_step_hint):
+            hint.setFixedWidth(THETA_ROW_TRAILING_WIDTH)
         layout.addRow(
             "Fast Axis",
             self._axis_with_trailing(
@@ -1154,7 +1164,12 @@ class TRKRGui(QtWidgets.QMainWindow):
             "step (um)", self._with_hint(self.srkr_step_spin, self.srkr_step_hint)
         )
         layout.addRow(
-            "Wait (s)", self._with_button(self.srkr_wait_spin, self.srkr_tc_button)
+            "Wait (s)",
+            self._with_button(
+                self.srkr_wait_spin,
+                self.srkr_tc_button,
+                trailing_width=THETA_ROW_TRAILING_WIDTH,
+            ),
         )
         return self._measurement_tab(settings)
 
@@ -1175,12 +1190,23 @@ class TRKRGui(QtWidgets.QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         axis_widget = self._axis_with_trailing(axis_combo, theta_spin, mode=mode)
         layout.addRow("Fast Axis" if title == "Fast" else "Slow Axis", axis_widget)
+        trailing_width = (
+            THETA_ROW_TRAILING_WIDTH
+            if theta_spin is not None
+            else MEASUREMENT_ROW_TRAILING_WIDTH
+        )
         for key in RANGE_KEYS:
+            role_hints[key].setFixedWidth(trailing_width)
             layout.addRow(
                 role_labels[key], self._with_hint(role_spins[key], role_hints[key])
             )
         if wait_spin is not None and wait_button is not None:
-            layout.addRow("Wait (s)", self._with_button(wait_spin, wait_button))
+            layout.addRow(
+                "Wait (s)",
+                self._with_button(
+                    wait_spin, wait_button, trailing_width=trailing_width
+                ),
+            )
         return group
 
     def _strkr_tab(self) -> QtWidgets.QWidget:
@@ -1266,13 +1292,17 @@ class TRKRGui(QtWidgets.QMainWindow):
         return widget
 
     def _with_button(
-        self, widget: QtWidgets.QWidget, button: QtWidgets.QPushButton
+        self,
+        widget: QtWidgets.QWidget,
+        button: QtWidgets.QPushButton,
+        *,
+        trailing_width: int = MEASUREMENT_ROW_TRAILING_WIDTH,
     ) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(row)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        button.setFixedWidth(MEASUREMENT_ROW_TRAILING_WIDTH)
+        button.setFixedWidth(trailing_width)
         layout.addWidget(widget, 1)
         layout.addWidget(button, 0)
         return row
@@ -1546,6 +1576,8 @@ class TRKRGui(QtWidgets.QMainWindow):
     def _handle_srkr_axis_changed(self, _text: str) -> None:
         self._refresh_scan_limit_hints()
         self._refresh_theta_visibility()
+        if self._measurement_name() == "srkr":
+            self._update_curves()
 
     def _handle_2d_axis_changed(self, mode: str) -> None:
         self._sync_scan2d_role_values_to_axis_ranges(mode)
@@ -3690,7 +3722,12 @@ class TRKRGui(QtWidgets.QMainWindow):
             self.plot1.setLabel("top", "t", units="ps")
             self.plot2.setLabel("top", "t", units="ps")
         elif mode == "srkr":
-            for axis in ("x", "y", "u", "v"):
+            axes = (
+                ("u", "v")
+                if self.srkr_axis_combo.currentText().lower() in {"u", "v"}
+                else ("x", "y")
+            )
+            for axis in axes:
                 for signal_index, title, unit in (
                     (1, view.title1, view.unit1),
                     (2, view.title2, view.unit2),
@@ -3763,7 +3800,12 @@ class TRKRGui(QtWidgets.QMainWindow):
         self.curve2.setData(x_values, [row[view.signal2_key] * scale2 for row in rows])
 
     def _update_srkr_curves(self, rows: list[dict[str, Any]], view: Any) -> None:
-        for axis in ("x", "y", "u", "v"):
+        axes = (
+            ("u", "v")
+            if self.srkr_axis_combo.currentText().lower() in {"u", "v"}
+            else ("x", "y")
+        )
+        for axis in axes:
             axis_rows = [
                 row
                 for row in rows

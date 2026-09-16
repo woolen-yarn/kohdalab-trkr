@@ -191,6 +191,11 @@ def test_theta_appears_beside_fast_axis_for_uv_and_is_shared(monkeypatch):
     assert gui._axis_hint_values("v") == (None, None, None)
     for mode in ("srkr", "strkr", "srkr_2d"):
         assert gui.theta_editors[mode].isHidden()
+        assert [
+            label.text()
+            for label in gui.theta_editors[mode].findChildren(QtWidgets.QLabel)
+        ] == ["θ (deg)"]
+    assert all(spin.suffix() == "" for spin in gui.theta_spins)
     assert (
         gui.theta_editors["srkr"].parentWidget().parentWidget()
         is gui.srkr_axis_combo.parentWidget()
@@ -1450,6 +1455,45 @@ def test_gui_save_rows_rejects_running_measurement_and_handles_io_error(
 
 def _signal_values() -> dict[str, float]:
     return {"X_V": 1.0, "Y_V": 2.0, "R_V": 3.0, "Theta_deg": 4.0}
+
+
+def test_srkr_uses_four_plots_and_switches_between_xy_and_uv(monkeypatch):
+    gui = _new_gui(monkeypatch)
+    gui.rows_by_mode["srkr"] = [
+        {
+            "fast_axis": axis,
+            f"{axis}_cor_um": coordinate,
+            f"{axis}_um": coordinate,
+            **_signal_values(),
+        }
+        for axis, coordinate in (("x", 1.0), ("y", 2.0), ("u", 3.0), ("v", 4.0))
+    ]
+    gui.measurement_tabs.setCurrentIndex(2)
+
+    assert gui.srkr_plot_widget.layout().count() == 4
+    assert len(set(gui.srkr_plots.values())) == 4
+    assert gui.srkr_plots[("x", 1)] is gui.srkr_plots[("u", 1)]
+    assert gui.srkr_plots[("y", 2)] is gui.srkr_plots[("v", 2)]
+    for axis, coordinate in (("x", 1.0), ("y", 2.0)):
+        assert gui.srkr_curves[(axis, 1)].getData()[0].tolist() == [coordinate]
+        assert gui.srkr_curves[(axis, 2)].getData()[0].tolist() == [coordinate]
+        assert gui.srkr_plots[(axis, 1)].getAxis("bottom").labelText == f"{axis}_cor"
+
+    gui.srkr_axis_combo.setCurrentText("v")
+    for axis, coordinate in (("u", 3.0), ("v", 4.0)):
+        assert gui.srkr_curves[(axis, 1)].getData()[0].tolist() == [coordinate]
+        assert gui.srkr_curves[(axis, 2)].getData()[0].tolist() == [coordinate]
+        assert gui.srkr_plots[(axis, 1)].getAxis("bottom").labelText == f"{axis}_cor"
+        assert gui.srkr_plots[(axis, 1)].getAxis("top").labelText == axis
+
+    gui.srkr_axis_combo.setCurrentText("y")
+    assert gui.srkr_curves[("x", 1)].getData()[0].tolist() == [1.0]
+    assert gui.srkr_curves[("y", 1)].getData()[0].tolist() == [2.0]
+    gui.clear_plot()
+    gui.srkr_axis_combo.setCurrentText("u")
+    assert gui.srkr_curves[("u", 1)].getData()[0] is None
+    assert gui.srkr_plots[("u", 1)].getAxis("bottom").labelText == "u_cor"
+    _close_gui(gui)
 
 
 def test_gui_signal_point_updates_rows_snapshot_position_and_curves(monkeypatch):

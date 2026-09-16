@@ -27,6 +27,12 @@ This roadmap tracks work that keeps KohdaLab TRKR reliable for real experiments 
 - Keep lock-in signal, settings, and overload status responsive during manual motion.
 - Preserve per-device I/O serialization while polling unrelated hardware concurrently.
 
+## v0.2.6 - SRKR Plot Axis Switching
+
+- Keep the SRKR display at four plots, switching between x/y and u/v data
+  when the selected scan axis changes.
+- Label the angle input beside Fast Axis as θ (deg).
+
 ## v0.2.5 - Rotated Spatial Scans
 
 - Add u/v spatial coordinates with one shared angle and the existing X/Y offsets
