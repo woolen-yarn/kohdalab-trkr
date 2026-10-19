@@ -20,7 +20,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 APP_EXE = "kohdalab-trkr.exe"
 DEMO_EXE = "kohdalab-trkr-demo.exe"
 

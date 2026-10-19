@@ -13,7 +13,7 @@ same Rust engine from Jupyter notebooks.
 
 Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
 
-- **Windows x64:** run `KohdaLab-TRKR-0.3.0-Setup.exe` for a per-user installation
+- **Windows x64:** run `KohdaLab-TRKR-0.3.1-Setup.exe` for a per-user installation
   with a desktop shortcut, or extract the entire portable ZIP and run
   `kohdalab-trkr.exe`. `kohdalab-trkr-demo.exe` replays CSVs without hardware.
 - **macOS Apple silicon, macOS 13+:** open the DMG and drag **KohdaLab TRKR.app**
@@ -52,7 +52,8 @@ python -m pip install '.[notebook]'
 ```
 
 See [the thin client](bindings/python/README.md) and the six examples in
-[`notebook/`](notebook). They default to simulation and require an explicit
+[`notebook/`](notebook). They automatically find installed Windows/macOS applications
+or a nearby portable package. They default to simulation and require an explicit
 hardware opt-in. All instrument I/O, scan validation and CSV writing remain in Rust.
 The former Python GUI, drivers and experiment engine were removed in v0.3.0;
 old releases remain available in Git history and Releases.
