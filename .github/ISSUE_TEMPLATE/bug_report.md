@@ -21,7 +21,7 @@ assignees: ""
 ## Environment
 
 - OS:
-- Python / uv version:
+- Application version / platform:
 - Repository commit or version:
 - Config file:
 

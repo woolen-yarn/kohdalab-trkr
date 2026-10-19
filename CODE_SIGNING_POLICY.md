@@ -1,0 +1,55 @@
+# Code signing policy
+
+## Current status
+
+KohdaLab TRKR has not been accepted by SignPath Foundation and current Windows
+artifacts are unsigned. The files in [`.signpath`](.signpath) and the release
+workflow prepare an application only; they do not claim sponsorship,
+certification, an active signing service, or a signed release. macOS ad-hoc
+signing, if present, is not Apple Developer ID signing or notarization.
+
+## Responsibility and approval
+
+The public source and application-review repository is
+[woolen-yarn/kohdalab-trkr](https://github.com/woolen-yarn/kohdalab-trkr).
+The maintainer listed in [`.github/CODEOWNERS`](.github/CODEOWNERS) is the
+proposed signing approver. Before production signing is enabled, the repository
+owner must confirm its reviewer and approver roles in SignPath and enable MFA
+for all repository and signing-team accounts.
+
+Every production request requires source review, successful CI, and manual
+approval by the designated approver. Signing credentials remain in SignPath and
+a protected GitHub environment. Pull requests, forks, and untrusted workflows
+must never receive them. A release must distribute the same signed artifacts
+and checksums that were produced by the approved workflow.
+
+## Signing boundaries
+
+The proposed first-party PE allowlist is deliberately exact:
+
+- `kohdalab-trkr.exe`
+- `kohdalab-trkr-demo.exe`
+- `kohdalab-visa-helper.exe`
+
+The GPIB helper contains GPL-licensed upstream-derived code and is excluded
+from the allowlist. It must not be signed under the project identity unless
+SignPath explicitly approves that boundary. No recursive `*.exe` or `*.dll`
+rule is permitted.
+
+The NSIS Setup executable is staged separately for provider review. Its
+generated uninstaller must have an approved signing path before the installer
+can be claimed as a fully signed distribution. Signing the outer installer alone
+does not sign the installed application binaries or uninstaller.
+
+## After acceptance
+
+Only after acceptance and activation, add the required attribution:
+“Free code signing provided by [SignPath.io](https://about.signpath.io/),
+certificate by [SignPath Foundation](https://signpath.org/).”
+
+Each release must state its actual signer and signature status. A signature
+identifies a publisher and detects modification; it does not certify instrument
+accuracy or guarantee the absence of Windows warnings.
+
+See [privacy](PRIVACY.md), [redistribution terms](REDISTRIBUTION.md), and the
+[SignPath GitHub integration](https://docs.signpath.io/trusted-build-systems/github).
