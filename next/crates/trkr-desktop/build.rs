@@ -22,8 +22,7 @@ fn main() {
         fs::write(
             &rc,
             format!(
-                r#"#include <windows.h>
-101 ICON "{icon}"
+                r#"101 ICON "{icon}"
 1 VERSIONINFO
 FILEVERSION {numeric}
 PRODUCTVERSION {numeric}

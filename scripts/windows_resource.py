@@ -10,8 +10,7 @@ def resource(filename: str, description: str, version: str) -> str:
               'InternalName': Path(filename).stem, 'OriginalFilename': filename,
               'ProductName': 'KohdaLab TRKR', 'ProductVersion': version, 'LegalCopyright': 'Copyright KohdaLab contributors'}
     lines = '\n'.join(f'VALUE "{k}", "{v}\\0"' for k,v in values.items())
-    return f'''#include <windows.h>
-1 VERSIONINFO
+    return f'''1 VERSIONINFO
 FILEVERSION {numeric}
 PRODUCTVERSION {numeric}
 FILEFLAGSMASK 0x3fL
