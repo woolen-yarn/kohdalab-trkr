@@ -64,6 +64,8 @@ jobs:
     needs: verify
     runs-on: windows-2025
     timeout-minutes: 55
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
@@ -91,7 +93,7 @@ jobs:
           "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Build Rust application
         shell: pwsh
-        run: cargo build --manifest-path next/Cargo.toml --release --locked
+        run: cargo build --manifest-path next/Cargo.toml --target x86_64-pc-windows-msvc --release --locked
       - name: Install NSIS when absent
         shell: pwsh
         run: |
@@ -108,22 +110,26 @@ jobs:
         shell: pwsh
         run: >-
           python scripts/build_release.py --platform windows-x64
-          --binaries-dir next/target/release --native-dir build/native --output dist
+          --binaries-dir next/target/x86_64-pc-windows-msvc/release --native-dir build/native --output dist
       - name: Verify first-party Windows product metadata
         shell: pwsh
         run: |
           $v = python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('next/Cargo.toml').read_text())['workspace']['package']['version'])"
-          foreach ($file in @('next/target/release/kohdalab-trkr.exe','next/target/release/kohdalab-trkr-demo.exe','build/native/kohdalab-visa-helper.exe')) {
+          foreach ($file in @('next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe','next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe','build/native/kohdalab-visa-helper.exe')) {
             $info = (Get-Item $file).VersionInfo
             if ($info.ProductName -ne 'KohdaLab TRKR' -or $info.ProductVersion -ne $v -or $info.CompanyName -ne 'Kohdalab') { throw "Unexpected signing identity: $file" }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            if ([Text.Encoding]::ASCII.GetString($bytes) -match '(?i)(vcruntime|msvcp)140[^\x00]*\.dll') {
+              throw "Portable binary requires an external Visual C++ runtime: $file"
+            }
           }
       - name: Stage exact first-party SignPath input
         shell: pwsh
         run: |
           $stage = 'build/signpath-input'
           New-Item -ItemType Directory -Force $stage | Out-Null
-          Copy-Item next/target/release/kohdalab-trkr.exe "$stage/kohdalab-trkr.exe"
-          Copy-Item next/target/release/kohdalab-trkr-demo.exe "$stage/kohdalab-trkr-demo.exe"
+          Copy-Item next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe "$stage/kohdalab-trkr.exe"
+          Copy-Item next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe "$stage/kohdalab-trkr-demo.exe"
           Copy-Item build/native/kohdalab-visa-helper.exe "$stage/kohdalab-visa-helper.exe"
           if (Test-Path "$stage/kohdalab-gpib-helper.exe") {
             throw 'The GPL GPIB helper must not be included in the first-party signing input.'
