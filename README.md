@@ -1,100 +1,88 @@
 # KohdaLab TRKR
 
 [![Test](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
+[![Release build](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/release.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-![Python](https://img.shields.io/badge/python-3.13%2B-blue)
 
-KohdaLab TRKR is a Python toolkit for time-resolved Kerr rotation experiments, laboratory instrument control, and reproducible measurement data acquisition.
+Native Rust application for time-resolved Kerr rotation experiments. The GUI,
+measurement planning, lock-in protocols, stage/scanner control, CSV recording and
+CSV demo playback run without Python. A small optional Python client calls the
+same Rust engine from Jupyter notebooks.
 
-## What It Does
+## Install
 
-- Provides a typed Python API for experiment control.
-- Includes GUI and CLI entry points for lab workflows.
-- Supports Signal Monitor, TRKR, SRKR, STRKR, and SRKR 2D workflows.
-- Validates scan targets before opening hardware sessions.
-- Stores UTC timestamps and provenance metadata with measurement CSV files.
-- Tests drivers with simulated transports without requiring hardware for every check.
+Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
 
-## Quick Start
+- **Windows x64:** run `KohdaLab-TRKR-0.3.0-Setup.exe` for a per-user installation
+  with a desktop shortcut, or extract the entire portable ZIP and run
+  `kohdalab-trkr.exe`. `kohdalab-trkr-demo.exe` replays CSVs without hardware.
+- **macOS Apple silicon, macOS 13+:** open the DMG and drag **KohdaLab TRKR.app**
+  and optionally **KohdaLab TRKR Demo.app** to Applications. The Mac build uses an
+  ad hoc signature; if Gatekeeper requires confirmation, use Finder's Open action.
+- Current Windows binaries are unsigned. SignPath application preparation is
+  documented in [Code signing](CODE_SIGNING_POLICY.md); acceptance is not claimed.
 
-For a new PC, start with the setup guide:
+The application starts disconnected. Configure ports, resources, coordinate
+origins, travel limits and calibration before using instruments. Existing JSON
+profiles and CSVs remain compatible. User-created profiles and measurement data
+are preserved on uninstall. The installer does not install or replace drivers.
 
-- [Initial setup](docs/initial_setup.md)
+## Workflows
 
-For repository development:
+Signal Monitor, TRKR, SRKR, STRKR and SRKR 2D share one engine and CSV schema.
+XY/Rθ displays, SI-scaled live signals, positive-value TRKR log plots, Python-compatible
+heatmaps, rotated u/v scans and paired-axis validation are included. Step displays
+acquired/total points (for example `9/41`), independent of retained plot history.
+Moving, Waiting and Reading appear beside the relevant device names.
 
-```powershell
-uv sync --all-extras --group dev --frozen
-uv run kohdalab-cli --help
-uv run kohdalab-gui
-```
+Supported motion families include SHOT302GS, GSC01/GSC01A, CONEX-CC and CONEX-AGAP.
+Lock-in protocols include SR5210, SR7265, SR830 and LI5640. Windows can use a system
+64-bit VISA runtime. A separate native USB-GPIB helper is also included; see
+[transport setup and limitations](docs/trkr_portable_rust.md).
 
-Replay real measurement CSV files in a hardware-free, non-recording demo:
+The demo bundles synthetic CSVs only. Experimental CSVs in a local `demo_csv/`
+directory are ignored by Git and never copied into release artifacts.
 
-```powershell
-uv run kohdalab-replay-gui
-```
+## Notebook access
 
-Loading the config automatically selects the TRKR, SRKR, STRKR, and SRKR 2D
-files found in `demo_csv`. Use `--data-dir` to select a different directory.
-Packaged config templates live in `src/kohdalab/config`. At startup, the GUI
-refreshes only `default.json` and `default_demo.json` under
-`~/.kohdalab/config`; all user-created JSON profiles in that directory are
-preserved across Git and package upgrades. The normal and replay GUIs keep
-separate default and last-used config state.
-Experimental CSV files are not included in the public woolen-yarn repository;
-see [`demo_csv/README.md`](demo_csv/README.md) for placement and data-handling
-notes.
-
-For a local installation without development tools:
-
-```powershell
+```sh
 python -m pip install .
-python -m pip install ".[gui]"
-python -m pip install ".[notebook]"
+# Optional Jupyter tools:
+python -m pip install '.[notebook]'
 ```
 
-The base package installs the API and CLI. GUI and Notebook dependencies are
-explicit extras so headless instrument or automation environments do not need
-the full Qt/Jupyter stack.
+See [the thin client](bindings/python/README.md) and the six examples in
+[`notebook/`](notebook). They default to simulation and require an explicit
+hardware opt-in. All instrument I/O, scan validation and CSV writing remain in Rust.
+The former Python GUI, drivers and experiment engine were removed in v0.3.0;
+old releases remain available in Git history and Releases.
 
-Run checks:
+## Build and test
 
-```powershell
-uv run ruff check .
-uv run ruff format --check src tests scripts
-uv run mypy
-uv run pytest --cov --cov-branch -q
-uv lock --check
-uv build --no-sources
+```sh
+cargo test --manifest-path next/Cargo.toml --locked
+cargo clippy --manifest-path next/Cargo.toml --all-targets --locked -- -D warnings
+cargo build --manifest-path next/Cargo.toml --release --locked
+python -m pip install pytest
+python -m pytest tests
+bash scripts/build_native.sh
 ```
 
-## Documentation
+Rust is pinned in `rust-toolchain.toml`. For native helper prerequisites and
+relinking instructions, see [native/REBUILDING.md](native/REBUILDING.md).
 
-- [Initial setup](docs/initial_setup.md): install Git, GitHub CLI, uv, clone the repository, and verify the environment.
-- [Usage guide](docs/usage.md): detailed setup, GUI, API, and measurement-sequence notes.
-- [API usage examples](docs/api_usage.md): practical public API examples.
-- [Measurement sequences](docs/measurement_sequences.md): sequence diagrams and experiment flow.
-- [Measurement CSV replay GUI](docs/replay_gui_ja.md): hardware-free repeating demo playback.
-- [Demo publishing guide](docs/demo_publishing_ja.md): keep experimental CSV files out of the public repository.
-- [Windows setup](docs/windows_setup.md): Windows instrument-PC preparation notes.
-- [Roadmap](ROADMAP.md): planned milestones.
-- [Safety notes](SAFETY.md): safety assumptions and operator responsibilities.
-- [Contributing](CONTRIBUTING.md): development workflow and pull request expectations.
+```sh
+python scripts/build_release.py --platform macos-arm64 \
+  --binaries-dir next/target/release --native-dir build/native --output dist
+# In Windows/MSYS2 use --platform windows-x64; NSIS must be available on PATH.
+```
 
-## Project Status
+GitHub Actions runs Rust and packaging/client tests on Linux, Windows and macOS.
+Tag `v<workspace version>` builds both distributions from source and publishes
+only after all jobs pass. Artifacts include corresponding source, dependency
+notices, checksums and build-origin metadata. The external GPL helper is kept
+separate from the first-party SignPath signing set. See [redistribution](REDISTRIBUTION.md).
 
-The current development version is `0.2.7`. It adds rotated u/v spatial scans
-to SRKR, STRKR, and SRKR 2D, with a shared angle and the existing X/Y offsets
-as the origin. CONEX-AGAP and CONEX-CC now overlap X/Y target moves and wait for
-both axes to stop before acquisition. SRKR now displays either x/y or u/v in
-the same four plot panels, based on the selected scan axis.
-STRKR and SRKR 2D place the angle input beside the selected u/v axis,
-including when that axis is Slow Axis.
-Hardware operation still requires the checks described in
-[SAFETY.md](SAFETY.md) and the
-[hardware smoke-test guide](docs/hardware_smoke_test.md).
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Checksums identify the exact artifacts from a CI run. Source/portable ZIP entry
+timestamps are normalized; platform linker signatures and DMG filesystem metadata
+are not promised to be bit-for-bit identical across independent builds.

@@ -9,29 +9,11 @@ updates:
         patterns:
           - "*"
 
-  - package-ecosystem: "uv"
-    directory: "/"
+  - package-ecosystem: "cargo"
+    directory: "/next"
     schedule:
       interval: "monthly"
     groups:
-      python-runtime:
+      rust-dependencies:
         patterns:
-          - "pandas"
-          - "pyserial"
-          - "pyvisa"
-          - "numpy"
-          - "pyside6"
-          - "pyqtgraph"
-          - "matplotlib"
-          - "anywidget"
-      python-notebook:
-        patterns:
-          - "ipykernel"
-          - "ipython"
-          - "jupyter"
-          - "jupyterlab"
-      python-dev:
-        patterns:
-          - "pytest"
-          - "ruff"
-          - "mypy"
+          - "*"

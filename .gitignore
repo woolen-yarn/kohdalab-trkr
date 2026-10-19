@@ -31,3 +31,14 @@ demo_csv/*.csv
 # Legacy project-local configs are migrated to ~/.kohdalab/config and ignored.
 # Keep this rule so arbitrary pre-migration profiles cannot be committed by mistake.
 /config/*.json
+
+# Rust preview builds and local acquisition output.
+/next/target/
+/next/dist/
+/next/runs/
+
+# Native release products and local validation history.
+/build/
+/dist/
+/validation/local/
+*.dmg

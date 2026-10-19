@@ -3,7 +3,6 @@ name: Test
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -12,146 +11,51 @@ permissions:
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
-        python-version: ["3.13", "3.14"]
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
           persist-credentials: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+      - name: Set up Python for the thin notebook bridge checks
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
         with:
-          enable-cache: true
-          python-version: ${{ matrix.python-version }}
-
-      - name: Verify dependency lock is current
-        run: uv lock --check
-
-      - name: Install Qt runtime libraries
+          python-version: '3.13'
+      - name: Install Python test runner
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install Linux GUI build libraries
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libegl1
-
-      - name: Install dependencies
-        run: uv sync --all-extras --group dev --frozen
-
-      - name: Run lint
-        run: uv run ruff check .
-
-      - name: Check formatting
-        run: uv run ruff format --check src tests scripts
-
-      - name: Run core type checks
-        run: uv run mypy
-
-      - name: Run tests with coverage
-        env:
-          MPLBACKEND: Agg
-          QT_QPA_PLATFORM: offscreen
-        run: uv run pytest --cov --cov-report=term-missing --cov-report=xml
-
-  package:
-    name: Package smoke test
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          python-version: "3.13"
-
-      - name: Verify dependency lock is current
-        run: uv lock --check
-
-      - name: Install package validation tools
-        run: uv sync --only-group package --frozen
-
-      - name: Verify source release metadata
-        run: uv run --only-group package python scripts/verify_release.py
-
-      - name: Verify tagged release metadata
-        if: startsWith(github.ref, 'refs/tags/')
-        run: uv run --only-group package python scripts/verify_release.py --tag "${{ github.ref_name }}"
-
-      - name: Build wheel and source distribution twice
-        env:
-          SOURCE_DATE_EPOCH: "1735689600"
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Locate Windows resource compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
         run: |
-          uv build --no-sources --out-dir dist/first
-          uv build --no-sources --out-dir dist/second
-
-      - name: Verify reproducibility and artifact manifests
-        run: uv run --only-group package python scripts/verify_distributions.py dist/first dist/second
-
-      - name: Validate distribution metadata and wheel contents
-        run: |
-          uv run --only-group package twine check --strict dist/first/*
-          uv run --only-group package check-wheel-contents dist/first/*.whl
-
-      - name: Install wheel in an isolated environment
-        run: |
-          uv venv .wheel-venv
-          uv pip install --python .wheel-venv/bin/python dist/first/*.whl
-
-      - name: Verify installed resources and entry point
-        run: |
-          cd "$(mktemp -d)"
-          "$GITHUB_WORKSPACE/.wheel-venv/bin/python" -c 'from importlib.util import find_spec; from kohdalab.api.config import DEFAULT_CONFIG_PATH, load_config; from kohdalab.api.run_metadata import RUN_METADATA_SCHEMA_VERSION; from kohdalab.interfaces import delay_stage, scanner; assert DEFAULT_CONFIG_PATH.is_file(); assert load_config()["profile"]["name"] == "default"; assert delay_stage.STAGES; assert scanner.ACTUATORS; assert RUN_METADATA_SCHEMA_VERSION == 1; assert find_spec("kohdalab.apps.trkr_gui_advanced") is None'
-          "$GITHUB_WORKSPACE/.wheel-venv/bin/kohdalab-cli" --help
-
-      - name: Install source distribution in an isolated environment
-        run: |
-          uv venv .sdist-venv
-          uv pip install --python .sdist-venv/bin/python dist/first/*.tar.gz
-          .sdist-venv/bin/python -c 'from importlib.metadata import version; import kohdalab; assert kohdalab.__version__ == version("kohdalab")'
-
-  audit:
-    name: Dependency audit
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          persist-credentials: false
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
-        with:
-          enable-cache: true
-          python-version: "3.13"
-
-      - name: Verify dependency lock is current
-        run: uv lock --check
-
-      - name: Install locked dependencies
-        run: uv sync --all-extras --all-groups --frozen
-
-      - name: Audit runtime dependencies
-        run: |
-          uv export --frozen --no-dev --no-emit-project --output-file "$RUNNER_TEMP/runtime-requirements.txt"
-          uv run pip-audit --requirement "$RUNNER_TEMP/runtime-requirements.txt" --disable-pip
-
-      - name: Audit GUI, notebook, and development dependencies
-        run: uv run pip-audit
+          $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter rc.exe |
+            Where-Object { $_.FullName -match '\\x64\\rc.exe$' } |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $rc) { throw 'Windows resource compiler rc.exe was not found.' }
+          "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Check Rust formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --manifest-path next/Cargo.toml --all --check
+      - name: Lint Rust workspace
+        if: runner.os == 'Linux'
+        run: cargo clippy --manifest-path next/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - name: Test Rust workspace
+        run: cargo test --manifest-path next/Cargo.toml --workspace --locked
+      - name: Build controller for notebook integration checks
+        run: cargo build --manifest-path next/Cargo.toml --bin kohdalab-trkr --locked
+      - name: Test packaging, bridge, and layout checks
+        run: python -m pytest tests

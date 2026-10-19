@@ -1,0 +1,237 @@
+name: Build release artifacts
+
+on:
+  pull_request:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Set up Python for bridge checks
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.0.0
+        with:
+          python-version: '3.13'
+      - name: Install Python test runner
+        run: python -m pip install --disable-pip-version-check pytest
+      - name: Install Linux GUI build libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Locate Windows resource compiler
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter rc.exe |
+            Where-Object { $_.FullName -match '\\x64\\rc.exe$' } |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $rc) { throw 'Windows resource compiler rc.exe was not found.' }
+          "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Check Rust formatting and lints
+        if: runner.os == 'Linux'
+        run: |
+          cargo fmt --manifest-path next/Cargo.toml --all --check
+          cargo clippy --manifest-path next/Cargo.toml --workspace --all-targets --locked -- -D warnings
+      - name: Test Rust workspace
+        run: cargo test --manifest-path next/Cargo.toml --workspace --locked
+      - name: Build controller for notebook integration checks
+        run: cargo build --manifest-path next/Cargo.toml --bin kohdalab-trkr --locked
+      - name: Test packaging, bridge, and layout checks
+        run: python -m pytest tests
+
+  windows:
+    name: Windows x64 release build
+    needs: verify
+    runs-on: windows-2025
+    timeout-minutes: 55
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install MSYS2 UCRT64 compiler tools
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+      - name: Build native helpers from vendored source
+        shell: msys2 {0}
+        run: bash scripts/build_native.sh
+      - name: Locate Windows resource compiler
+        shell: pwsh
+        run: |
+          $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter rc.exe |
+            Where-Object { $_.FullName -match '\\x64\\rc.exe$' } |
+            Sort-Object FullName | Select-Object -Last 1
+          if (-not $rc) { throw 'Windows resource compiler rc.exe was not found.' }
+          "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Build Rust application
+        shell: pwsh
+        run: cargo build --manifest-path next/Cargo.toml --target x86_64-pc-windows-msvc --release --locked
+      - name: Install NSIS when absent
+        shell: pwsh
+        run: |
+          $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+          if (-not $nsis) {
+            choco install nsis -y --no-progress
+            $candidate = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+            if (-not (Test-Path $candidate)) { throw 'NSIS installation did not provide makensis.exe.' }
+            Split-Path $candidate | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          } else {
+            Split-Path $nsis.Source | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          }
+      - name: Package Windows portable archive and installer
+        shell: pwsh
+        run: >-
+          python scripts/build_release.py --platform windows-x64
+          --binaries-dir next/target/x86_64-pc-windows-msvc/release --native-dir build/native --output dist
+      - name: Verify first-party Windows product metadata
+        shell: pwsh
+        run: |
+          $v = python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('next/Cargo.toml').read_text())['workspace']['package']['version'])"
+          foreach ($file in @('next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe','next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe','build/native/kohdalab-visa-helper.exe')) {
+            $info = (Get-Item $file).VersionInfo
+            if ($info.ProductName -ne 'KohdaLab TRKR' -or $info.ProductVersion -ne $v -or $info.CompanyName -ne 'Kohdalab') { throw "Unexpected signing identity: $file" }
+            $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+            if ([Text.Encoding]::ASCII.GetString($bytes) -match '(?i)(vcruntime|msvcp)140[^\x00]*\.dll') {
+              throw "Portable binary requires an external Visual C++ runtime: $file"
+            }
+          }
+      - name: Stage exact first-party SignPath input
+        shell: pwsh
+        run: |
+          $stage = 'build/signpath-input'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe "$stage/kohdalab-trkr.exe"
+          Copy-Item next/target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe "$stage/kohdalab-trkr-demo.exe"
+          Copy-Item build/native/kohdalab-visa-helper.exe "$stage/kohdalab-visa-helper.exe"
+          if (Test-Path "$stage/kohdalab-gpib-helper.exe") {
+            throw 'The GPL GPIB helper must not be included in the first-party signing input.'
+          }
+          Get-FileHash "$stage/*" -Algorithm SHA256 |
+            Select-Object Path, Hash | ConvertTo-Json | Set-Content "$stage/SHA256.json" -Encoding utf8
+      - name: Stage installer signing sample separately
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem dist -Recurse -Filter '*Setup.exe' | Select-Object -First 1
+          if (-not $installer) { throw 'Release packager did not create a Windows Setup executable.' }
+          $stage = 'build/signpath-installer'
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item $installer.FullName "$stage/KohdaLab-TRKR-Setup.exe"
+      - name: Upload first-party signing input (unsigned)
+        id: signing-input
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: signpath-input-windows-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build/signpath-input/kohdalab-trkr.exe
+            build/signpath-input/kohdalab-trkr-demo.exe
+            build/signpath-input/kohdalab-visa-helper.exe
+            build/signpath-input/SHA256.json
+      - name: Upload installer signing sample (unsigned)
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: signpath-installer-input-windows-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: build/signpath-installer/KohdaLab-TRKR-Setup.exe
+      - name: Upload unsigned Windows release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: release-windows-x64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.zip
+            dist/*Setup.exe
+            dist/*.dmg
+            dist/*.json
+            dist/SHA256SUMS-*.txt
+
+  macos:
+    name: macOS arm64 release build
+    needs: verify
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Build native helper from vendored source
+        run: bash scripts/build_native.sh
+      - name: Build Rust application
+        run: cargo build --manifest-path next/Cargo.toml --release --locked
+      - name: Package macOS application archive and disk image
+        run: >-
+          python3 scripts/build_release.py --platform macos-arm64
+          --binaries-dir next/target/release --native-dir build/native --output dist
+      - name: Upload unsigned macOS release
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        with:
+          name: release-macos-arm64-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.zip
+            dist/*Setup.exe
+            dist/*.dmg
+            dist/*.json
+            dist/SHA256SUMS-*.txt
+
+  publish:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verify, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.0
+        with:
+          name: release-windows-x64-${{ github.sha }}
+          path: release-artifacts/windows
+      - name: Download macOS release artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.0
+        with:
+          name: release-macos-arm64-${{ github.sha }}
+          path: release-artifacts/macos
+      - name: Create release from tested build outputs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          mapfile -d '' files < <(find release-artifacts -type f -print0)
+          test "${#files[@]}" -gt 0
+          gh release create "$TAG" "${files[@]}" --verify-tag --generate-notes
