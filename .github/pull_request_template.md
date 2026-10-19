@@ -2,15 +2,16 @@
 
 ## Verification
 
-- [ ] `uv lock --check`
-- [ ] `uv run ruff check .`
-- [ ] `uv run ruff format --check src tests scripts`
-- [ ] `uv run mypy`
-- [ ] `uv run pytest --cov --cov-report=term-missing`
+- [ ] `cargo fmt --manifest-path next/Cargo.toml --all --check`
+- [ ] `cargo clippy --manifest-path next/Cargo.toml --workspace --all-targets --locked -- -D warnings`
+- [ ] `cargo test --manifest-path next/Cargo.toml --workspace --locked`
+- [ ] `cargo build --manifest-path next/Cargo.toml --bin kohdalab-trkr --locked`
+- [ ] `python -m pytest tests`
+- [ ] Release packaging checked when changing distribution files
 
-## Hardware Impact
+## Hardware impact
 
-- [ ] No hardware-facing behavior changed
-- [ ] Hardware-facing behavior changed and was tested with a small safe range
+Describe any changes to instrument commands, coordinates, timing, limits or CSV data.
+Use simulation by default; state explicitly if physical hardware was tested.
 
 ## Notes
