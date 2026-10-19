@@ -115,9 +115,9 @@ def build(platform: str, binaries: Path, native: Path, output: Path) -> list[Pat
     origin={key:os.environ.get(key) for key in ('GITHUB_REPOSITORY','GITHUB_SHA','GITHUB_RUN_ID','GITHUB_RUN_ATTEMPT','GITHUB_WORKFLOW','GITHUB_REF_NAME')}
     origin.update(version=version,platform=platform,signing='unsigned (macOS ad hoc only)',
                   files={p.name:sha(p) for p in artifacts},source_build=True)
-    record=output/f'BUILD-ORIGIN-{platform}.json';record.write_text(json.dumps(origin,indent=2)+'\n');artifacts.append(record)
+    record=output/f'BUILD-ORIGIN-{platform}.json';record.write_text(json.dumps(origin,indent=2)+'\n',encoding='utf-8',newline='\n');artifacts.append(record)
     checksums=output/f'SHA256SUMS-{platform}.txt'
-    checksums.write_text(''.join(sha(p)+'  '+p.name+'\n' for p in artifacts));artifacts.append(checksums)
+    checksums.write_text(''.join(sha(p)+'  '+p.name+'\n' for p in artifacts),encoding='utf-8',newline='\n');artifacts.append(checksums)
     return artifacts
 
 
