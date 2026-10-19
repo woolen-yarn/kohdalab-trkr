@@ -17,3 +17,6 @@
 *.md text eol=lf
 *.txt text eol=lf
 *.xml text eol=lf
+# Preserve upstream dependency sources and legal texts verbatim.
+native/vendor/** -whitespace
+native/licenses/** -whitespace

@@ -162,13 +162,13 @@ Section "KohdaLab TRKR" SecMain
   WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
   CreateDirectory "$SMPROGRAMS\\KohdaLab"
   CreateShortcut "$SMPROGRAMS\\KohdaLab\\TRKR.lnk" "$INSTDIR\\{APP_EXE}"{shortcut_icon}
-{demo_shortcuts}  
+{demo_shortcuts}
   CreateShortcut "$DESKTOP\\KohdaLab TRKR.lnk" "$INSTDIR\\{APP_EXE}"{shortcut_icon}
 SectionEnd
 
 Section "Uninstall"
   Delete "$SMPROGRAMS\\KohdaLab\\TRKR.lnk"
-{demo_uninstall}  
+{demo_uninstall}
   Delete "$DESKTOP\\KohdaLab TRKR.lnk"
   DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR"
   DeleteRegKey HKCU "Software\\KohdaLab\\TRKR"
