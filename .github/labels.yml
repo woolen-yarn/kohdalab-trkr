@@ -1,30 +1,30 @@
 - name: bug
   color: d73a4a
-  description: Something is not working.
+  description: Something is not working. / 不具合
 - name: enhancement
   color: a2eeef
-  description: New feature or request.
+  description: New feature or request. / 新機能・要望
 - name: documentation
   color: 0075ca
-  description: Documentation improvements.
+  description: Documentation improvements. / 文書の改善
 - name: hardware
   color: 5319e7
-  description: Instrument, wiring, driver, or hardware support.
+  description: Instrument, wiring, driver, or hardware support. / 機器・配線・ドライバーの対応
 - name: safety
   color: b60205
-  description: Safety-critical behavior or risk.
+  description: Safety-critical behavior or risk. / 安全に関わる挙動・リスク
 - name: gui
   color: fbca04
-  description: GUI behavior or layout.
+  description: GUI behavior or layout. / GUIの挙動・配置
 - name: cli
   color: c5def5
-  description: Command-line behavior.
+  description: Command-line behavior. / コマンドラインの挙動
 - name: notebook
   color: d4c5f9
-  description: Notebook examples or helpers.
+  description: Notebook examples or helpers. / Notebookの例・連携
 - name: instrument-driver
   color: 0e8a16
-  description: Low-level instrument driver work.
+  description: Low-level instrument driver work. / 低レベル機器ドライバー
 - name: good first issue
   color: 7057ff
-  description: Good for a first contribution.
+  description: Good for a first contribution. / 初めての開発参加向け

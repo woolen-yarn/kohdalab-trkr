@@ -1,40 +1,40 @@
 ---
-name: Bug report
-about: Report a software or measurement workflow problem
+name: Bug report / 不具合報告
+about: Report a software or measurement workflow problem / ソフトウェア・測定手順の問題を報告
 title: "[Bug]: "
 labels: bug
 assignees: ""
 ---
 
-## Summary
+## Summary / 概要
 
-## Steps to Reproduce
+## Steps to Reproduce / 再現手順
 
 1.
 2.
 3.
 
-## Expected Behavior
+## Expected Behavior / 期待する挙動
 
-## Actual Behavior
+## Actual Behavior / 実際の挙動
 
-## Environment
+## Environment / 環境
 
 - OS:
-- Application version / platform:
-- Repository commit or version:
-- Config file:
+- Application version / platform / アプリのバージョン・環境:
+- Repository commit or version / コミット・バージョン:
+- Config file / 設定ファイル:
 
-## Hardware
+## Hardware / 機器構成
 
-- Lock-in:
-- Delay stage:
-- Scanner:
-- VISA/Serial resources:
-- Was anything moving?
+- Lock-in / ロックイン:
+- Delay stage / 遅延ステージ:
+- Scanner / スキャナ:
+- VISA/Serial resources / VISA・シリアルのリソース:
+- Was anything moving? / 移動中でしたか？
 
-## Logs or Screenshots
+## Logs or Screenshots / ログ・画面
 
-## Safety Impact
+## Safety Impact / 安全面への影響
 
-Did the bug cause unexpected motion, overload, or unsafe behavior?
+Did the bug cause unexpected motion, overload, or unsafe behavior? / 意図しない移動、過負荷、危険な挙動が発生しましたか？
