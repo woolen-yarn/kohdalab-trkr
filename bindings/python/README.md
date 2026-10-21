@@ -2,6 +2,15 @@
 
 GUI・測定・装置制御はRustで動作します。このクライアントはJSONで命令と結果を渡す窓口です。Pythonの装置ドライバーやQtは不要です。
 
+## 互換性
+
+設定JSON、`--stdio` のJSON-lines命令・イベント、測定CSV、隣接する
+`.run.json` は、既存のフィールドを追加しない unversioned revision 1 として
+管理されています。任意のユーザーメタデータはschema versionとして解釈しません。
+Python側では `PROFILE_COMPATIBILITY_REVISION`、`JSON_LINES_API_REVISION`、
+`RECORDING_COMPATIBILITY_REVISION` がいずれも `1` です。将来のrevisionは明示的に
+選択する形式で追加し、既存の設定・Notebook・CSVを引き続き読み取ります。
+
 ## 最初の準備
 
 WindowsではTRKRのSetupを実行、Macでは **KohdaLab TRKR.app** を `/Applications` または `~/Applications` に配置してください。portable版はフォルダー全体を展開します。
@@ -63,7 +72,7 @@ os.environ["TRKR_PROFILE"] = "D:/Lab/config/kim.json"
 
 ## 旧Notebookからの移行
 
-旧 `kohdalab.api.Experiment` と新クライアントは同じAPIではありません。既存の実験Notebookはコピーを作り、まず同梱の対応するNotebookでシミュレーションを確認してください。JSONはcanonicalな`instruments`／`measurements`形式が対象です。任意名の機器選択や旧Advanced形式など、未互換の設定も残っています。[互換性監査](https://github.com/woolen-yarn/kohdalab-trkr/blob/v0.3.3/docs/trkr_portable_rust.md)に残件を記載しています。測定CSVは専用Demoで読めますが、旧APIや保存形式全体の厳密な同一性を保証するものではありません。
+旧 `kohdalab.api.Experiment` と新クライアントは同じAPIではありません。既存の実験Notebookはコピーを作り、まず同梱の対応するNotebookでシミュレーションを確認してください。JSONはcanonicalな`instruments`／`measurements`形式が対象です。任意名の機器選択や旧Advanced形式など、未互換の設定も残っています。[互換性監査](https://github.com/woolen-yarn/kohdalab-trkr/blob/v0.3.4/docs/trkr_portable_rust.md)に残件を記載しています。測定CSVは専用Demoで読めますが、旧APIや保存形式全体の厳密な同一性を保証するものではありません。
 
 | 旧Notebookの役割 | Rust版での置き換え |
 | --- | --- |

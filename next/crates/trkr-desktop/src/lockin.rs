@@ -12,16 +12,82 @@ pub enum Model {
     Li5640,
 }
 
+/// Static model capabilities. Protocol-specific reads stay in their drivers;
+/// settings/UI and auto actions share this one definition.
+pub struct ModelDescriptor {
+    pub name: &'static str,
+    pub read_changes_display: bool,
+    termination: &'static str,
+    auto_phase: &'static str,
+    auto_sensitivity: &'static str,
+    auto_measure: &'static str,
+    coupling: &'static [&'static str],
+    slope: &'static [i32],
+    ac_gain: &'static [f64],
+}
+const MODELS: [ModelDescriptor; 4] = [
+    ModelDescriptor {
+        name: "SR830",
+        read_changes_display: false,
+        termination: "\n",
+        auto_phase: "APHS",
+        auto_sensitivity: "AGAN",
+        auto_measure: "AGAN",
+        coupling: &["AC", "DC"],
+        slope: &[6, 12, 18, 24],
+        ac_gain: &[],
+    },
+    ModelDescriptor {
+        name: "SR7265",
+        read_changes_display: false,
+        termination: "\r",
+        auto_phase: "AQN",
+        auto_sensitivity: "AS",
+        auto_measure: "ASM",
+        coupling: &["AC", "DC"],
+        slope: &[6, 12, 18, 24],
+        ac_gain: &AC_GAIN,
+    },
+    ModelDescriptor {
+        name: "SR5210",
+        read_changes_display: false,
+        termination: "\r",
+        auto_phase: "AQN",
+        auto_sensitivity: "AS",
+        auto_measure: "ASM",
+        coupling: &["AC"],
+        slope: &[6, 12],
+        ac_gain: &[],
+    },
+    ModelDescriptor {
+        name: "LI5640",
+        read_changes_display: true,
+        termination: "\n",
+        auto_phase: "APHS",
+        auto_sensitivity: "ASEN",
+        auto_measure: "ASEN",
+        coupling: &["AC", "DC"],
+        slope: &[6, 12, 18, 24],
+        ac_gain: &[],
+    },
+];
+impl ModelDescriptor {
+    fn available(&self, sensitivity: &[f64], time_constant: &[f64]) -> Value {
+        json!({"sensitivity": sensitivity, "time_constant": time_constant, "coupling": self.coupling, "slope": self.slope, "ac_gain": self.ac_gain})
+    }
+}
 impl Model {
     pub const ALL: [Self; 4] = [Self::Sr830, Self::Sr7265, Self::Sr5210, Self::Li5640];
-
+    pub const fn descriptor(self) -> &'static ModelDescriptor {
+        &MODELS[match self {
+            Self::Sr830 => 0,
+            Self::Sr7265 => 1,
+            Self::Sr5210 => 2,
+            Self::Li5640 => 3,
+        }]
+    }
     pub const fn name(self) -> &'static str {
-        match self {
-            Self::Sr830 => "SR830",
-            Self::Sr7265 => "SR7265",
-            Self::Sr5210 => "SR5210",
-            Self::Li5640 => "LI5640",
-        }
+        self.descriptor().name
     }
 }
 
@@ -100,7 +166,7 @@ pub fn read_cancellable(
         },
     );
     if let Err(error) = &result
-        && model == Model::Li5640
+        && model.descriptor().read_changes_display
         && cancel.load(std::sync::atomic::Ordering::Acquire)
     {
         // Selection writes may already have succeeded. Never leave this session
@@ -159,7 +225,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
                 slope4(io, "OFSL?\n")?,
                 Value::Null,
                 overload_sr830(io)?,
-                json!({"sensitivity": SR_SENS, "time_constant": SR_TC, "coupling": ["AC", "DC"], "slope": [6,12,18,24], "ac_gain": []}),
+                model.descriptor().available(&SR_SENS, &SR_TC),
             ),
             Model::Sr7265 => {
                 let imode = integer(query_value(io, "IMODE\r")?, "SR7265 IMODE")?;
@@ -172,7 +238,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
                     slope4(io, "SLOPE\r")?,
                     json!(query_value(io, "ACGAIN\r")? * 10.0),
                     overload_sr7265(io)?,
-                    json!({"sensitivity": sensitivity_table, "time_constant": S7265_TC, "coupling": ["AC", "DC"], "slope": [6,12,18,24], "ac_gain": AC_GAIN}),
+                    model.descriptor().available(sensitivity_table, &S7265_TC),
                 )
             }
             Model::Sr5210 => (
@@ -183,7 +249,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
                 slope2(io, "XDB\r")?,
                 Value::Null,
                 overload_sr5210(io)?,
-                json!({"sensitivity": S5210_SENS, "time_constant": S5210_TC, "coupling": ["AC"], "slope": [6,12], "ac_gain": []}),
+                model.descriptor().available(&S5210_SENS, &S5210_TC),
             ),
             Model::Li5640 => (
                 indexed(io, "VSEN?\n", &SR_SENS)?,
@@ -193,7 +259,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
                 slope4(io, "SLOP?\n")?,
                 Value::Null,
                 overload_li5640(io)?,
-                json!({"sensitivity": SR_SENS, "time_constant": SR_TC, "coupling": ["AC", "DC"], "slope": [6,12,18,24], "ac_gain": []}),
+                model.descriptor().available(&SR_SENS, &SR_TC),
             ),
         };
     Ok(
@@ -207,11 +273,24 @@ pub fn set_setting(
     setting: &str,
     value: &Value,
 ) -> Result<(), String> {
+    let descriptor = model.descriptor();
     match (model, setting) {
-        (Model::Sr830, "Sensitivity") => write_index(io, "SENS", value, &SR_SENS, "\n"),
-        (Model::Sr830, "Time Constant") => write_index(io, "OFLT", value, &SR_TC, "\n"),
-        (Model::Sr830, "Coupling") => write_coupling(io, "ICPL", value, "\n"),
-        (Model::Sr830, "Slope") => write_slope(io, "OFSL", value, &[6, 12, 18, 24], "\n"),
+        (Model::Sr830, "Sensitivity") => {
+            write_index(io, "SENS", value, &SR_SENS, descriptor.termination)
+        }
+        (Model::Sr830, "Time Constant") => {
+            write_index(io, "OFLT", value, &SR_TC, descriptor.termination)
+        }
+        (Model::Sr830, "Coupling") => write_coupling(
+            io,
+            "ICPL",
+            value,
+            descriptor.coupling,
+            descriptor.termination,
+        ),
+        (Model::Sr830, "Slope") => {
+            write_slope(io, "OFSL", value, descriptor.slope, descriptor.termination)
+        }
         (Model::Sr7265, "Sensitivity") => {
             let mode = integer(query_value(io, "IMODE\r")?, "SR7265 IMODE")?;
             write_index_base(
@@ -220,27 +299,60 @@ pub fn set_setting(
                 value,
                 sr7265_sensitivity(mode)?,
                 if mode == 2 { 7 } else { 1 },
-                "\r",
+                descriptor.termination,
             )
         }
-        (Model::Sr7265, "Time Constant") => write_index(io, "TC", value, &S7265_TC, "\r"),
-        (Model::Sr7265, "Coupling") => write_coupling(io, "CP", value, "\r"),
-        (Model::Sr7265, "Slope") => write_slope(io, "SLOPE", value, &[6, 12, 18, 24], "\r"),
-        (Model::Sr7265, "AC Gain") => write_index(io, "ACGAIN", value, &AC_GAIN, "\r"),
-        (Model::Sr5210, "Sensitivity") => write_index(io, "SEN", value, &S5210_SENS, "\r"),
-        (Model::Sr5210, "Time Constant") => write_index(io, "TC", value, &S5210_TC, "\r"),
+        (Model::Sr7265, "Time Constant") => {
+            write_index(io, "TC", value, &S7265_TC, descriptor.termination)
+        }
+        (Model::Sr7265, "Coupling") => {
+            write_coupling(io, "CP", value, descriptor.coupling, descriptor.termination)
+        }
+        (Model::Sr7265, "Slope") => {
+            write_slope(io, "SLOPE", value, descriptor.slope, descriptor.termination)
+        }
+        (Model::Sr7265, "AC Gain") => write_index(
+            io,
+            "ACGAIN",
+            value,
+            descriptor.ac_gain,
+            descriptor.termination,
+        ),
+        (Model::Sr5210, "Sensitivity") => {
+            write_index(io, "SEN", value, &S5210_SENS, descriptor.termination)
+        }
+        (Model::Sr5210, "Time Constant") => {
+            write_index(io, "TC", value, &S5210_TC, descriptor.termination)
+        }
         (Model::Sr5210, "Coupling")
-            if value
-                .as_str()
-                .is_some_and(|v| v.trim().eq_ignore_ascii_case("AC")) =>
+            if value.as_str().is_some_and(|v| {
+                descriptor
+                    .coupling
+                    .iter()
+                    .any(|choice| v.trim().eq_ignore_ascii_case(choice))
+            }) =>
         {
             Ok(())
         }
-        (Model::Sr5210, "Slope") => write_slope(io, "XDB", value, &[6, 12], "\r"),
-        (Model::Li5640, "Sensitivity") => write_index(io, "VSEN", value, &SR_SENS, "\n"),
-        (Model::Li5640, "Time Constant") => write_index(io, "TCON", value, &SR_TC, "\n"),
-        (Model::Li5640, "Coupling") => write_coupling(io, "ICPL", value, "\n"),
-        (Model::Li5640, "Slope") => write_slope(io, "SLOP", value, &[6, 12, 18, 24], "\n"),
+        (Model::Sr5210, "Slope") => {
+            write_slope(io, "XDB", value, descriptor.slope, descriptor.termination)
+        }
+        (Model::Li5640, "Sensitivity") => {
+            write_index(io, "VSEN", value, &SR_SENS, descriptor.termination)
+        }
+        (Model::Li5640, "Time Constant") => {
+            write_index(io, "TCON", value, &SR_TC, descriptor.termination)
+        }
+        (Model::Li5640, "Coupling") => write_coupling(
+            io,
+            "ICPL",
+            value,
+            descriptor.coupling,
+            descriptor.termination,
+        ),
+        (Model::Li5640, "Slope") => {
+            write_slope(io, "SLOP", value, descriptor.slope, descriptor.termination)
+        }
         _ => Err(format!(
             "{} does not support setting {setting:?}",
             model.name()
@@ -249,20 +361,14 @@ pub fn set_setting(
 }
 
 pub fn auto(io: &mut impl Io, model: Model, action: &str) -> Result<(), String> {
-    let (command, term) = match (model, action) {
-        (Model::Sr830, "phase") => ("APHS", "\n"),
-        (Model::Sr830, "sensitivity" | "measure") => ("AGAN", "\n"),
-        (Model::Sr7265, "phase") => ("AQN", "\r"),
-        (Model::Sr7265, "sensitivity") => ("AS", "\r"),
-        (Model::Sr7265, "measure") => ("ASM", "\r"),
-        (Model::Sr5210, "phase") => ("AQN", "\r"),
-        (Model::Sr5210, "sensitivity") => ("AS", "\r"),
-        (Model::Sr5210, "measure") => ("ASM", "\r"),
-        (Model::Li5640, "phase") => ("APHS", "\n"),
-        (Model::Li5640, "sensitivity" | "measure") => ("ASEN", "\n"),
+    let descriptor = model.descriptor();
+    let command = match action {
+        "phase" => descriptor.auto_phase,
+        "sensitivity" => descriptor.auto_sensitivity,
+        "measure" => descriptor.auto_measure,
         _ => return Err(format!("Unknown {} auto action: {action}", model.name())),
     };
-    io.write(&format!("{command}{term}"))
+    io.write(&format!("{command}{}", descriptor.termination))
 }
 
 const S7265_CURRENT_1: [f64; 27] = [
@@ -352,18 +458,17 @@ fn write_coupling(
     io: &mut impl Io,
     command: &str,
     value: &Value,
+    choices: &[&str],
     term: &str,
 ) -> Result<(), String> {
-    let index = match value
+    let index = value
         .as_str()
-        .map(str::trim)
-        .map(str::to_ascii_uppercase)
-        .as_deref()
-    {
-        Some("AC") => 0,
-        Some("DC") => 1,
-        _ => return Err("Coupling must be AC or DC".into()),
-    };
+        .and_then(|value| {
+            choices
+                .iter()
+                .position(|choice| value.trim().eq_ignore_ascii_case(choice))
+        })
+        .ok_or("Coupling must be AC or DC")?;
     io.write(&format!("{command} {index}{term}"))
 }
 fn write_slope(
@@ -654,6 +759,60 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[test]
+    fn every_model_preserves_auto_commands_and_rejects_unknown_actions_without_io() {
+        let commands = [
+            ["APHS\n", "AGAN\n", "AGAN\n"],
+            ["AQN\r", "AS\r", "ASM\r"],
+            ["AQN\r", "AS\r", "ASM\r"],
+            ["APHS\n", "ASEN\n", "ASEN\n"],
+        ];
+        for (model, expected) in Model::ALL.into_iter().zip(commands) {
+            let mut io = Fake::new(&[]);
+            for action in ["phase", "sensitivity", "measure"] {
+                auto(&mut io, model, action).unwrap();
+            }
+            assert_eq!(io.commands, expected, "{model:?}");
+            let error = auto(&mut io, model, "unknown").unwrap_err();
+            assert_eq!(
+                error,
+                format!("Unknown {} auto action: unknown", model.name())
+            );
+            assert_eq!(io.commands, expected, "unknown actions must perform no I/O");
+        }
+    }
+
+    #[test]
+    fn every_model_propagates_read_failures_and_observes_cancellation() {
+        for model in Model::ALL {
+            let mut io = Fake::new(&[]);
+            io.replies.push_back(Err("transport failure".into()));
+            assert_eq!(
+                read(model, &mut io).unwrap_err(),
+                if model == Model::Li5640 {
+                    "transport failure"
+                } else {
+                    "transport: transport failure"
+                },
+                "{model:?}"
+            );
+            let mut io = Fake::new(&[]);
+            let cancel = std::sync::atomic::AtomicBool::new(true);
+            let error = read_cancellable(model, &mut io, &cancel).unwrap_err();
+            assert_eq!(
+                error,
+                if model == Model::Li5640 {
+                    "cancelled; LI5640 recovery required: reconnect and verify display/output settings"
+                } else {
+                    "transport: cancelled"
+                },
+                "{model:?}"
+            );
+            assert!(io.commands.is_empty(), "cancelled read must not issue I/O");
+            assert_eq!(io.invalidated, model == Model::Li5640);
         }
     }
 

@@ -104,6 +104,7 @@ def build(platform: str, binaries: Path, native: Path, output: Path) -> list[Pat
         shutil.copytree(ROOT/'notebook',bundle/'notebook')
         shutil.copytree(stage/'config',bundle/'config')
         shutil.copy2(ROOT/'README.md',bundle/'README.md')
+        shutil.copytree(ROOT/'docs',bundle/'docs',ignore=shutil.ignore_patterns('.DS_Store'))
         archive=output/f'kohdalab-trkr-{version}-{platform}.zip'
         make_zip(bundle,archive);artifacts.append(archive)
         verification=scratch/'zip-verify';run('ditto','-x','-k',archive,verification)

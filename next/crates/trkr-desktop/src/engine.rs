@@ -1,9 +1,21 @@
-//! One persistent worker owns instruments, motion, acquisition and incremental export.
+//! One persistent worker owns instruments, motion and acquisition.
+mod execution;
+mod recording;
+mod status;
 use crate::lockin::{self, Model};
+pub(crate) use execution::active_axes;
+#[cfg(test)]
+use execution::masked;
+use execution::{
+    axis_mask, line_reset, reset_fast_before_slow, return_moves, return_target, scan_moves,
+};
+pub use recording::FIELDS;
+pub(crate) use recording::row;
+use recording::{create_csv, finish_metadata};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use status::{MotionAction, OperationError, Phase};
 use std::{
-    fs::{File, OpenOptions},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -13,44 +25,11 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use trkr_core::{Axis, Coordinate, Plan, Signal, Target, Workflow};
+#[cfg(test)]
+use trkr_core::Axis;
+use trkr_core::{Coordinate, Plan, Signal, Target, Workflow};
 use trkr_motion::{DelayCalibration, MotionConfig, MotionRig, Position};
 use trkr_transport::Gpib;
-pub const FIELDS: &[&str] = &[
-    "timestamp",
-    "measurement",
-    "fast_axis",
-    "slow_axis",
-    "target_elapsed_s",
-    "target_t_cor_ps",
-    "target_x_cor_um",
-    "target_y_cor_um",
-    "target_u_cor_um",
-    "target_v_cor_um",
-    "elapsed_s",
-    "acquisition_elapsed_s",
-    "t_cor_ps",
-    "t_ps",
-    "x_cor_um",
-    "x_um",
-    "y_cor_um",
-    "y_um",
-    "u_cor_um",
-    "v_cor_um",
-    "X_V",
-    "Y_V",
-    "R_V",
-    "Theta_deg",
-    "spatial_theta_deg",
-    "coordinate",
-    "delay_stage_mm",
-    "delay_stage_pulse",
-    "x_scanner_mm",
-    "x_scanner_deg",
-    "y_scanner_mm",
-    "y_scanner_deg",
-];
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -215,7 +194,7 @@ fn poll_live(
     if let Some(signal) = monitor.poll(
         || match source {
             Source::Gpib { model, .. } => {
-                let gpib = gpib.ok_or("Lock-in disconnected")?;
+                let gpib = gpib.ok_or(OperationError::LockinDisconnected)?;
                 match cancel {
                     Some(token) => lockin::read_cancellable(model, gpib, token),
                     None => lockin::read(model, gpib),
@@ -316,7 +295,7 @@ pub struct Controller {
 impl Controller {
     pub fn send(&self, command: Command) -> Result<(), String> {
         if self.read_only && !matches!(command, Command::Stop | Command::Shutdown) {
-            return Err("demo controller is read-only; hardware, acquisition, and file output commands are disabled".into());
+            return Err(OperationError::ReadOnly.into());
         }
         if matches!(command, Command::Stop) {
             self.stop();
@@ -325,7 +304,7 @@ impl Controller {
         let job = command.is_job();
         if job {
             if self.busy.swap(true, Ordering::AcqRel) {
-                return Err("An operation is already running".into());
+                return Err(OperationError::Busy.into());
             }
             self.cancel.store(false, Ordering::Release);
         }
@@ -333,7 +312,7 @@ impl Controller {
             if job {
                 self.busy.store(false, Ordering::Release);
             }
-            return Err("Instrument worker stopped".into());
+            return Err(OperationError::WorkerStopped.into());
         }
         Ok(())
     }
@@ -436,7 +415,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
             let acquisition = matches!(cmd, Command::Run { .. } | Command::Replay { .. });
             if job {
                 session.state.running = true;
-                session.state.phase = "Preparing".into();
+                session.state.phase = Phase::Preparing.into();
                 session.state.rows = 0;
                 session.state.total = 0;
                 let _ = send.send(Event::State(Box::new(session.state.clone())));
@@ -452,11 +431,11 @@ fn controller_with_mode(read_only: bool) -> Controller {
             if job {
                 session.state.running = false;
                 session.state.phase = if token.load(Ordering::Acquire) {
-                    "Stopped"
+                    Phase::Stopped
                 } else if result.is_ok() {
-                    "Complete"
+                    Phase::Complete
                 } else {
-                    "Error"
+                    Phase::Error
                 }
                 .into();
                 working.store(false, Ordering::Release);
@@ -644,7 +623,7 @@ impl Session {
                 let rig = self.rig.as_mut().ok_or("No motion devices selected")?;
                 let physical = rig.to_physical(targets, coordinate_name(coordinate), zero)?;
                 rig.validate_moves(&[(physical, approach)])?;
-                self.state.phase = motion_phase("Moving", targets);
+                self.state.phase = Phase::motion(MotionAction::Moving, targets).into();
                 let _ = send.send(Event::State(Box::new(self.state.clone())));
                 self.move_live(physical, approach, cancel, send)?;
             }
@@ -655,13 +634,14 @@ impl Session {
                 move_to_origin,
             } => {
                 if axis > 2 {
-                    return Err("Unknown motion axis".into());
+                    return Err(OperationError::UnknownAxis.into());
                 }
                 self.connect(config, vec![[Device::T, Device::X, Device::Y][axis]])?;
-                self.state.phase = motion_phase(
-                    "Initializing",
+                self.state.phase = Phase::motion(
+                    MotionAction::Initializing,
                     std::array::from_fn(|i| (i == axis).then_some(0.)),
-                );
+                )
+                .into();
                 let _ = send.send(Event::State(Box::new(self.state.clone())));
                 let state = &mut self.state;
                 let source = self
@@ -767,7 +747,10 @@ impl Session {
         let state = &mut self.state;
         let gpib = &mut self.gpib;
         let live = &mut self.live;
-        let rig = self.rig.as_mut().ok_or("Motion disconnected")?;
+        let rig = self
+            .rig
+            .as_mut()
+            .ok_or(OperationError::MotionDisconnected)?;
         let mut progress = |position| {
             state.position = position;
             let _ = send.try_send(Event::State(Box::new(state.clone())));
@@ -814,8 +797,8 @@ impl Session {
         }
         Ok(false)
     }
-    fn set_phase(&mut self, phase: String, send: &mpsc::SyncSender<Event>) {
-        self.state.phase = phase;
+    fn set_phase(&mut self, phase: Phase, send: &mpsc::SyncSender<Event>) {
+        self.state.phase = phase.into();
         // Status must never delay motion, settling, or the acquisition itself.
         let _ = send.try_send(Event::Phase(self.state.phase.clone()));
     }
@@ -833,7 +816,7 @@ impl Session {
             && plan.workflow == Workflow::SignalMonitor
             && plan.interval_s < 0.01
         {
-            return Err("Hardware monitor interval must be at least 0.01 s".into());
+            return Err(OperationError::MonitorInterval.into());
         }
         let mask = active_axes(plan);
         let mut physical: Vec<[Option<f64>; 3]> = targets
@@ -904,7 +887,7 @@ impl Session {
         let mut csv = output.map(|p| create_csv(p, source, plan)).transpose()?;
         self.state.total = targets.len();
         self.state.rows = 0;
-        self.state.phase = "Measuring".into();
+        self.state.phase = Phase::Measuring.into();
         let _ = send.send(Event::State(Box::new(self.state.clone())));
         let start = Instant::now();
         if matches!(source, Source::Demo) {
@@ -920,9 +903,9 @@ impl Session {
                     let phase = if plan.workflow.is_2d()
                         && (index == 0 || target.line != targets[index - 1].line)
                     {
-                        format!("Moving {}/{}", plan.fast.name(), plan.slow.name())
+                        Phase::moving([plan.fast, plan.slow])
                     } else {
-                        format!("Moving {}", plan.fast.name())
+                        Phase::moving([plan.fast])
                     };
                     self.set_phase(phase, send);
                 }
@@ -933,7 +916,10 @@ impl Session {
                         && reset_fast_before_slow(plan)
                     {
                         let reset = line_reset(plan, &targets[index - 1]);
-                        let rig = self.rig.as_ref().ok_or("Motion disconnected")?;
+                        let rig = self
+                            .rig
+                            .as_ref()
+                            .ok_or(OperationError::MotionDisconnected)?;
                         let reset =
                             rig.to_physical(reset, coordinate_name(plan.coordinate), plan.zero)?;
                         rig.validate_targets(&[reset])?;
@@ -941,7 +927,7 @@ impl Session {
                     }
                     let first = index == 0 || target.line != targets[index - 1].line;
                     for movement in scan_moves(plan, physical[index], first, index == 0) {
-                        self.set_phase(format!("Moving {}", movement.axis.name()), send);
+                        self.set_phase(Phase::moving([movement.axis]), send);
                         self.move_live(movement.target, movement.approach, cancel, send)?;
                     }
                 } else if plan.workflow != Workflow::SignalMonitor {
@@ -959,17 +945,22 @@ impl Session {
                 } else {
                     Instant::now() + Duration::from_secs_f64(plan.interval_s)
                 };
-                self.set_phase("Waiting".into(), send);
+                self.set_phase(Phase::Waiting, send);
                 if !self.wait_live(due, source, cancel, send)? {
                     return Ok(());
                 }
-                self.set_phase("Reading".into(), send);
+                self.set_phase(Phase::Reading, send);
                 let signal = match source {
                     Source::Gpib { model, .. } => {
                         if let Some(rig) = &mut self.rig {
                             self.state.position = rig.position()?;
                         }
-                        lockin::read(model, self.gpib.as_mut().ok_or("Lock-in disconnected")?)?
+                        lockin::read(
+                            model,
+                            self.gpib
+                                .as_mut()
+                                .ok_or(OperationError::LockinDisconnected)?,
+                        )?
                     }
                     Source::Demo => Signal::demo(
                         if plan.workflow == Workflow::SignalMonitor {
@@ -1020,7 +1011,7 @@ impl Session {
                 && let Some(r) = returns
             {
                 for target in return_moves(plan, r) {
-                    self.state.phase = motion_phase("Returning", target);
+                    self.state.phase = Phase::motion(MotionAction::Returning, target).into();
                     let _ = send.send(Event::State(Box::new(self.state.clone())));
                     self.motion_live(target, [false; 3], true, cancel, send)?;
                 }
@@ -1138,14 +1129,6 @@ impl Session {
         Ok(())
     }
 }
-fn motion_phase(action: &str, targets: [Option<f64>; 3]) -> String {
-    let axes: Vec<_> = ["t", "x", "y"]
-        .into_iter()
-        .zip(targets)
-        .filter_map(|(axis, target)| target.map(|_| axis))
-        .collect();
-    format!("{action} {}", axes.join("/"))
-}
 fn filtered(config: &MotionConfig, mask: &[bool; 4]) -> MotionConfig {
     MotionConfig {
         delay: mask[1].then(|| config.delay.clone()).flatten(),
@@ -1171,156 +1154,6 @@ fn coordinate_name(c: Coordinate) -> &'static str {
         Coordinate::Interface => "interface",
         Coordinate::Instrument => "instrument",
     }
-}
-pub(crate) fn active_axes(p: &Plan) -> [bool; 3] {
-    let mut mask = [false; 3];
-    if p.workflow == Workflow::SignalMonitor {
-        return mask;
-    }
-    for axis in [Some(p.fast), p.workflow.is_2d().then_some(p.slow)]
-        .into_iter()
-        .flatten()
-    {
-        match axis {
-            Axis::T => mask[0] = true,
-            Axis::X => mask[1] = true,
-            Axis::Y => mask[2] = true,
-            Axis::U | Axis::V => {
-                mask[1] = true;
-                mask[2] = true;
-            }
-        }
-    }
-    mask
-}
-struct ScanMove {
-    axis: Axis,
-    target: [Option<f64>; 3],
-    approach: [bool; 3],
-}
-fn axis_mask(axis: Axis) -> [bool; 3] {
-    match axis {
-        Axis::T => [true, false, false],
-        Axis::X => [false, true, false],
-        Axis::Y => [false, false, true],
-        Axis::U | Axis::V => [false, true, true],
-    }
-}
-fn masked(target: [Option<f64>; 3], mask: [bool; 3]) -> [Option<f64>; 3] {
-    std::array::from_fn(|i| if mask[i] { target[i] } else { None })
-}
-fn coupled_spatial(plan: &Plan) -> bool {
-    plan.workflow.is_2d()
-        && matches!(plan.fast, Axis::U | Axis::V)
-        && matches!(plan.slow, Axis::U | Axis::V)
-}
-/// Python's Cartesian line sequence: slow completes before fast starts.
-/// U/V maps are a Rust extension and require a coupled X/Y target.
-fn scan_moves(
-    plan: &Plan,
-    target: [Option<f64>; 3],
-    line_start: bool,
-    first_point: bool,
-) -> Vec<ScanMove> {
-    let axes = if plan.workflow.is_2d() && line_start && !coupled_spatial(plan) {
-        vec![plan.slow, plan.fast]
-    } else {
-        vec![plan.fast]
-    };
-    axes.into_iter()
-        .map(|axis| {
-            let mask = axis_mask(axis);
-            ScanMove {
-                axis,
-                target: masked(target, mask),
-                approach: std::array::from_fn(|i| {
-                    i > 0 && mask[i] && (first_point || (axis == plan.fast && line_start))
-                }),
-            }
-        })
-        .collect()
-}
-/// Legacy completion returns fast first, then slow; never re-enable a cancelled job.
-fn return_moves(plan: &Plan, target: [Option<f64>; 3]) -> Vec<[Option<f64>; 3]> {
-    if coupled_spatial(plan) {
-        return vec![target];
-    }
-    [Some(plan.fast), plan.workflow.is_2d().then_some(plan.slow)]
-        .into_iter()
-        .flatten()
-        .map(|axis| masked(target, axis_mask(axis)))
-        .filter(|target| target.iter().any(Option::is_some))
-        .collect()
-}
-fn axis_target(p: &Plan, fast: f64, slow: Option<f64>) -> [Option<f64>; 3] {
-    let mut xyz = [None; 3];
-    let mut uv = [0.; 2];
-    let mut rotate = false;
-    for (axis, value) in [(p.fast, Some(fast)), (p.slow, slow)] {
-        if let Some(value) = value {
-            match axis {
-                Axis::T => xyz[0] = Some(value),
-                Axis::X => xyz[1] = Some(value),
-                Axis::Y => xyz[2] = Some(value),
-                Axis::U => {
-                    uv[0] = value;
-                    rotate = true
-                }
-                Axis::V => {
-                    uv[1] = value;
-                    rotate = true
-                }
-            }
-        }
-    }
-    if rotate {
-        let (x, y) = trkr_core::rotated_to_xy(uv[0], uv[1], p.theta_deg);
-        xyz[1] = Some(x);
-        xyz[2] = Some(y);
-    }
-    xyz
-}
-fn return_target(p: &Plan, last: &Target) -> Option<[Option<f64>; 3]> {
-    if p.workflow == Workflow::SignalMonitor || !p.return_to_zero.into_iter().any(|x| x) {
-        return None;
-    }
-    let fast = if p.return_to_zero[0] { 0. } else { last.fast };
-    let slow = last.slow.map(|s| if p.return_to_zero[1] { 0. } else { s });
-    let mut result = axis_target(p, fast, slow);
-    if !matches!(p.fast, Axis::U | Axis::V) && !matches!(p.slow, Axis::U | Axis::V) {
-        if !p.return_to_zero[0] {
-            match p.fast {
-                Axis::T => result[0] = None,
-                Axis::X => result[1] = None,
-                Axis::Y => result[2] = None,
-                _ => {}
-            }
-        }
-        if p.workflow.is_2d() && !p.return_to_zero[1] {
-            match p.slow {
-                Axis::T => result[0] = None,
-                Axis::X => result[1] = None,
-                Axis::Y => result[2] = None,
-                _ => {}
-            }
-        }
-    }
-    Some(result)
-}
-// Spatial fast axes go straight to the new line's compensation approach after
-// the slow axis moves. Do not first visit the uncompensated scan start.
-fn reset_fast_before_slow(p: &Plan) -> bool {
-    p.workflow.is_2d()
-        && p.return_fast_between_lines
-        && p.fast == Axis::T
-        && !matches!(p.slow, Axis::U | Axis::V)
-}
-fn line_reset(p: &Plan, last: &Target) -> [Option<f64>; 3] {
-    let mut target = axis_target(p, p.fast_range.min, None);
-    if matches!(p.fast, Axis::U | Axis::V) {
-        target = axis_target(p, p.fast_range.min, last.slow);
-    }
-    target
 }
 /// Returns the next receive timeout for connected idle devices only. With no
 /// devices, retain a bounded command wait instead of spinning on a stale due
@@ -1350,208 +1183,6 @@ fn wait_until(deadline: Instant, cancel: &AtomicBool) -> bool {
     }
     false
 }
-fn finish_metadata(
-    path: &Path,
-    rows: usize,
-    status: &str,
-    error: Option<&String>,
-) -> Result<(), String> {
-    let path = path.with_extension("run.json");
-    let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    meta["rows"] = serde_json::json!(rows);
-    meta["status"] = serde_json::json!(status);
-    meta["error"] = serde_json::json!(error);
-    meta["finished_at"] = serde_json::json!(utc_now()?);
-    std::fs::write(
-        path,
-        serde_json::to_vec_pretty(&meta).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
-}
-fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<csv::Writer<File>, String> {
-    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let metadata_path = path.with_extension("run.json");
-    if metadata_path == path {
-        return Err("CSV path must not have the .run.json extension".into());
-    }
-    let metadata = serde_json::json!({
-        "application": "kohdalab-trkr", "version": env!("CARGO_PKG_VERSION"),
-        "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
-        "plan": plan, "timestamp": utc_now()?,
-    });
-    let bytes = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?;
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
-        .map_err(|e| format!("Create {}: {e}", path.display()))?;
-    let mut metadata_created = false;
-    let result = (|| {
-        use std::io::Write;
-        let mut meta = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&metadata_path)
-            .map_err(|e| format!("Create run metadata: {e}"))?;
-        metadata_created = true;
-        meta.write_all(&bytes).map_err(|e| e.to_string())?;
-        let mut writer = csv::Writer::from_writer(file);
-        writer.write_record(FIELDS).map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-        Ok(writer)
-    })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(path);
-        if metadata_created {
-            let _ = std::fs::remove_file(metadata_path);
-        }
-    }
-    result
-}
-
-fn utc_now() -> Result<String, String> {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .map_err(|e| e.to_string())
-}
-
-/// Python str(float): shortest round-trip digits, .0 for integral fixed values,
-/// fixed notation for 1e-4 <= abs < 1e16, and signed two-digit exponents.
-fn csv_float(value: f64) -> String {
-    let shortest = format!("{value:?}");
-    if !value.is_finite() {
-        return shortest;
-    }
-    let sign = if value.is_sign_negative() { "-" } else { "" };
-    let text = shortest.trim_start_matches('-');
-    let (mantissa, extra) = text
-        .split_once('e')
-        .map(|(m, e)| (m, e.parse::<i32>().expect("Rust exponent")))
-        .unwrap_or((text, 0));
-    let point = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
-    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
-    let Some(first) = digits.find(|c: char| c != '0') else {
-        return format!("{sign}0.0");
-    };
-    let exponent = point - first as i32 - 1 + extra;
-    let digits = digits[first..].trim_end_matches('0');
-    if !(-4..16).contains(&exponent) {
-        let fraction = if digits.len() > 1 {
-            format!(".{}", &digits[1..])
-        } else {
-            String::new()
-        };
-        format!("{sign}{}{fraction}e{exponent:+03}", &digits[..1])
-    } else if exponent < 0 {
-        format!("{sign}0.{}{}", "0".repeat((-exponent - 1) as usize), digits)
-    } else {
-        let point = exponent as usize + 1;
-        if digits.len() <= point {
-            format!("{sign}{digits}{}.0", "0".repeat(point - digits.len()))
-        } else {
-            format!("{sign}{}.{}", &digits[..point], &digits[point..])
-        }
-    }
-}
-
-fn csv_voltage(value: f64) -> String {
-    let text = format!("{value:.6e}");
-    let Some((mantissa, exponent)) = text.split_once('e') else {
-        return text;
-    };
-    let exponent: i32 = exponent.parse().expect("Rust scientific exponent");
-    format!("{mantissa}e{exponent:+03}")
-}
-
-pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
-    let mut result = vec![String::new(); FIELDS.len()];
-    let mut put =
-        |key: &str, value: String| result[FIELDS.iter().position(|&k| k == key).unwrap()] = value;
-    put("timestamp", utc_now()?);
-    put("measurement", plan.workflow.key().into());
-    put("acquisition_elapsed_s", csv_float(sample.elapsed));
-    let monitor = plan.workflow == Workflow::SignalMonitor;
-    let exported_axes = match plan.workflow {
-        Workflow::SignalMonitor => [false; 3],
-        Workflow::Trkr => [true, false, false],
-        Workflow::Srkr => axis_mask(plan.fast),
-        Workflow::Strkr | Workflow::Srkr2d => [true; 3],
-    };
-    if monitor {
-        put("elapsed_s", csv_float(sample.elapsed));
-        put("fast_axis", "elapsed_s".into());
-        put("target_elapsed_s", csv_float(sample.target.fast));
-    } else {
-        put("fast_axis", plan.fast.name().into());
-        if plan.workflow.is_2d() {
-            put("slow_axis", plan.slow.name().into());
-        }
-        for (axis, value) in [
-            (plan.fast, Some(sample.target.fast)),
-            (plan.slow, sample.target.slow),
-        ] {
-            if let Some(value) = value {
-                put(
-                    &format!(
-                        "target_{}_cor_{}",
-                        axis.name(),
-                        if axis == trkr_core::Axis::T {
-                            "ps"
-                        } else {
-                            "um"
-                        }
-                    ),
-                    csv_float(value),
-                );
-            }
-        }
-        for (i, axis) in ["t", "x", "y"].iter().enumerate() {
-            let unit = if i == 0 { "ps" } else { "um" };
-            if exported_axes[i]
-                && let Some(value) = sample.position.physical[i]
-            {
-                put(&format!("{axis}_{unit}"), csv_float(value));
-                put(
-                    &format!("{axis}_cor_{unit}"),
-                    csv_float(value - plan.zero[i]),
-                );
-            }
-        }
-        let (s, c) = plan.theta_deg.to_radians().sin_cos();
-        let [_, x, y] = sample.target.corrected;
-        put("u_cor_um", csv_float(x * c + y * s));
-        put("v_cor_um", csv_float(-x * s + y * c));
-        put("spatial_theta_deg", csv_float(plan.theta_deg));
-        put("coordinate", coordinate_name(plan.coordinate).into());
-    }
-    for (axis, key, value) in [
-        (0, "delay_stage_mm", sample.position.delay_stage_mm),
-        (1, "x_scanner_mm", sample.position.x_scanner_mm),
-        (1, "x_scanner_deg", sample.position.x_scanner_deg),
-        (2, "y_scanner_mm", sample.position.y_scanner_mm),
-        (2, "y_scanner_deg", sample.position.y_scanner_deg),
-    ] {
-        if exported_axes[axis]
-            && let Some(value) = value
-        {
-            put(key, csv_float(value));
-        }
-    }
-    if exported_axes[0]
-        && let Some(value) = sample.position.delay_stage_pulse
-    {
-        put("delay_stage_pulse", value.to_string());
-    }
-    put("X_V", csv_voltage(sample.signal.x_v));
-    put("Y_V", csv_voltage(sample.signal.y_v));
-    put("R_V", csv_voltage(sample.signal.r_v));
-    put("Theta_deg", csv_float(sample.signal.theta_deg));
-    Ok(result)
-}
-
 pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
     let mut plan = plan;
     plan.interval_s = 0.0;
@@ -1578,753 +1209,5 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn config() -> HardwareConfig {
-        HardwareConfig {
-            model: Model::Sr830,
-            address: 12,
-            motion: MotionConfig::default(),
-        }
-    }
-    #[test]
-    fn live_monitor_reads_fresh_signals_on_its_own_cadence_without_catchup() {
-        let (send, events) = mpsc::sync_channel(10);
-        let mut monitor = LiveMonitor::default();
-        let position = Position::default();
-        let first = Signal::new(1., 2., 3., 4.).unwrap();
-        let second = Signal::new(5., 6., 7., 8.).unwrap();
-        assert_eq!(
-            monitor
-                .poll(|| Ok(first), ReadingOrigin::Hardware, &position, &send)
-                .unwrap(),
-            Some(first)
-        );
-        // Measurement reads may happen arbitrarily often; they must not add live points.
-        monitor.publish_if_due(second, ReadingOrigin::Hardware, &position, &send);
-        assert!(
-            monitor
-                .poll(
-                    || panic!("not yet due"),
-                    ReadingOrigin::Hardware,
-                    &position,
-                    &send
-                )
-                .unwrap()
-                .is_none()
-        );
-        monitor.next = Instant::now() - Duration::from_secs(5);
-        assert_eq!(
-            monitor
-                .poll(|| Ok(second), ReadingOrigin::Hardware, &position, &send)
-                .unwrap(),
-            Some(second)
-        );
-        assert!(monitor.next > Instant::now());
-        let values: Vec<_> = events
-            .try_iter()
-            .map(|event| match event {
-                Event::Live(live) => live.signal,
-                _ => panic!("not a display-only event"),
-            })
-            .collect();
-        assert_eq!(values, vec![first, second]);
-    }
-
-    #[test]
-    fn live_read_failure_is_reported_without_publishing_stale_data() {
-        let (send, events) = mpsc::sync_channel(10);
-        let mut monitor = LiveMonitor::default();
-        assert_eq!(
-            monitor
-                .poll(
-                    || Err("transport failed".into()),
-                    ReadingOrigin::Hardware,
-                    &Position::default(),
-                    &send
-                )
-                .unwrap_err(),
-            "transport failed"
-        );
-        assert!(events.try_recv().is_err());
-        assert!(monitor.next > Instant::now());
-    }
-
-    #[test]
-    fn live_updates_continue_between_measurement_points_without_adding_csv_rows() {
-        for workflow in [
-            Workflow::Trkr,
-            Workflow::Srkr,
-            Workflow::Strkr,
-            Workflow::Srkr2d,
-            Workflow::SignalMonitor,
-        ] {
-            let dir = tempfile::tempdir().unwrap();
-            let path = dir.path().join("run.csv");
-            let plan = Plan {
-                workflow,
-                fast: if matches!(workflow, Workflow::Trkr | Workflow::Strkr) {
-                    Axis::T
-                } else {
-                    Axis::X
-                },
-                slow: Axis::Y,
-                fast_range: trkr_core::Range {
-                    min: 0.,
-                    max: 0.,
-                    step: 1.,
-                },
-                slow_range: trkr_core::Range {
-                    min: 0.,
-                    max: 0.,
-                    step: 1.,
-                },
-                interval_s: 0.35,
-                n_points: 2,
-                zero: [10., 20., 30.],
-                ..Default::default()
-            };
-            let expected = plan.targets().unwrap().len();
-            let controller = controller();
-            controller
-                .send(Command::Run {
-                    source: Source::Demo,
-                    config: config(),
-                    plan,
-                    output: Some(path.clone()),
-                })
-                .unwrap();
-            let mut samples = 0;
-            let mut lives = 0;
-            let mut between = 0;
-            let mut phase = String::new();
-            loop {
-                match controller
-                    .events
-                    .recv_timeout(Duration::from_secs(5))
-                    .unwrap()
-                {
-                    Event::Phase(next) => phase = next,
-                    Event::Live(live) => {
-                        assert_eq!(live.origin, ReadingOrigin::Demo);
-                        if workflow == Workflow::SignalMonitor {
-                            assert_eq!(live.position.physical, [None; 3]);
-                        } else {
-                            assert_eq!(live.signal, Signal::demo(0., 0., 0.));
-                        }
-                        lives += 1;
-                        if phase == "Waiting" {
-                            between += 1;
-                        }
-                    }
-                    Event::Sample(sample) => {
-                        samples += 1;
-                        if workflow != Workflow::SignalMonitor {
-                            assert!(sample.elapsed >= 0.35);
-                        }
-                    }
-                    Event::Finished(result) => {
-                        assert_eq!(result.unwrap().0, expected);
-                        break;
-                    }
-                    Event::Error(error) => panic!("{error}"),
-                    _ => {}
-                }
-            }
-            assert_eq!(samples, expected);
-            assert!(
-                between >= 2,
-                "{workflow:?}: only {between} live reads while settling"
-            );
-            assert!(lives > samples, "{workflow:?}");
-            assert_eq!(
-                csv::Reader::from_path(&path).unwrap().records().count(),
-                expected
-            );
-        }
-    }
-
-    #[test]
-    fn cancel_after_live_read_does_not_commit_a_measurement() {
-        let controller = controller();
-        controller
-            .send(Command::Run {
-                source: Source::Demo,
-                config: config(),
-                plan: Plan {
-                    workflow: Workflow::Trkr,
-                    interval_s: 2.,
-                    ..Default::default()
-                },
-                output: None,
-            })
-            .unwrap();
-        loop {
-            match controller
-                .events
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-            {
-                Event::Live(_) => {
-                    controller.stop();
-                    break;
-                }
-                Event::Sample(_) => panic!("premature measurement"),
-                _ => {}
-            }
-        }
-        loop {
-            match controller
-                .events
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap()
-            {
-                Event::Finished(result) => {
-                    assert_eq!(result.unwrap().0, 0);
-                    break;
-                }
-                Event::Sample(_) => panic!("cancelled measurement was committed"),
-                _ => {}
-            }
-        }
-    }
-
-    #[test]
-    fn idle_refresh_waits_only_for_connected_devices() {
-        let now = Instant::now();
-        let lockin_due = now + Duration::from_millis(100);
-        let position_due = now + Duration::from_millis(500);
-        assert_eq!(
-            idle_refresh_timeout(false, false, lockin_due, position_due, now),
-            Duration::from_millis(500)
-        );
-        assert_eq!(
-            idle_refresh_timeout(true, false, lockin_due, position_due, now),
-            Duration::from_millis(100)
-        );
-        assert_eq!(
-            idle_refresh_timeout(false, true, lockin_due, position_due, now),
-            Duration::from_millis(500)
-        );
-        assert_eq!(
-            idle_refresh_timeout(
-                true,
-                true,
-                now + Duration::from_millis(600),
-                now + Duration::from_millis(200),
-                now,
-            ),
-            Duration::from_millis(200)
-        );
-    }
-    #[test]
-    fn active_axes_never_moves_unselected_devices() {
-        let mut p = Plan {
-            workflow: Workflow::Trkr,
-            ..Default::default()
-        };
-        assert_eq!(active_axes(&p), [true, false, false]);
-        p.workflow = Workflow::Srkr;
-        p.fast = Axis::X;
-        assert_eq!(active_axes(&p), [false, true, false]);
-        p.fast = Axis::U;
-        assert_eq!(active_axes(&p), [false, true, true]);
-        p.workflow = Workflow::Strkr;
-        p.fast = Axis::T;
-        p.slow = Axis::V;
-        assert_eq!(active_axes(&p), [true, true, true]);
-    }
-    #[test]
-    fn scan_sequence_waits_for_slow_before_fast_and_only_approaches_once() {
-        let physical = [Some(1.), Some(2.), Some(3.)];
-        for (fast, slow) in [
-            (Axis::T, Axis::X),
-            (Axis::X, Axis::T),
-            (Axis::X, Axis::Y),
-            (Axis::Y, Axis::X),
-            (Axis::U, Axis::T),
-        ] {
-            let p = Plan {
-                workflow: if fast == Axis::T || slow == Axis::T {
-                    Workflow::Strkr
-                } else {
-                    Workflow::Srkr2d
-                },
-                fast,
-                slow,
-                ..Default::default()
-            };
-            let moves = scan_moves(&p, physical, true, true);
-            assert_eq!(
-                moves.iter().map(|m| m.axis).collect::<Vec<_>>(),
-                vec![slow, fast]
-            );
-            for movement in moves {
-                assert_eq!(movement.target, masked(physical, axis_mask(movement.axis)));
-            }
-            let line = scan_moves(&p, physical, true, false);
-            assert_eq!(line[0].approach, [false; 3]);
-            assert_eq!(
-                line[1].approach,
-                std::array::from_fn(|i| i > 0 && axis_mask(fast)[i])
-            );
-            let inner = scan_moves(&p, physical, false, false);
-            assert_eq!(inner.len(), 1);
-            assert_eq!(inner[0].axis, fast);
-            assert_eq!(inner[0].target, masked(physical, axis_mask(fast)));
-            assert_eq!(
-                return_moves(&p, physical),
-                vec![
-                    masked(physical, axis_mask(fast)),
-                    masked(physical, axis_mask(slow))
-                ]
-            );
-        }
-    }
-    #[test]
-    fn rotated_maps_keep_coupled_motor_targets_and_returns_do_not_add_disabled_axes() {
-        let p = Plan {
-            workflow: Workflow::Srkr2d,
-            fast: Axis::U,
-            slow: Axis::V,
-            ..Default::default()
-        };
-        let target = [None, Some(10.), Some(20.)];
-        let moves = scan_moves(&p, target, true, true);
-        assert_eq!(moves.len(), 1);
-        assert_eq!(moves[0].target, target);
-        assert_eq!(return_moves(&p, target), vec![target]);
-        let p = Plan {
-            fast: Axis::X,
-            slow: Axis::Y,
-            ..p
-        };
-        assert_eq!(
-            return_moves(&p, [None, None, Some(20.)]),
-            vec![[None, None, Some(20.)]]
-        );
-    }
-    #[test]
-    fn standalone_move_defaults_to_spatial_compensation_with_explicit_opt_out() {
-        let mut value = serde_json::json!({
-            "command": "move", "config": config(),
-            "targets": [null, 20., null], "coordinate": "measurement", "zero": [0., 0., 0.]
-        });
-        let command: Command = serde_json::from_value(value.clone()).unwrap();
-        assert!(
-            matches!(command, Command::Move { approach, .. } if approach == [false, true, true])
-        );
-        value["approach"] = serde_json::json!([false, false, false]);
-        let command: Command = serde_json::from_value(value).unwrap();
-        assert!(matches!(command, Command::Move { approach, .. } if approach == [false; 3]));
-    }
-    #[test]
-    fn all_scan_entries_compensate_their_active_spatial_axes() {
-        let mut cases = vec![(Workflow::Trkr, Axis::T, Axis::X)];
-        for spatial in [Axis::X, Axis::Y, Axis::U, Axis::V] {
-            cases.push((Workflow::Srkr, spatial, Axis::T));
-            cases.push((Workflow::Strkr, spatial, Axis::T));
-            cases.push((Workflow::Strkr, Axis::T, spatial));
-        }
-        for (fast, slow) in [
-            (Axis::X, Axis::Y),
-            (Axis::Y, Axis::X),
-            (Axis::U, Axis::V),
-            (Axis::V, Axis::U),
-        ] {
-            cases.push((Workflow::Srkr2d, fast, slow));
-        }
-        for (workflow, fast, slow) in cases {
-            let plan = Plan {
-                workflow,
-                fast,
-                slow,
-                ..Default::default()
-            };
-            let mut compensated = [false; 3];
-            for movement in scan_moves(&plan, [Some(1.), Some(2.), Some(3.)], true, true) {
-                for (i, applied) in movement.approach.into_iter().enumerate() {
-                    assert!(!applied || movement.target[i].is_some());
-                    compensated[i] |= applied;
-                }
-            }
-            let expected = std::array::from_fn(|i| i > 0 && active_axes(&plan)[i]);
-            assert_eq!(compensated, expected, "{workflow:?}: {fast:?}/{slow:?}");
-            for movement in scan_moves(&plan, [Some(1.), Some(2.), Some(3.)], false, false) {
-                assert_eq!(movement.approach, [false; 3], "interior point {workflow:?}");
-            }
-        }
-    }
-    #[test]
-    fn old_initialize_commands_stay_nonmoving_unless_origin_move_is_explicit() {
-        let command: Command = serde_json::from_value(
-            serde_json::json!({"command":"initialize","config":config(),"axis":1,"home":false}),
-        )
-        .unwrap();
-        assert!(matches!(
-            command,
-            Command::Initialize {
-                home: false,
-                move_to_origin: false,
-                ..
-            }
-        ));
-    }
-    #[test]
-    fn spatial_lines_approach_each_scan_start_without_visiting_zero() {
-        for (fast, slow, workflow) in [
-            (Axis::X, Axis::Y, Workflow::Srkr2d),
-            (Axis::Y, Axis::X, Workflow::Srkr2d),
-            (Axis::U, Axis::V, Workflow::Srkr2d),
-            (Axis::V, Axis::U, Workflow::Srkr2d),
-            (Axis::X, Axis::T, Workflow::Strkr),
-            (Axis::U, Axis::T, Workflow::Strkr),
-        ] {
-            let plan = Plan {
-                workflow,
-                fast,
-                slow,
-                fast_range: trkr_core::Range {
-                    min: 10.,
-                    max: 30.,
-                    step: 10.,
-                },
-                slow_range: trkr_core::Range {
-                    min: 5.,
-                    max: 7.,
-                    step: 2.,
-                },
-                return_to_zero: [false; 2],
-                ..Default::default()
-            };
-            assert!(!reset_fast_before_slow(&plan));
-            let targets = plan.targets().unwrap();
-            let mut fast_approaches = 0;
-            for (index, target) in targets.iter().enumerate() {
-                let line_start = index % 3 == 0;
-                let moves = scan_moves(&plan, target.physical.map(Some), line_start, index == 0);
-                for movement in moves {
-                    if movement.axis == fast {
-                        assert_eq!(movement.approach.iter().any(|b| *b), line_start);
-                        fast_approaches += usize::from(line_start);
-                        assert_eq!(
-                            movement.target,
-                            masked(target.physical.map(Some), axis_mask(fast))
-                        );
-                    } else {
-                        assert_eq!(movement.axis, slow);
-                        assert!(line_start);
-                        assert_eq!(
-                            movement.approach.iter().any(|b| *b),
-                            index == 0 && slow != Axis::T
-                        );
-                    }
-                }
-            }
-            assert_eq!(fast_approaches, 2);
-            assert!(return_target(&plan, targets.last().unwrap()).is_none());
-        }
-    }
-    #[test]
-    fn reset_returns_only_fast_axis_to_first_scan_point() {
-        let p = Plan {
-            workflow: Workflow::Strkr,
-            fast: Axis::T,
-            slow: Axis::X,
-            fast_range: trkr_core::Range {
-                min: 50.,
-                max: 100.,
-                step: 25.,
-            },
-            ..Default::default()
-        };
-        let last = *p.targets().unwrap().last().unwrap();
-        assert!(reset_fast_before_slow(&p));
-        assert_eq!(line_reset(&p, &last), [Some(50.), None, None]);
-    }
-    #[test]
-    fn rotated_return_preserves_unreturned_virtual_axis() {
-        let p = Plan {
-            workflow: Workflow::Srkr2d,
-            fast: Axis::U,
-            slow: Axis::V,
-            theta_deg: 90.,
-            return_to_zero: [true, false],
-            ..Default::default()
-        };
-        let last = *p.targets().unwrap().last().unwrap();
-        let r = return_target(&p, &last).unwrap();
-        assert!((r[1].unwrap() + last.slow.unwrap()).abs() < 1e-9);
-        assert!(r[2].unwrap().abs() < 1e-9);
-    }
-    #[test]
-    fn nonzero_origin_is_added_once() {
-        let p = Plan {
-            workflow: Workflow::Trkr,
-            zero: [-122., 61., 477.],
-            ..Default::default()
-        };
-        let last = *p.targets().unwrap().last().unwrap();
-        let r = return_target(&p, &last).unwrap();
-        assert_eq!(r, [Some(0.), None, None]);
-        let physical: [Option<f64>; 3] = std::array::from_fn(|i| r[i].map(|v| v + p.zero[i]));
-        assert_eq!(physical, [Some(-122.), None, None]);
-    }
-    #[test]
-    fn metadata_collision_preserves_existing_data() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.csv");
-        let meta = path.with_extension("run.json");
-        std::fs::write(&meta, "existing").unwrap();
-        assert!(create_csv(&path, Source::Demo, &Plan::default()).is_err());
-        assert!(!path.exists());
-        assert_eq!(std::fs::read_to_string(meta).unwrap(), "existing");
-    }
-    #[test]
-    fn csv_float_preserves_python_repr_thresholds_sign_and_precision() {
-        for (value, expected) in [
-            (0., "0.0"),
-            (-0., "-0.0"),
-            (4., "4.0"),
-            (1e-4, "0.0001"),
-            (1e-5, "1e-05"),
-            (1e15, "1000000000000000.0"),
-            (1e16, "1e+16"),
-            (-1e20, "-1e+20"),
-            (1e-100, "1e-100"),
-            (1.0000000000000002, "1.0000000000000002"),
-        ] {
-            assert_eq!(csv_float(value), expected);
-        }
-    }
-    #[test]
-    fn monitor_retains_components_without_inventing_positions() {
-        let p = Plan::default();
-        let sample = Sample {
-            elapsed: 1.,
-            target: p.targets().unwrap()[0],
-            signal: Signal::new(1., 2., 3., 4.).unwrap(),
-            position: Position::default(),
-        };
-        let r = row(&p, &sample).unwrap();
-        let get = |k| &r[FIELDS.iter().position(|&v| v == k).unwrap()];
-        assert_eq!(get("Theta_deg"), "4.0"); // Python CSV float representation.
-        assert!(get("t_ps").is_empty());
-    }
-    #[test]
-    fn manual_motion_phase_names_only_the_commanded_axes() {
-        assert_eq!(motion_phase("Moving", [None, None, Some(1.)]), "Moving y");
-        assert_eq!(
-            motion_phase("Moving", [None, Some(1.), Some(2.)]),
-            "Moving x/y"
-        );
-        assert_eq!(
-            motion_phase("Initializing", [Some(0.), None, None]),
-            "Initializing t"
-        );
-    }
-    #[test]
-    fn scan_progress_preserves_point_order_and_reports_each_phase() {
-        for workflow in [
-            Workflow::Trkr,
-            Workflow::Srkr,
-            Workflow::Strkr,
-            Workflow::Srkr2d,
-        ] {
-            let plan = Plan {
-                workflow,
-                fast: if matches!(workflow, Workflow::Trkr | Workflow::Strkr) {
-                    Axis::T
-                } else {
-                    Axis::X
-                },
-                slow: Axis::Y,
-                fast_range: trkr_core::Range {
-                    min: 0.,
-                    max: 1.,
-                    step: 1.,
-                },
-                slow_range: trkr_core::Range {
-                    min: 0.,
-                    max: 1.,
-                    step: 1.,
-                },
-                interval_s: 0.,
-                ..Default::default()
-            };
-            let targets = plan.targets().unwrap();
-            let c = controller();
-            c.send(Command::Run {
-                source: Source::Demo,
-                config: config(),
-                plan,
-                output: None,
-            })
-            .unwrap();
-            let mut phases = Vec::new();
-            let mut samples = Vec::new();
-            loop {
-                match c.events.recv_timeout(Duration::from_secs(5)).unwrap() {
-                    Event::Phase(phase) => phases.push(phase),
-                    Event::Sample(sample) => samples.push(sample),
-                    Event::Finished(result) => {
-                        assert_eq!(result.unwrap().0, targets.len());
-                        break;
-                    }
-                    Event::Error(error) => panic!("{error}"),
-                    _ => {}
-                }
-            }
-            assert_eq!(samples.len(), targets.len());
-            assert_eq!(phases.len(), 3 * targets.len());
-            for (index, phases) in phases.as_chunks::<3>().0.iter().enumerate() {
-                assert!(phases[0].starts_with("Moving "));
-                assert_eq!(phases[1], "Waiting");
-                assert_eq!(phases[2], "Reading");
-                assert_eq!(samples[index].target, targets[index]);
-            }
-        }
-    }
-    #[test]
-    fn cancelling_wait_does_not_read_or_add_a_sample() {
-        let c = controller();
-        c.send(Command::Run {
-            source: Source::Demo,
-            config: config(),
-            plan: Plan {
-                workflow: Workflow::Trkr,
-                interval_s: 5.,
-                n_points: 2,
-                ..Default::default()
-            },
-            output: None,
-        })
-        .unwrap();
-        loop {
-            if matches!(c.events.recv_timeout(Duration::from_secs(5)).unwrap(), Event::Phase(ref phase) if phase == "Waiting")
-            {
-                break;
-            }
-        }
-        c.stop();
-        loop {
-            match c.events.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Event::Sample(_) => panic!("Cancelled wait must not create a sample"),
-                Event::Phase(phase) => assert_ne!(phase, "Reading"),
-                Event::Finished(result) => {
-                    assert_eq!(result.unwrap().0, 0);
-                    break;
-                }
-                _ => {}
-            }
-        }
-    }
-    #[test]
-    fn controller_demo_saves_and_cancellation_is_terminal() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("run.csv");
-        let c = controller();
-        let plan = Plan {
-            interval_s: 0.,
-            n_points: 5,
-            ..Default::default()
-        };
-        c.send(Command::Run {
-            source: Source::Demo,
-            config: config(),
-            plan,
-            output: Some(path.clone()),
-        })
-        .unwrap();
-        loop {
-            if let Event::Finished(result) = c.events.recv_timeout(Duration::from_secs(5)).unwrap()
-            {
-                assert_eq!(result.unwrap().0, 5);
-                break;
-            }
-        }
-        let meta: Value =
-            serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap())
-                .unwrap();
-        assert_eq!(meta["status"], "complete");
-        assert_eq!(csv::Reader::from_path(&path).unwrap().records().count(), 5);
-        let plan = Plan {
-            interval_s: 1.,
-            n_points: 100,
-            ..Default::default()
-        };
-        c.send(Command::Run {
-            source: Source::Demo,
-            config: config(),
-            plan,
-            output: None,
-        })
-        .unwrap();
-        c.stop();
-        loop {
-            if let Event::Finished(result) = c.events.recv_timeout(Duration::from_secs(5)).unwrap()
-            {
-                assert!(result.unwrap().0 < 100);
-                break;
-            }
-        }
-    }
-    #[test]
-    fn read_only_controller_rejects_demo_runs_before_output_is_created() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("must-not-exist.csv");
-        let controller = controller_read_only();
-        let error = controller
-            .send(Command::Run {
-                source: Source::Demo,
-                config: config(),
-                plan: Plan::default(),
-                output: Some(output.clone()),
-            })
-            .unwrap_err();
-        assert!(error.contains("read-only"));
-        assert!(!output.exists());
-        assert!(!output.with_extension("run.json").exists());
-    }
-
-    #[test]
-    fn read_only_controller_allows_only_stop_and_shutdown() {
-        let controller = controller_read_only();
-        assert!(
-            controller
-                .send(Command::Connect {
-                    config: config(),
-                    devices: vec![Device::Lockin],
-                })
-                .is_err()
-        );
-        assert!(controller.send(Command::Read).is_err());
-        assert!(controller.send(Command::LockinSettings).is_err());
-        assert!(controller.send(Command::Stop).is_ok());
-        assert!(controller.send(Command::Shutdown).is_ok());
-    }
-    #[test]
-    fn actual_readback_is_exported_with_raw_values() {
-        let p = Plan {
-            workflow: Workflow::Trkr,
-            zero: [-122., 0., 0.],
-            ..Default::default()
-        };
-        let sample = Sample {
-            elapsed: 0.,
-            target: p.targets().unwrap()[0],
-            signal: Signal::default(),
-            position: Position {
-                physical: [Some(-171.99), None, None],
-                delay_stage_mm: Some(275.),
-                delay_stage_pulse: Some(1234),
-                ..Default::default()
-            },
-        };
-        let r = row(&p, &sample).unwrap();
-        let get = |k| &r[FIELDS.iter().position(|&v| v == k).unwrap()];
-        assert_eq!(get("t_ps"), "-171.99");
-        assert_eq!(get("delay_stage_pulse"), "1234");
-        assert!(get("x_um").is_empty());
-    }
-}
+#[path = "engine/tests.rs"]
+mod tests;

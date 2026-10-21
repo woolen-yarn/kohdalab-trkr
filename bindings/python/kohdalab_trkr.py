@@ -18,6 +18,13 @@ from typing import Any, Iterator
 
 _PLATFORM = sys.platform
 
+# Revision 1 denotes the existing unversioned contracts. These constants are
+# informational: commands, events, profiles, CSV, and metadata keep their
+# established shapes until an explicitly selected future revision is added.
+PROFILE_COMPATIBILITY_REVISION = 1
+JSON_LINES_API_REVISION = 1
+RECORDING_COMPATIBILITY_REVISION = 1
+
 
 def _roots(search_from: str | Path | None = None) -> list[Path]:
     root = Path.cwd() if search_from is None else Path(search_from).expanduser()

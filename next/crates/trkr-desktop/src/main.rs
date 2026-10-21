@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod axis_choices;
+#[cfg(test)]
+mod compatibility;
 mod config;
 mod engine;
 mod file_dialog;
@@ -173,10 +175,7 @@ fn stdio() -> Result<(), String> {
                 Ok(_) => {
                     let parsed = String::from_utf8(bytes)
                         .map_err(|_| "JSON command must be UTF-8".into())
-                        .and_then(|line| {
-                            serde_json::from_str(line.trim())
-                                .map_err(|e| format!("Invalid JSON command: {e}"))
-                        });
+                        .and_then(|line| decode_command(line.trim()));
                     if tx.send(parsed).is_err() {
                         break;
                     }
@@ -217,6 +216,10 @@ fn stdio() -> Result<(), String> {
         emit(&mut out, &event)?
     }
     Ok(())
+}
+/// Decode one revision-1 JSON-lines command without changing the wire shape.
+fn decode_command(line: &str) -> Result<engine::Command, String> {
+    serde_json::from_str(line).map_err(|error| format!("Invalid JSON command: {error}"))
 }
 fn emit(out: &mut impl Write, event: &engine::Event) -> Result<(), String> {
     serde_json::to_writer(&mut *out, event).map_err(|e| e.to_string())?;
@@ -310,4 +313,85 @@ fn app_icon() -> Arc<eframe::egui::IconData> {
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
             .expect("embedded TRKR icon"),
     )
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn revision_one_command_and_rejection_wire_shapes_are_stable() {
+        assert_eq!(compatibility::JSON_LINES_API_REVISION, 1);
+        assert_eq!(compatibility::PROFILE_REVISION, 1);
+        assert_eq!(compatibility::RECORDING_REVISION, 1);
+        assert_eq!(
+            engine::FIELDS,
+            &[
+                "timestamp",
+                "measurement",
+                "fast_axis",
+                "slow_axis",
+                "target_elapsed_s",
+                "target_t_cor_ps",
+                "target_x_cor_um",
+                "target_y_cor_um",
+                "target_u_cor_um",
+                "target_v_cor_um",
+                "elapsed_s",
+                "acquisition_elapsed_s",
+                "t_cor_ps",
+                "t_ps",
+                "x_cor_um",
+                "x_um",
+                "y_cor_um",
+                "y_um",
+                "u_cor_um",
+                "v_cor_um",
+                "X_V",
+                "Y_V",
+                "R_V",
+                "Theta_deg",
+                "spatial_theta_deg",
+                "coordinate",
+                "delay_stage_mm",
+                "delay_stage_pulse",
+                "x_scanner_mm",
+                "x_scanner_deg",
+                "y_scanner_mm",
+                "y_scanner_deg",
+            ]
+        );
+        let command = decode_command(r#"{"command":"stop"}"#).unwrap();
+        assert!(matches!(command, engine::Command::Stop));
+        let config = serde_json::to_value(config::Settings::default().hardware().unwrap()).unwrap();
+        let command = decode_command(
+            &serde_json::json!({
+                "command": "move",
+                "config": config,
+                "targets": [null, 1.0, null],
+                "coordinate": "measurement",
+                "zero": [0.0, 0.0, 0.0]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            command,
+            engine::Command::Move {
+                approach: [false, true, true],
+                ..
+            }
+        ));
+        assert_eq!(
+            decode_command("not json").unwrap_err(),
+            "Invalid JSON command: expected ident at line 1 column 2"
+        );
+
+        let mut output = Vec::new();
+        emit_rejected(&mut output, "contract error".into()).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"data\":\"contract error\",\"event\":\"rejected\"}\n"
+        );
+    }
 }
