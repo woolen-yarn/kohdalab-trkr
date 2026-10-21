@@ -9,15 +9,87 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const VISA_LIST_TIMEOUT: Duration = Duration::from_secs(8);
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_FRAME: usize = 256 * 1024;
 const MAX_PAYLOAD: usize = 128 * 1024;
+
+/// Fixed transport failures.  This remains private because callers retain the
+/// established `Result<_, String>` interface, while keeping each failure
+/// category explicit inside the process boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransportError {
+    NativeHelperNotFound,
+    VisaHelperNotFound,
+    HelperStdinUnavailable,
+    HelperStdoutUnavailable,
+    HelperFrameExceededSizeLimit,
+    ReadCancelled,
+    ReadCancelledReconnect,
+    SessionFailed,
+    CommandTooLong,
+    ResponseTimedOut,
+    HelperExited,
+    VisaHelperStdoutUnavailable,
+    VisaDiscoveryNoBoundedFrame,
+    VisaDiscoveryTimedOut,
+    VisaDiscoveryExited,
+    InvalidVisaResourceList,
+    InvalidAddress,
+    InvalidHexPayload,
+    MalformedHelperFrame,
+    MalformedHelperStatus,
+    MalformedHelperPayload,
+}
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NativeHelperNotFound => {
+                "KohdaLab GPIB helper was not found; set KOHDALAB_TRKR_HELPER_DIR"
+            }
+            Self::VisaHelperNotFound => {
+                "Official VISA helper was not found; GPIB Refresh requires kohdalab-visa-helper"
+            }
+            Self::HelperStdinUnavailable => "GPIB helper stdin was unavailable",
+            Self::HelperStdoutUnavailable => "GPIB helper stdout was unavailable",
+            Self::HelperFrameExceededSizeLimit => "GPIB helper frame exceeded size limit",
+            Self::ReadCancelled => "GPIB read cancelled",
+            Self::ReadCancelledReconnect => "GPIB read cancelled; reconnect the lock-in",
+            Self::SessionFailed => "GPIB session has failed; reconnect before further I/O",
+            Self::CommandTooLong => "GPIB command exceeds 4096-byte limit",
+            Self::ResponseTimedOut => "GPIB helper response timed out",
+            Self::HelperExited => "GPIB helper exited unexpectedly",
+            Self::VisaHelperStdoutUnavailable => "Official VISA helper stdout was unavailable",
+            Self::VisaDiscoveryNoBoundedFrame => {
+                "Official VISA helper discovery returned no bounded KIV frame"
+            }
+            Self::VisaDiscoveryTimedOut => "Official VISA helper discovery timed out",
+            Self::VisaDiscoveryExited => "Official VISA helper discovery exited unexpectedly",
+            Self::InvalidVisaResourceList => {
+                "Official VISA helper returned an invalid resource list"
+            }
+            Self::InvalidAddress => "GPIB address must be between 1 and 30",
+            Self::InvalidHexPayload => "Invalid GPIB helper hex payload",
+            Self::MalformedHelperFrame => "Malformed GPIB helper frame",
+            Self::MalformedHelperStatus => "Malformed GPIB helper status",
+            Self::MalformedHelperPayload => "Malformed GPIB helper payload",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl From<TransportError> for String {
+    fn from(error: TransportError) -> Self {
+        error.to_string()
+    }
+}
 
 pub struct Gpib {
     child: Child,
@@ -81,9 +153,7 @@ impl Gpib {
                 ));
             }
         }
-        let native = native.ok_or_else(|| {
-            "KohdaLab GPIB helper was not found; set KOHDALAB_TRKR_HELPER_DIR".to_owned()
-        })?;
+        let native = native.ok_or_else(|| String::from(TransportError::NativeHelperNotFound))?;
         Self::open(native, address)
     }
 
@@ -108,11 +178,11 @@ impl Gpib {
             .map_err(|e| format!("Start GPIB helper: {e}"))?;
         let input = child.stdin.take().ok_or_else(|| {
             let _ = child.kill();
-            "GPIB helper stdin was unavailable".to_owned()
+            String::from(TransportError::HelperStdinUnavailable)
         })?;
         let output = child.stdout.take().ok_or_else(|| {
             let _ = child.kill();
-            "GPIB helper stdout was unavailable".to_owned()
+            String::from(TransportError::HelperStdoutUnavailable)
         })?;
         let (sender, lines): (SyncSender<Result<String, String>>, Receiver<_>) =
             mpsc::sync_channel(4);
@@ -133,7 +203,8 @@ impl Gpib {
                         }
                     }
                     Ok(_) => {
-                        let _ = sender.send(Err("GPIB helper frame exceeded size limit".into()));
+                        let _ =
+                            sender.send(Err(TransportError::HelperFrameExceededSizeLimit.into()));
                         break;
                     }
                     Err(e) => {
@@ -169,12 +240,45 @@ impl Gpib {
         String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
     }
 
+    /// Cancels an outstanding helper response promptly. An interrupted wire
+    /// transaction invalidates the session so a late reply cannot be reused.
+    pub fn write_cancellable(&mut self, command: &str, cancel: &AtomicBool) -> Result<(), String> {
+        self.request_cancellable("WRITE", command.as_bytes(), Some(cancel))
+            .map(|_| ())
+    }
+    pub fn query_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        let bytes = self.request_cancellable("QUERY", command.as_bytes(), Some(cancel))?;
+        String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
+    }
+    /// Prevent further I/O when an interrupted device protocol left state uncertain.
+    pub fn invalidate(&mut self) {
+        self.poisoned = true;
+        let _ = self.child.kill();
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
     fn request(&mut self, operation: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.request_cancellable(operation, payload, None)
+    }
+    fn request_cancellable(
+        &mut self,
+        operation: &str,
+        payload: &[u8],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+            return Err(TransportError::ReadCancelled.into());
+        }
         if self.poisoned {
-            return Err("GPIB session has failed; reconnect before further I/O".into());
+            return Err(TransportError::SessionFailed.into());
         }
         if payload.len() > 4096 {
-            return Err("GPIB command exceeds 4096-byte limit".into());
+            return Err(TransportError::CommandTooLong.into());
         }
         let frame = format!(
             "{operation} {} 10000 {}\n",
@@ -188,7 +292,7 @@ impl Gpib {
             self.input
                 .flush()
                 .map_err(|e| format!("Flush GPIB helper: {e}"))?;
-            let line = self.receive(COMMAND_TIMEOUT)?;
+            let line = self.receive_cancellable(COMMAND_TIMEOUT, cancel)?;
             parse_frame(&line).map(|(status, data)| (status.to_owned(), data))
         })();
         let (status, data) = match result {
@@ -214,10 +318,34 @@ impl Gpib {
     }
 
     fn receive(&self, timeout: Duration) -> Result<String, String> {
-        match self.lines.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err("GPIB helper response timed out".into()),
-            Err(RecvTimeoutError::Disconnected) => Err("GPIB helper exited unexpectedly".into()),
+        self.receive_cancellable(timeout, None)
+    }
+    fn receive_cancellable(
+        &self,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(TransportError::ReadCancelledReconnect.into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TransportError::ResponseTimedOut.into());
+            }
+            let slice = if cancel.is_some() {
+                remaining.min(Duration::from_millis(20))
+            } else {
+                remaining
+            };
+            match self.lines.recv_timeout(slice) {
+                Ok(result) => return result,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(TransportError::HelperExited.into());
+                }
+            }
         }
     }
 }
@@ -247,7 +375,7 @@ impl Drop for Gpib {
 pub fn find_helper() -> Result<PathBuf, String> {
     helper_paths()
         .0
-        .ok_or_else(|| "KohdaLab GPIB helper was not found; set KOHDALAB_TRKR_HELPER_DIR".into())
+        .ok_or_else(|| TransportError::NativeHelperNotFound.into())
 }
 
 /// Lists only VISA-reported GPIB resources.  This intentionally does not
@@ -255,9 +383,7 @@ pub fn find_helper() -> Result<PathBuf, String> {
 /// a shared GPIB bus.
 pub fn available_gpib_resources() -> Result<Vec<String>, String> {
     let (_, visa) = helper_paths();
-    let visa = visa.ok_or_else(|| {
-        "Official VISA helper was not found; GPIB Refresh requires kohdalab-visa-helper".to_owned()
-    })?;
+    let visa = visa.ok_or_else(|| String::from(TransportError::VisaHelperNotFound))?;
     let mut resources = visa_resources(&visa)?
         .into_iter()
         .filter(|resource| is_gpib_resource(resource))
@@ -317,7 +443,7 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
     let output = child
         .stdout
         .take()
-        .ok_or_else(|| "Official VISA helper stdout was unavailable".to_owned())?;
+        .ok_or_else(|| String::from(TransportError::VisaHelperStdoutUnavailable))?;
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
         let mut reader = BufReader::new(output);
@@ -330,7 +456,7 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
             Ok(n) if n > 0 && n <= MAX_FRAME && line.last() == Some(&b'\n') => {
                 Ok(String::from_utf8_lossy(&line[..n - 1]).into_owned())
             }
-            Ok(_) => Err("Official VISA helper discovery returned no bounded KIV frame".into()),
+            Ok(_) => Err(TransportError::VisaDiscoveryNoBoundedFrame.into()),
             Err(e) => Err(format!("Read official VISA helper discovery: {e}")),
         };
         let _ = sender.send(reply);
@@ -340,12 +466,12 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
         Err(RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Official VISA helper discovery timed out".into());
+            return Err(TransportError::VisaDiscoveryTimedOut.into());
         }
         Err(RecvTimeoutError::Disconnected) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err("Official VISA helper discovery exited unexpectedly".into());
+            return Err(TransportError::VisaDiscoveryExited.into());
         }
     };
     // --list has no further useful output.  Killing after the first complete
@@ -366,7 +492,7 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
     for row in listing.lines() {
         let resource = row.split('\t').next().unwrap_or_default();
         if resource.is_empty() || !resource.is_ascii() || resource.len() > 255 {
-            return Err("Official VISA helper returned an invalid resource list".into());
+            return Err(TransportError::InvalidVisaResourceList.into());
         }
         resources.push(resource.to_owned());
     }
@@ -427,7 +553,7 @@ fn validate_address(address: u8) -> Result<(), String> {
     if (1..=30).contains(&address) {
         Ok(())
     } else {
-        Err("GPIB address must be between 1 and 30".into())
+        Err(TransportError::InvalidAddress.into())
     }
 }
 
@@ -444,16 +570,16 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
         return Ok(Vec::new());
     }
     if !value.is_ascii() {
-        return Err("Invalid GPIB helper hex payload".into());
+        return Err(TransportError::InvalidHexPayload.into());
     }
     if value.len() % 2 != 0 || value.len() > MAX_PAYLOAD * 2 {
-        return Err("Invalid GPIB helper hex payload".into());
+        return Err(TransportError::InvalidHexPayload.into());
     }
     (0..value.len())
         .step_by(2)
         .map(|i| {
             u8::from_str_radix(&value[i..i + 2], 16)
-                .map_err(|_| "Invalid GPIB helper hex payload".into())
+                .map_err(|_| String::from(TransportError::InvalidHexPayload))
         })
         .collect()
 }
@@ -461,12 +587,16 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 fn parse_frame(frame: &str) -> Result<(&str, Vec<u8>), String> {
     let mut fields = frame.split('\t');
     if fields.next() != Some("KIV") {
-        return Err("Malformed GPIB helper frame".into());
+        return Err(TransportError::MalformedHelperFrame.into());
     }
-    let status = fields.next().ok_or("Malformed GPIB helper status")?;
-    let payload = fields.next().ok_or("Malformed GPIB helper payload")?;
+    let status = fields
+        .next()
+        .ok_or_else(|| String::from(TransportError::MalformedHelperStatus))?;
+    let payload = fields
+        .next()
+        .ok_or_else(|| String::from(TransportError::MalformedHelperPayload))?;
     if fields.next().is_some() {
-        return Err("Malformed GPIB helper frame".into());
+        return Err(TransportError::MalformedHelperFrame.into());
     }
     Ok((status, decode_hex(payload)?))
 }
@@ -480,6 +610,67 @@ mod tests {
     fn executable(path: &Path, source: &str) {
         std::fs::write(path, source).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn stalled_query_is_cancelled_promptly_and_late_replies_cannot_be_reused() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("stalled-helper.sh");
+        let marker = dir.path().join("query-started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf started > '{}'\nwhile IFS= read -r line; do :; done\n",
+                marker.display()
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let token = cancel.clone();
+        let stopped = stopped_at.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "query never started");
+                thread::sleep(Duration::from_millis(5));
+            }
+            *stopped.lock().unwrap() = Some(Instant::now());
+            token.store(true, Ordering::Release);
+        });
+        let error = gpib.query_cancellable("XY.\r", &cancel).unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(stopped_at.lock().unwrap().unwrap().elapsed() < Duration::from_secs(1));
+        assert!(gpib.is_poisoned());
+        assert!(gpib.query("XY.\r").unwrap_err().contains("reconnect"));
+    }
+
+    #[test]
+    fn cancellation_before_io_preserves_a_healthy_session() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do printf 'KIV\\tOK\\t-\\n'; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = AtomicBool::new(true);
+        assert!(
+            gpib.query_cancellable("XY.\r", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            gpib.write_cancellable("DDEF 1,0\n", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(!gpib.is_poisoned());
+        cancel.store(false, Ordering::Release);
+        gpib.write_cancellable("DDEF 1,0\n", &cancel).unwrap();
     }
 
     #[test]
@@ -507,6 +698,55 @@ mod tests {
     }
 
     #[test]
+    fn fixed_transport_error_messages_preserve_the_public_contract() {
+        for (error, message) in [
+            (TransportError::ReadCancelled, "GPIB read cancelled"),
+            (
+                TransportError::ReadCancelledReconnect,
+                "GPIB read cancelled; reconnect the lock-in",
+            ),
+            (
+                TransportError::SessionFailed,
+                "GPIB session has failed; reconnect before further I/O",
+            ),
+            (
+                TransportError::CommandTooLong,
+                "GPIB command exceeds 4096-byte limit",
+            ),
+            (
+                TransportError::ResponseTimedOut,
+                "GPIB helper response timed out",
+            ),
+            (
+                TransportError::HelperExited,
+                "GPIB helper exited unexpectedly",
+            ),
+            (
+                TransportError::HelperFrameExceededSizeLimit,
+                "GPIB helper frame exceeded size limit",
+            ),
+            (
+                TransportError::InvalidHexPayload,
+                "Invalid GPIB helper hex payload",
+            ),
+            (
+                TransportError::MalformedHelperFrame,
+                "Malformed GPIB helper frame",
+            ),
+            (
+                TransportError::MalformedHelperStatus,
+                "Malformed GPIB helper status",
+            ),
+            (
+                TransportError::MalformedHelperPayload,
+                "Malformed GPIB helper payload",
+            ),
+        ] {
+            assert_eq!(String::from(error), message);
+        }
+    }
+
+    #[test]
     fn malformed_reply_poisons_helper() {
         let _guard = TEST_LEASE.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -516,8 +756,15 @@ mod tests {
             "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf 'garbage\\n'\nsleep 5\n",
         );
         let mut gpib = Gpib::open(&helper, 7).unwrap();
-        assert!(gpib.query("READ?").is_err());
+        assert_eq!(
+            gpib.query("READ?").unwrap_err(),
+            "Malformed GPIB helper frame"
+        );
         assert!(gpib.poisoned);
+        assert_eq!(
+            gpib.query("READ?").unwrap_err(),
+            "GPIB session has failed; reconnect before further I/O"
+        );
     }
 
     #[test]

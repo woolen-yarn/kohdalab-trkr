@@ -99,6 +99,141 @@ pub enum Workflow {
     Srkr2d,
 }
 
+/// Static properties and allowed axes for one measurement workflow.
+///
+/// This is the shared contract for frontends and execution validation.  The
+/// values deliberately describe existing workflow behaviour; adding a new
+/// workflow requires extending this table and its enum mapping together.
+#[derive(Clone, Copy, Debug)]
+pub struct WorkflowDefinition {
+    pub index: usize,
+    pub name: &'static str,
+    pub key: &'static str,
+    pub is_2d: bool,
+    pub default_filename: &'static str,
+    pub plot_count: usize,
+    pub fast_options: &'static [Axis],
+    slow_options: fn(Axis) -> &'static [Axis],
+    valid_pair: fn(Axis, Axis) -> bool,
+}
+
+const AXES_ALL: [Axis; 5] = [Axis::T, Axis::X, Axis::Y, Axis::U, Axis::V];
+const AXES_SPATIAL: [Axis; 4] = [Axis::X, Axis::Y, Axis::U, Axis::V];
+const AXES_ONLY_T: [Axis; 1] = [Axis::T];
+const AXES_ONLY_X: [Axis; 1] = [Axis::X];
+const AXES_ONLY_Y: [Axis; 1] = [Axis::Y];
+const AXES_ONLY_U: [Axis; 1] = [Axis::U];
+const AXES_ONLY_V: [Axis; 1] = [Axis::V];
+
+fn no_slow_options(_: Axis) -> &'static [Axis] {
+    &[]
+}
+
+fn strkr_slow_options(fast: Axis) -> &'static [Axis] {
+    if fast == Axis::T {
+        &AXES_SPATIAL
+    } else {
+        &AXES_ONLY_T
+    }
+}
+
+fn srkr_2d_slow_options(fast: Axis) -> &'static [Axis] {
+    match fast {
+        Axis::X => &AXES_ONLY_Y,
+        Axis::Y => &AXES_ONLY_X,
+        Axis::U => &AXES_ONLY_V,
+        Axis::V => &AXES_ONLY_U,
+        Axis::T => &[],
+    }
+}
+
+fn monitor_valid_pair(_: Axis, _: Axis) -> bool {
+    true
+}
+
+fn trkr_valid_pair(fast: Axis, _: Axis) -> bool {
+    fast == Axis::T
+}
+
+fn srkr_valid_pair(fast: Axis, _: Axis) -> bool {
+    fast != Axis::T
+}
+
+fn strkr_valid_pair(fast: Axis, slow: Axis) -> bool {
+    (fast == Axis::T) != (slow == Axis::T)
+}
+
+fn srkr_2d_valid_pair(fast: Axis, slow: Axis) -> bool {
+    srkr_2d_slow_options(fast).contains(&slow)
+}
+
+const WORKFLOW_DEFINITIONS: [WorkflowDefinition; 5] = [
+    WorkflowDefinition {
+        index: 0,
+        name: "Signal Monitor",
+        key: "signal_monitor",
+        is_2d: false,
+        default_filename: "signal_monitor_run",
+        plot_count: 2,
+        fast_options: &AXES_ONLY_T,
+        slow_options: no_slow_options,
+        valid_pair: monitor_valid_pair,
+    },
+    WorkflowDefinition {
+        index: 1,
+        name: "TRKR",
+        key: "trkr",
+        is_2d: false,
+        default_filename: "trkr_run",
+        plot_count: 2,
+        fast_options: &AXES_ONLY_T,
+        slow_options: no_slow_options,
+        valid_pair: trkr_valid_pair,
+    },
+    WorkflowDefinition {
+        index: 2,
+        name: "SRKR",
+        key: "srkr",
+        is_2d: false,
+        default_filename: "srkr_run",
+        plot_count: 4,
+        fast_options: &AXES_SPATIAL,
+        slow_options: no_slow_options,
+        valid_pair: srkr_valid_pair,
+    },
+    WorkflowDefinition {
+        index: 3,
+        name: "STRKR",
+        key: "strkr",
+        is_2d: true,
+        default_filename: "strkr_run",
+        plot_count: 4,
+        fast_options: &AXES_ALL,
+        slow_options: strkr_slow_options,
+        valid_pair: strkr_valid_pair,
+    },
+    WorkflowDefinition {
+        index: 4,
+        name: "SRKR 2D",
+        key: "srkr_2d",
+        is_2d: true,
+        default_filename: "srkr_2d_run",
+        plot_count: 4,
+        fast_options: &AXES_SPATIAL,
+        slow_options: srkr_2d_slow_options,
+        valid_pair: srkr_2d_valid_pair,
+    },
+];
+
+impl WorkflowDefinition {
+    pub fn slow_options(self, fast: Axis) -> &'static [Axis] {
+        (self.slow_options)(fast)
+    }
+    pub fn valid_pair(self, fast: Axis, slow: Axis) -> bool {
+        (self.valid_pair)(fast, slow)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Coordinate {
@@ -117,26 +252,41 @@ impl Workflow {
         Self::Strkr,
         Self::Srkr2d,
     ];
-    pub fn name(self) -> &'static str {
+    pub fn descriptor(self) -> &'static WorkflowDefinition {
         match self {
-            Self::SignalMonitor => "Signal Monitor",
-            Self::Trkr => "TRKR",
-            Self::Srkr => "SRKR",
-            Self::Strkr => "STRKR",
-            Self::Srkr2d => "SRKR 2D",
+            Self::SignalMonitor => &WORKFLOW_DEFINITIONS[0],
+            Self::Trkr => &WORKFLOW_DEFINITIONS[1],
+            Self::Srkr => &WORKFLOW_DEFINITIONS[2],
+            Self::Strkr => &WORKFLOW_DEFINITIONS[3],
+            Self::Srkr2d => &WORKFLOW_DEFINITIONS[4],
         }
+    }
+    pub fn index(self) -> usize {
+        self.descriptor().index
+    }
+    pub fn name(self) -> &'static str {
+        self.descriptor().name
     }
     pub fn key(self) -> &'static str {
-        match self {
-            Self::SignalMonitor => "signal_monitor",
-            Self::Trkr => "trkr",
-            Self::Srkr => "srkr",
-            Self::Strkr => "strkr",
-            Self::Srkr2d => "srkr_2d",
-        }
+        self.descriptor().key
     }
     pub fn is_2d(self) -> bool {
-        matches!(self, Self::Strkr | Self::Srkr2d)
+        self.descriptor().is_2d
+    }
+    pub fn default_filename(self) -> &'static str {
+        self.descriptor().default_filename
+    }
+    pub fn fast_options(self) -> &'static [Axis] {
+        self.descriptor().fast_options
+    }
+    pub fn slow_options(self, fast: Axis) -> &'static [Axis] {
+        self.descriptor().slow_options(fast)
+    }
+    pub fn valid_pair(self, fast: Axis, slow: Axis) -> bool {
+        self.descriptor().valid_pair(fast, slow)
+    }
+    pub fn plot_count(self) -> usize {
+        self.descriptor().plot_count
     }
 }
 
@@ -274,16 +424,10 @@ impl Plan {
                     return Err("Fast and slow axes must differ".into());
                 }
                 if self.workflow == Workflow::Strkr {
-                    if (self.fast == Axis::T) == (self.slow == Axis::T) {
+                    if !self.workflow.valid_pair(self.fast, self.slow) {
                         return Err("STRKR combines t with a spatial axis".into());
                     }
-                } else if !matches!(
-                    (self.fast, self.slow),
-                    (Axis::X, Axis::Y)
-                        | (Axis::Y, Axis::X)
-                        | (Axis::U, Axis::V)
-                        | (Axis::V, Axis::U)
-                ) {
+                } else if !self.workflow.valid_pair(self.fast, self.slow) {
                     return Err("SRKR 2D requires x/y or u/v".into());
                 }
                 (
@@ -352,6 +496,76 @@ pub fn rotated_to_xy(u: f64, v: f64, theta_deg: f64) -> (f64, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_definitions_preserve_existing_contract() {
+        let expected = [
+            (
+                "Signal Monitor",
+                "signal_monitor",
+                false,
+                "signal_monitor_run",
+                2,
+            ),
+            ("TRKR", "trkr", false, "trkr_run", 2),
+            ("SRKR", "srkr", false, "srkr_run", 4),
+            ("STRKR", "strkr", true, "strkr_run", 4),
+            ("SRKR 2D", "srkr_2d", true, "srkr_2d_run", 4),
+        ];
+        for (index, workflow) in Workflow::ALL.into_iter().enumerate() {
+            let definition = workflow.descriptor();
+            let (name, key, is_2d, filename, plot_count) = expected[index];
+            assert_eq!(definition.index, index);
+            assert_eq!(workflow.index(), index);
+            assert_eq!(workflow.name(), name);
+            assert_eq!(workflow.key(), key);
+            assert_eq!(workflow.is_2d(), is_2d);
+            assert_eq!(workflow.default_filename(), filename);
+            assert_eq!(workflow.plot_count(), plot_count);
+        }
+    }
+
+    #[test]
+    fn workflow_axis_contract_matches_plan_validation_for_every_pair() {
+        let single_point = Range {
+            min: 0.,
+            max: 0.,
+            step: 1.,
+        };
+        for workflow in Workflow::ALL {
+            for fast in Axis::ALL {
+                for slow in Axis::ALL {
+                    let plan = Plan {
+                        workflow,
+                        fast,
+                        slow,
+                        fast_range: single_point,
+                        slow_range: single_point,
+                        ..Plan::default()
+                    };
+                    assert_eq!(
+                        workflow.valid_pair(fast, slow),
+                        plan.targets().is_ok(),
+                        "{workflow:?}: {fast:?}/{slow:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn workflow_dropdown_options_contain_only_valid_pairs() {
+        for workflow in Workflow::ALL {
+            for &fast in workflow.fast_options() {
+                for &slow in workflow.slow_options(fast) {
+                    assert!(workflow.valid_pair(fast, slow));
+                }
+            }
+        }
+        assert_eq!(Workflow::Srkr2d.slow_options(Axis::U), &[Axis::V]);
+        assert_eq!(Workflow::Srkr2d.slow_options(Axis::X), &[Axis::Y]);
+    }
+
     #[test]
     fn range_parity() {
         assert_eq!(

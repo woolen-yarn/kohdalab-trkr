@@ -124,6 +124,39 @@ pub enum ScannerModel {
     ConexCc,
 }
 
+/// Behavioural properties shared by every controller of a scanner model.
+///
+/// Keeping these properties next to the protocol model gives configuration,
+/// initialization, and motion planning one source of truth when another
+/// scanner controller is added.  Command syntax remains in `ScannerProtocol`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ScannerCapabilities {
+    /// The controller accepts an OR/home command as part of initialization.
+    pub supports_home: bool,
+    /// The controller addresses a physical axis by a named suffix (U/V).
+    pub uses_named_axis: bool,
+    /// The controller can use the software approach move used for backlash
+    /// compensation in sample coordinates.
+    pub supports_software_hysteresis: bool,
+}
+
+impl ScannerModel {
+    pub const fn capabilities(self) -> ScannerCapabilities {
+        match self {
+            Self::ConexAgap => ScannerCapabilities {
+                supports_home: false,
+                uses_named_axis: true,
+                supports_software_hysteresis: false,
+            },
+            Self::ConexCc => ScannerCapabilities {
+                supports_home: true,
+                uses_named_axis: false,
+                supports_software_hysteresis: true,
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ScannerProtocol {
     pub model: ScannerModel,
@@ -138,13 +171,13 @@ impl ScannerProtocol {
     }
 
     fn axis(&self) -> Result<&str, String> {
-        match self.model {
-            ScannerModel::ConexCc => Ok(""),
-            ScannerModel::ConexAgap => match self.axis.trim().to_ascii_uppercase().as_str() {
-                "U" => Ok("U"),
-                "V" => Ok("V"),
-                other => Err(format!("Unsupported CONEX-AGAP axis: {other}")),
-            },
+        if !self.model.capabilities().uses_named_axis {
+            return Ok("");
+        }
+        match self.axis.trim().to_ascii_uppercase().as_str() {
+            "U" => Ok("U"),
+            "V" => Ok("V"),
+            other => Err(format!("Unsupported CONEX-AGAP axis: {other}")),
         }
     }
 
@@ -490,5 +523,25 @@ mod tests {
         let mut bus = FakeBus::new(&["1TS000014"]);
         assert!(p.prepare(&mut bus, &AtomicBool::new(false)).is_err());
         assert_eq!(bus.writes, ["1TS"]);
+    }
+
+    #[test]
+    fn scanner_capabilities_describe_existing_model_contracts() {
+        assert_eq!(
+            ScannerModel::ConexCc.capabilities(),
+            ScannerCapabilities {
+                supports_home: true,
+                uses_named_axis: false,
+                supports_software_hysteresis: true,
+            }
+        );
+        assert_eq!(
+            ScannerModel::ConexAgap.capabilities(),
+            ScannerCapabilities {
+                supports_home: false,
+                uses_named_axis: true,
+                supports_software_hysteresis: false,
+            }
+        );
     }
 }

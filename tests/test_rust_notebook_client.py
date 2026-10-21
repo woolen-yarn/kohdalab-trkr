@@ -12,6 +12,26 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
+def test_standalone_move_compensation_default_and_explicit_override() -> None:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "trkr_move_client_test", ROOT / "bindings/python/kohdalab_trkr.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    client = object.__new__(module.Client)
+    commands = []
+    client.send = commands.append
+    for targets in ([None, 20.0, None], [None, None, 30.0], [None, 20.0, 30.0], [10.0, None, None]):
+        client.move({}, targets)
+        assert commands[-1]["targets"] == targets
+        assert commands[-1]["approach"] == [False, True, True]
+    client.move({}, [None, 20.0, None], approach=[False, False, False])
+    assert commands[-1]["approach"] == [False, False, False]
+
+
 def test_notebook_runs_native_workflows_recovers_errors_and_stops(
     tmp_path: Path,
 ) -> None:

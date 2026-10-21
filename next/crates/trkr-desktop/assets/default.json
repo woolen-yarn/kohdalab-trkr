@@ -24,7 +24,7 @@
         "sample_um_per_unit": 582.0,
         "software_hysteresis": {
           "enabled": false,
-          "distance_um": 20.0,
+          "distance_um": 100.0,
           "direction": "negative"
         }
       },
@@ -36,7 +36,7 @@
         "sample_um_per_unit": 412.0,
         "software_hysteresis": {
           "enabled": false,
-          "distance_um": 50.0,
+          "distance_um": 100.0,
           "direction": "negative"
         }
       }

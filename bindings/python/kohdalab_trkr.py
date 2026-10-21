@@ -6,22 +6,172 @@ All measurement, hardware, and safety logic stays in the native process.
 from __future__ import annotations
 
 import json
+import os
 import queue
+import shutil
 import subprocess
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Iterator
 
 
+_PLATFORM = sys.platform
+
+# Revision 1 denotes the existing unversioned contracts. These constants are
+# informational: commands, events, profiles, CSV, and metadata keep their
+# established shapes until an explicitly selected future revision is added.
+PROFILE_COMPATIBILITY_REVISION = 1
+JSON_LINES_API_REVISION = 1
+RECORDING_COMPATIBILITY_REVISION = 1
+
+
+def _roots(search_from: str | Path | None = None) -> list[Path]:
+    root = Path.cwd() if search_from is None else Path(search_from).expanduser()
+    root = root.resolve()
+    if root.is_file():
+        root = root.parent
+    return [root, *list(root.parents)[:3]]
+
+
+def _first_file(paths: Iterator[Path] | list[Path]) -> Path | None:
+    return next((path.resolve() for path in paths if path.is_file()), None)
+
+
+def _explicit_file(value: str | Path, name: str, *, command: bool = False) -> Path:
+    path = Path(value).expanduser()
+    if path.is_file():
+        return path.resolve()
+    if command:
+        found = shutil.which(str(value))
+        if found:
+            return Path(found).resolve()
+    raise FileNotFoundError(f"{name} does not name a file: {value}")
+
+
+def _windows_install_directories() -> list[Path]:
+    directories: list[Path] = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\KohdaLab\TRKR") as key:
+            location, kind = winreg.QueryValueEx(key, "InstallLocation")
+            if isinstance(location, str) and location:
+                if kind == winreg.REG_EXPAND_SZ:
+                    location = winreg.ExpandEnvironmentStrings(location)
+                directories.append(Path(location))
+    except (ImportError, OSError):
+        pass
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        directories.append(Path(local) / "KohdaLab" / "TRKR")
+    return directories
+
+
+def find_binary(
+    binary: str | Path | None = None, *, search_from: str | Path | None = None
+) -> Path:
+    """Find the Rust controller without launching it or opening hardware.
+
+    Explicit argument / TRKR_BINARY, nearby portable/source builds, PATH,
+    then standard installed locations. An invalid explicit path never falls back.
+    """
+    override = binary if binary is not None else (os.environ.get("TRKR_BINARY") or None)
+    if override is not None:
+        return _explicit_file(override, "binary / TRKR_BINARY", command=True)
+    executable = "kohdalab-trkr.exe" if _PLATFORM == "win32" else "kohdalab-trkr"
+    candidates: list[Path] = []
+    for root in _roots(search_from):
+        candidates.extend((
+            root / executable,
+            root / "next/target/release" / executable,
+            root / "next/target/debug" / executable,
+            root / "next/target/x86_64-pc-windows-msvc/release" / executable,
+            root / "Contents/MacOS" / executable,
+            root / "KohdaLab TRKR.app/Contents/MacOS" / executable,
+        ))
+    found = _first_file(candidates)
+    if found:
+        return found
+    on_path = shutil.which("kohdalab-trkr")
+    if on_path:
+        return Path(on_path).resolve()
+    if _PLATFORM == "win32":
+        candidates = [directory / executable for directory in _windows_install_directories()]
+    elif _PLATFORM == "darwin":
+        candidates = [directory / "KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr"
+                      for directory in (Path.home() / "Applications", Path("/Applications"))]
+    else:
+        candidates = []
+    found = _first_file(candidates)
+    if found:
+        return found
+    raise FileNotFoundError(
+        "Could not find kohdalab-trkr. Install the Rust application, open this "
+        "notebook beside the portable package, or set TRKR_BINARY to its executable."
+    )
+
+
+def find_profile(
+    profile: str | Path | None = None, *, binary: str | Path | None = None,
+    search_from: str | Path | None = None,
+) -> Path:
+    """Find a profile without changing it; TRKR_PROFILE overrides auto discovery."""
+    override = profile if profile is not None else (os.environ.get("TRKR_PROFILE") or None)
+    if override is not None:
+        return _explicit_file(override, "profile / TRKR_PROFILE")
+    candidates: list[Path] = []
+    roots = _roots(search_from)
+    for root in roots:
+        candidates.extend((
+            root / "config/default.json",
+        ))
+    candidates.extend(Path.home() / ".kohdalab/config" / name
+                      for name in ("trkr-next.json", "default.json"))
+    candidates.extend(root / "next/crates/trkr-desktop/assets/default.json" for root in roots)
+    found = _first_file(candidates)
+    if found:
+        return found
+    executable = find_binary(binary, search_from=search_from)
+    found = _first_file([
+        executable.parent / "config/default.json",
+        executable.parent / "../Resources/config/default.json",
+    ])
+    if found:
+        return found
+    raise FileNotFoundError(
+        "Could not find a TRKR profile. Save one in the GUI or set TRKR_PROFILE "
+        "to your reviewed JSON profile."
+    )
+
+
+def prepare_profile(
+    profile: str | Path | None = None, *, binary: str | Path | None = None,
+    search_from: str | Path | None = None,
+) -> dict[str, Any]:
+    """Ask Rust to validate a profile and prepare plans; never connects hardware."""
+    executable = find_binary(binary, search_from=search_from)
+    path = find_profile(profile, binary=executable, search_from=search_from)
+    return json.loads(subprocess.check_output(
+        [str(executable), "--profile-json", str(path)], encoding="utf-8",
+        **_process_options(),
+    ))
+
+
+def _process_options() -> dict[str, Any]:
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
+
+
 class Client:
-    def __init__(self, binary: str | Path = "kohdalab-trkr") -> None:
+    def __init__(self, binary: str | Path | None = None) -> None:
         self._process = subprocess.Popen(  # noqa: S603 - explicitly selected native executable
-            [str(binary), "--stdio"],
+            [str(find_binary(binary)), "--stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
+            encoding="utf-8",
             bufsize=1,
+            **_process_options(),
         )
         if self._process.stdin is None or self._process.stdout is None:
             raise RuntimeError("Could not start portable TRKR controller")
@@ -93,6 +243,10 @@ class Client:
         zero: list[float] | None = None,
         approach: list[bool] | None = None,
     ) -> None:
+        """Position selected axes, using configured X/Y compensation by default.
+
+        Pass an explicit approach mask only to override normal positioning.
+        """
         self.send(
             {
                 "command": "move",
@@ -100,7 +254,7 @@ class Client:
                 "targets": targets,
                 "coordinate": coordinate,
                 "zero": zero or [0.0] * 3,
-                "approach": approach or [False] * 3,
+                "approach": approach if approach is not None else [False, True, True],
             }
         )
 

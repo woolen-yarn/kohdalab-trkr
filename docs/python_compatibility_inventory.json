@@ -1,0 +1,6123 @@
+{
+  "audit_date": "2026-10-21",
+  "source_tag": "v0.2.0",
+  "source_commit": "2ed1ed32ec141fd5eff49340aaad8a02b05e1ac0",
+  "scope": "All 50 runtime/package source files under src/kohdalab, six original notebooks, and legacy test-name inventory. Static review plus selected pure/differential/fake-bus tests; not a claim of full hardware or method-by-method runtime equivalence.",
+  "runtime_file_count": 50,
+  "legacy_test_file_count": 35,
+  "legacy_test_function_count": 219,
+  "runtime_files": [
+    {
+      "python_file": "src/kohdalab/__init__.py",
+      "python_sha256": "75fc35932da7849724e321cbddb256521787154149b321a11cdeedb1cfa58b5a",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/__init__.py",
+      "python_sha256": "1df49deff948e669170d640ab0155b102983cfe74eb24721a02859df02db6b21",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/cli.py",
+      "python_sha256": "05b0ae1b86afe1b72350033cf4a3225be8b6cdd526032f5d94f9747fa1ef87d5",
+      "symbols": [
+        {
+          "name": "_status_printer",
+          "line": 13,
+          "kind": "function"
+        },
+        {
+          "name": "_point_printer",
+          "line": 17,
+          "kind": "function"
+        },
+        {
+          "name": "_measurement_output_path",
+          "line": 24,
+          "kind": "function"
+        },
+        {
+          "name": "build_parser",
+          "line": 28,
+          "kind": "function"
+        },
+        {
+          "name": "main",
+          "line": 58,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/main.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/config.py",
+      "python_sha256": "936bce0a19c3ac9806ecc12da012f5f4fca9d656b55ad9b55239aac71ed7728e",
+      "symbols": [
+        {
+          "name": "ConfigPathResolution",
+          "line": 20,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "config_state_dir",
+          "line": 26,
+          "kind": "function"
+        },
+        {
+          "name": "last_config_state_path",
+          "line": 33,
+          "kind": "function"
+        },
+        {
+          "name": "read_last_config_path",
+          "line": 40,
+          "kind": "function"
+        },
+        {
+          "name": "write_last_config_path",
+          "line": 54,
+          "kind": "function"
+        },
+        {
+          "name": "_record_candidate",
+          "line": 62,
+          "kind": "function"
+        },
+        {
+          "name": "resolve_config_path",
+          "line": 66,
+          "kind": "function"
+        },
+        {
+          "name": "with_auto_suffix",
+          "line": 100,
+          "kind": "function"
+        },
+        {
+          "name": "with_csv_suffix",
+          "line": 106,
+          "kind": "function"
+        },
+        {
+          "name": "normalize_delay_stage_name",
+          "line": 111,
+          "kind": "function"
+        },
+        {
+          "name": "build_range_points",
+          "line": 120,
+          "kind": "function"
+        },
+        {
+          "name": "_deep_defaults",
+          "line": 222,
+          "kind": "function"
+        },
+        {
+          "name": "_infer_profile_name",
+          "line": 232,
+          "kind": "function"
+        },
+        {
+          "name": "_legacy_scanner_scale",
+          "line": 238,
+          "kind": "function"
+        },
+        {
+          "name": "normalize_config",
+          "line": 253,
+          "kind": "function"
+        },
+        {
+          "name": "validate_config",
+          "line": 278,
+          "kind": "function"
+        },
+        {
+          "name": "load_config",
+          "line": 305,
+          "kind": "function"
+        },
+        {
+          "name": "save_config",
+          "line": 314,
+          "kind": "function"
+        },
+        {
+          "name": "measurement_settings",
+          "line": 324,
+          "kind": "function"
+        },
+        {
+          "name": "measurement_output_settings",
+          "line": 328,
+          "kind": "function"
+        },
+        {
+          "name": "scan_settings",
+          "line": 344,
+          "kind": "function"
+        },
+        {
+          "name": "move_abs_settings",
+          "line": 349,
+          "kind": "function"
+        },
+        {
+          "name": "move_abs_zero",
+          "line": 353,
+          "kind": "function"
+        },
+        {
+          "name": "zero_for",
+          "line": 358,
+          "kind": "function"
+        },
+        {
+          "name": "instrument_config",
+          "line": 364,
+          "kind": "function"
+        },
+        {
+          "name": "instrument_key",
+          "line": 371,
+          "kind": "function"
+        },
+        {
+          "name": "lockin_config_for",
+          "line": 385,
+          "kind": "function"
+        },
+        {
+          "name": "delay_stage_config_for",
+          "line": 393,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_config_for",
+          "line": 401,
+          "kind": "function"
+        },
+        {
+          "name": "output_path",
+          "line": 411,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/config.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/conversion.py",
+      "python_sha256": "c6be2008674941944900bac76aaffeba106940919c263d18040dad05f140838c",
+      "symbols": [
+        {
+          "name": "scanner_origin_pos",
+          "line": 4,
+          "kind": "function"
+        },
+        {
+          "name": "actuator_pos_to_sample_um",
+          "line": 15,
+          "kind": "function"
+        },
+        {
+          "name": "sample_um_to_actuator_pos",
+          "line": 21,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/device_requirements.py",
+      "python_sha256": "c1635cc3f24956e67736635f156aa03cbe44c0216455d63fe40d1c2f85416489",
+      "symbols": [
+        {
+          "name": "_lockin_ref",
+          "line": 8,
+          "kind": "function"
+        },
+        {
+          "name": "_delay_stage_ref",
+          "line": 16,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_ref",
+          "line": 24,
+          "kind": "function"
+        },
+        {
+          "name": "_scan_axes",
+          "line": 36,
+          "kind": "function"
+        },
+        {
+          "name": "required_devices",
+          "line": 42,
+          "kind": "function"
+        },
+        {
+          "name": "missing_devices",
+          "line": 77,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/devices/__init__.py",
+      "python_sha256": "81ab259a3969e2edffb0aeeb14e84d1f2b409bdd087323f4ce236c63a8b21753",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "legacy_export_facade_replaced_by_native_modules_not_import_compatible"
+    },
+    {
+      "python_file": "src/kohdalab/api/devices/delay_stage.py",
+      "python_sha256": "3c0794705a015b22bfa9eb63ca069a777b5c5d0d0acb4f529b049d51da151803",
+      "symbols": [
+        {
+          "name": "_normalize_stage_name",
+          "line": 14,
+          "kind": "function"
+        },
+        {
+          "name": "_zero_pos_mm",
+          "line": 23,
+          "kind": "function"
+        },
+        {
+          "name": "_delay_ps",
+          "line": 32,
+          "kind": "function"
+        },
+        {
+          "name": "_delay_ps_from_mm",
+          "line": 37,
+          "kind": "function"
+        },
+        {
+          "name": "_delay_ps_to_mm",
+          "line": 42,
+          "kind": "function"
+        },
+        {
+          "name": "DelayStageDevice",
+          "line": 47,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 48
+            },
+            {
+              "name": "initialize",
+              "line": 52
+            },
+            {
+              "name": "get_pos_mm",
+              "line": 60
+            },
+            {
+              "name": "get_pulse",
+              "line": 63
+            },
+            {
+              "name": "get_delay_ps",
+              "line": 66
+            },
+            {
+              "name": "get_status",
+              "line": 69
+            },
+            {
+              "name": "is_ready",
+              "line": 72
+            },
+            {
+              "name": "_progress_callback",
+              "line": 75
+            },
+            {
+              "name": "move_coordinate",
+              "line": 98
+            }
+          ]
+        },
+        {
+          "name": "connect_delay_stage",
+          "line": 122,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_delay_stage",
+          "line": 128,
+          "kind": "function"
+        },
+        {
+          "name": "read_delay_stage",
+          "line": 133,
+          "kind": "function"
+        },
+        {
+          "name": "move_delay_stage_abs",
+          "line": 143,
+          "kind": "function"
+        },
+        {
+          "name": "initialize_delay_stage",
+          "line": 180,
+          "kind": "function"
+        },
+        {
+          "name": "list_stages",
+          "line": 195,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/api/devices/lockin.py",
+      "python_sha256": "fa5cdde5d239b2f09a406ae83f16b8fad9c080fa0e50111fc15971e1b102f7ab",
+      "symbols": [
+        {
+          "name": "connect_lockin",
+          "line": 9,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_lockin",
+          "line": 13,
+          "kind": "function"
+        },
+        {
+          "name": "read_lockin_signal",
+          "line": 17,
+          "kind": "function"
+        },
+        {
+          "name": "read_lockin_settings",
+          "line": 22,
+          "kind": "function"
+        },
+        {
+          "name": "set_lockin_settings",
+          "line": 31,
+          "kind": "function"
+        },
+        {
+          "name": "read_lockin_overload",
+          "line": 61,
+          "kind": "function"
+        },
+        {
+          "name": "get_lockin_wait_time",
+          "line": 66,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/api/devices/scanner.py",
+      "python_sha256": "f93a4c8a7c8e5af3b8ac0e6fbac0db65562aebe59f77e0e9c8a8562298f61375",
+      "symbols": [
+        {
+          "name": "connect_scanner",
+          "line": 14,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_scanner",
+          "line": 18,
+          "kind": "function"
+        },
+        {
+          "name": "actuator_pos_unit",
+          "line": 22,
+          "kind": "function"
+        },
+        {
+          "name": "list_actuators",
+          "line": 29,
+          "kind": "function"
+        },
+        {
+          "name": "_control_pos",
+          "line": 42,
+          "kind": "function"
+        },
+        {
+          "name": "read_scanner",
+          "line": 51,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_progress_callback",
+          "line": 76,
+          "kind": "function"
+        },
+        {
+          "name": "_move_control",
+          "line": 106,
+          "kind": "function"
+        },
+        {
+          "name": "_software_hysteresis_settings",
+          "line": 127,
+          "kind": "function"
+        },
+        {
+          "name": "_software_hysteresis_enabled",
+          "line": 134,
+          "kind": "function"
+        },
+        {
+          "name": "_software_hysteresis_distance_um",
+          "line": 142,
+          "kind": "function"
+        },
+        {
+          "name": "_software_hysteresis_direction",
+          "line": 150,
+          "kind": "function"
+        },
+        {
+          "name": "_software_hysteresis_pre_target",
+          "line": 168,
+          "kind": "function"
+        },
+        {
+          "name": "_move_control_with_software_hysteresis",
+          "line": 186,
+          "kind": "function"
+        },
+        {
+          "name": "move_scanner_abs",
+          "line": 238,
+          "kind": "function"
+        },
+        {
+          "name": "_normalize_move_coordinate",
+          "line": 300,
+          "kind": "function"
+        },
+        {
+          "name": "initialize_scanner",
+          "line": 308,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/api/experiment.py",
+      "python_sha256": "18eb782c8f241113a8dedc0e7829b42fc82fab34ecc69f07426518a6d7dfbb6c",
+      "symbols": [
+        {
+          "name": "Experiment",
+          "line": 19,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 26
+            },
+            {
+              "name": "from_config",
+              "line": 32
+            },
+            {
+              "name": "config",
+              "line": 36
+            },
+            {
+              "name": "config",
+              "line": 40
+            },
+            {
+              "name": "lockins",
+              "line": 45
+            },
+            {
+              "name": "delay_stages",
+              "line": 49
+            },
+            {
+              "name": "scanners",
+              "line": 53
+            },
+            {
+              "name": "connect_all",
+              "line": 56
+            },
+            {
+              "name": "connect",
+              "line": 59
+            },
+            {
+              "name": "connect_device",
+              "line": 62
+            },
+            {
+              "name": "disconnect_all",
+              "line": 65
+            },
+            {
+              "name": "disconnect",
+              "line": 68
+            },
+            {
+              "name": "disconnect_device",
+              "line": 71
+            },
+            {
+              "name": "connected_devices",
+              "line": 74
+            },
+            {
+              "name": "required_devices",
+              "line": 77
+            },
+            {
+              "name": "missing_devices",
+              "line": 87
+            },
+            {
+              "name": "read_position",
+              "line": 104
+            },
+            {
+              "name": "read_lockin_signal",
+              "line": 107
+            },
+            {
+              "name": "read_lockin_settings",
+              "line": 110
+            },
+            {
+              "name": "read_lockin_overload",
+              "line": 113
+            },
+            {
+              "name": "lockin_wait_time",
+              "line": 116
+            },
+            {
+              "name": "set_lockin_settings",
+              "line": 119
+            },
+            {
+              "name": "read_live_status",
+              "line": 138
+            },
+            {
+              "name": "initialize_delay_stage",
+              "line": 141
+            },
+            {
+              "name": "initialize_scanner",
+              "line": 149
+            },
+            {
+              "name": "initialize_xy",
+              "line": 158
+            },
+            {
+              "name": "move_delay_stage",
+              "line": 161
+            },
+            {
+              "name": "move_scanner",
+              "line": 178
+            },
+            {
+              "name": "run_signal_monitor",
+              "line": 199
+            },
+            {
+              "name": "run_trkr",
+              "line": 222
+            },
+            {
+              "name": "run_srkr",
+              "line": 251
+            },
+            {
+              "name": "run_strkr",
+              "line": 282
+            },
+            {
+              "name": "run_srkr_2d",
+              "line": 303
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/measurement_rows.py",
+      "python_sha256": "1571c4e6a52be8648f782a7de1a755fb09dc29bbf7f8c2377af78c88cab43110",
+      "symbols": [
+        {
+          "name": "signal_row",
+          "line": 46,
+          "kind": "function"
+        },
+        {
+          "name": "ordered_row",
+          "line": 50,
+          "kind": "function"
+        },
+        {
+          "name": "fields_for_row",
+          "line": 56,
+          "kind": "function"
+        },
+        {
+          "name": "fields_for_rows",
+          "line": 63,
+          "kind": "function"
+        },
+        {
+          "name": "format_output_value",
+          "line": 75,
+          "kind": "function"
+        },
+        {
+          "name": "output_row",
+          "line": 81,
+          "kind": "function"
+        },
+        {
+          "name": "output_rows",
+          "line": 85,
+          "kind": "function"
+        },
+        {
+          "name": "signal_monitor_row",
+          "line": 89,
+          "kind": "function"
+        },
+        {
+          "name": "trkr_row",
+          "line": 110,
+          "kind": "function"
+        },
+        {
+          "name": "srkr_row",
+          "line": 139,
+          "kind": "function"
+        },
+        {
+          "name": "axis_target_key",
+          "line": 170,
+          "kind": "function"
+        },
+        {
+          "name": "_position_fields",
+          "line": 181,
+          "kind": "function"
+        },
+        {
+          "name": "scan2d_row",
+          "line": 203,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/measurements.py",
+      "python_sha256": "11a6ba8670d4721a20e9bdb75c9388c96f2a5d49d23dc9e9a4980c8898cfcbff",
+      "symbols": [
+        {
+          "name": "scan_points_from_config",
+          "line": 46,
+          "kind": "function"
+        },
+        {
+          "name": "_continue",
+          "line": 51,
+          "kind": "function"
+        },
+        {
+          "name": "_sleep_interruptible",
+          "line": 55,
+          "kind": "function"
+        },
+        {
+          "name": "_emit_status",
+          "line": 64,
+          "kind": "function"
+        },
+        {
+          "name": "_write_rows",
+          "line": 69,
+          "kind": "function"
+        },
+        {
+          "name": "_zero_for_axis",
+          "line": 99,
+          "kind": "function"
+        },
+        {
+          "name": "_absolute_measurement_target",
+          "line": 105,
+          "kind": "function"
+        },
+        {
+          "name": "_move_axis",
+          "line": 109,
+          "kind": "function"
+        },
+        {
+          "name": "_run_scan2d",
+          "line": 134,
+          "kind": "function"
+        },
+        {
+          "name": "run_signal_monitor",
+          "line": 246,
+          "kind": "function"
+        },
+        {
+          "name": "run_trkr",
+          "line": 298,
+          "kind": "function"
+        },
+        {
+          "name": "run_srkr",
+          "line": 372,
+          "kind": "function"
+        },
+        {
+          "name": "run_strkr",
+          "line": 469,
+          "kind": "function"
+        },
+        {
+          "name": "run_srkr_2d",
+          "line": 499,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/models.py",
+      "python_sha256": "6cff5e28e9666856fcc4fbfdda72b6368cfc530668fe80f843791495928148a1",
+      "symbols": [
+        {
+          "name": "Position",
+          "line": 8,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "from_rows",
+              "line": 20
+            }
+          ]
+        },
+        {
+          "name": "LiveStatus",
+          "line": 49,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "LockinSignal",
+          "line": 58,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "from_mapping",
+              "line": 65
+            },
+            {
+              "name": "to_row",
+              "line": 73
+            }
+          ]
+        },
+        {
+          "name": "LockinSettings",
+          "line": 83,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "from_mapping",
+              "line": 89
+            }
+          ]
+        },
+        {
+          "name": "MeasurementPoint",
+          "line": 102,
+          "kind": "class",
+          "methods": []
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-core/src/lib.rs",
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-desktop/src/engine.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/notebook.py",
+      "python_sha256": "fd1d1687a5942c8f64f72834159461bdf445f3552e55666ae6fd0c4dcf70e140",
+      "symbols": [
+        {
+          "name": "_format_value",
+          "line": 6,
+          "kind": "function"
+        },
+        {
+          "name": "format_point",
+          "line": 14,
+          "kind": "function"
+        },
+        {
+          "name": "format_move_abs_row",
+          "line": 28,
+          "kind": "function"
+        },
+        {
+          "name": "move_abs_row_from_position",
+          "line": 68,
+          "kind": "function"
+        },
+        {
+          "name": "_voltage_scale_from_magnitude",
+          "line": 107,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_meta_from_key",
+          "line": 117,
+          "kind": "function"
+        },
+        {
+          "name": "_build_axis_label",
+          "line": 153,
+          "kind": "function"
+        },
+        {
+          "name": "_make_live_update",
+          "line": 160,
+          "kind": "function"
+        },
+        {
+          "name": "make_trkr_live_update",
+          "line": 214,
+          "kind": "function"
+        },
+        {
+          "name": "make_srkr_live_update",
+          "line": 231,
+          "kind": "function"
+        },
+        {
+          "name": "_fast_axis_key",
+          "line": 253,
+          "kind": "function"
+        },
+        {
+          "name": "make_strkr_live_update",
+          "line": 262,
+          "kind": "function"
+        },
+        {
+          "name": "make_srkr_2d_live_update",
+          "line": 280,
+          "kind": "function"
+        },
+        {
+          "name": "make_signal_monitor_live_update",
+          "line": 301,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "bindings/python/kohdalab_trkr.py",
+        "notebook"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/scan_limits.py",
+      "python_sha256": "3af36367742df4384ef03f064c3a789301e518b4d303872ab9c4206a538cba4d",
+      "symbols": [
+        {
+          "name": "ScanLimits",
+          "line": 13,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "_sorted_limits",
+          "line": 20,
+          "kind": "function"
+        },
+        {
+          "name": "delay_stage_scan_limits",
+          "line": 24,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_scan_limits",
+          "line": 68,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/scan_plan.py",
+      "python_sha256": "85aed28dd15366a334045d463a76cfa52524080e90c131ee0894b36c61534909",
+      "symbols": [
+        {
+          "name": "normalize_coordinate",
+          "line": 12,
+          "kind": "function"
+        },
+        {
+          "name": "normalize_scanner_coordinate",
+          "line": 21,
+          "kind": "function"
+        },
+        {
+          "name": "SignalMonitorPlan",
+          "line": 29,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "TrkrPlan",
+          "line": 36,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "SrkrPlan",
+          "line": 45,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "Scan2DPlan",
+          "line": 55,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "total_points",
+              "line": 67
+            },
+            {
+              "name": "fast_point_count",
+              "line": 71
+            },
+            {
+              "name": "slow_point_count",
+              "line": 75
+            },
+            {
+              "name": "slow_line_count",
+              "line": 79
+            }
+          ]
+        },
+        {
+          "name": "StrkrPlan",
+          "line": 84,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "Srkr2DPlan",
+          "line": 89,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "signal_monitor_plan",
+          "line": 93,
+          "kind": "function"
+        },
+        {
+          "name": "signal_monitor_plan_from_config",
+          "line": 101,
+          "kind": "function"
+        },
+        {
+          "name": "trkr_plan",
+          "line": 114,
+          "kind": "function"
+        },
+        {
+          "name": "trkr_plan_from_config",
+          "line": 134,
+          "kind": "function"
+        },
+        {
+          "name": "srkr_plan",
+          "line": 155,
+          "kind": "function"
+        },
+        {
+          "name": "srkr_plan_from_config",
+          "line": 188,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_range_from_config",
+          "line": 215,
+          "kind": "function"
+        },
+        {
+          "name": "_normalize_axis",
+          "line": 233,
+          "kind": "function"
+        },
+        {
+          "name": "_normalize_2d_axes",
+          "line": 240,
+          "kind": "function"
+        },
+        {
+          "name": "_normalize_return_to_zero",
+          "line": 248,
+          "kind": "function"
+        },
+        {
+          "name": "_zero_from_config",
+          "line": 259,
+          "kind": "function"
+        },
+        {
+          "name": "_target_points",
+          "line": 268,
+          "kind": "function"
+        },
+        {
+          "name": "_strkr_ranges",
+          "line": 273,
+          "kind": "function"
+        },
+        {
+          "name": "_srkr_2d_ranges",
+          "line": 281,
+          "kind": "function"
+        },
+        {
+          "name": "strkr_plan",
+          "line": 288,
+          "kind": "function"
+        },
+        {
+          "name": "strkr_plan_from_config",
+          "line": 315,
+          "kind": "function"
+        },
+        {
+          "name": "srkr_2d_plan",
+          "line": 336,
+          "kind": "function"
+        },
+        {
+          "name": "srkr_2d_plan_from_config",
+          "line": 363,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-core/src/lib.rs",
+        "next/crates/trkr-desktop/src/config.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/session.py",
+      "python_sha256": "9c3d07ccc9e66080655a51ce588a9225b9d9aaaddeb357d95283183b6d9451ea",
+      "symbols": [
+        {
+          "name": "DeviceSession",
+          "line": 30,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 33
+            },
+            {
+              "name": "set_config",
+              "line": 46
+            },
+            {
+              "name": "connect_all",
+              "line": 50
+            },
+            {
+              "name": "connect_device",
+              "line": 58
+            },
+            {
+              "name": "disconnect_all",
+              "line": 73
+            },
+            {
+              "name": "disconnect_device",
+              "line": 81
+            },
+            {
+              "name": "connected_devices",
+              "line": 95
+            },
+            {
+              "name": "read_position",
+              "line": 105
+            },
+            {
+              "name": "read_lockin_signal",
+              "line": 126
+            },
+            {
+              "name": "read_lockin_settings",
+              "line": 135
+            },
+            {
+              "name": "read_lockin_overload",
+              "line": 144
+            },
+            {
+              "name": "lockin_wait_time",
+              "line": 153
+            },
+            {
+              "name": "set_lockin_settings",
+              "line": 162
+            },
+            {
+              "name": "read_live_status",
+              "line": 188
+            },
+            {
+              "name": "initialize_delay_stage",
+              "line": 206
+            },
+            {
+              "name": "initialize_scanner",
+              "line": 214
+            },
+            {
+              "name": "initialize_xy",
+              "line": 231
+            },
+            {
+              "name": "move_delay_stage",
+              "line": 239
+            },
+            {
+              "name": "move_scanner",
+              "line": 265
+            },
+            {
+              "name": "resolve_ref",
+              "line": 299
+            },
+            {
+              "name": "_device_lock",
+              "line": 324
+            },
+            {
+              "name": "_instrument_keys",
+              "line": 333
+            },
+            {
+              "name": "_instrument_config",
+              "line": 338
+            },
+            {
+              "name": "_connected_keys",
+              "line": 342
+            },
+            {
+              "name": "_connected_handle",
+              "line": 346
+            },
+            {
+              "name": "_set_connected_handle",
+              "line": 350
+            },
+            {
+              "name": "_pop_connected_handle",
+              "line": 354
+            },
+            {
+              "name": "_connected_map",
+              "line": 358
+            },
+            {
+              "name": "_require_or_auto_connect",
+              "line": 367
+            },
+            {
+              "name": "_normalize_kind",
+              "line": 381
+            },
+            {
+              "name": "_scanner_axis_from_key",
+              "line": 391
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/api/status.py",
+      "python_sha256": "7c91e6f94494e21fa07b18af26018a087b0db2441db9b82041fefa9405a2de9e",
+      "symbols": [
+        {
+          "name": "moving_scanner_status",
+          "line": 17,
+          "kind": "function"
+        },
+        {
+          "name": "moving_axis_status",
+          "line": 24,
+          "kind": "function"
+        },
+        {
+          "name": "moving_axis_from_status",
+          "line": 31,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/engine.rs",
+        "next/crates/trkr-desktop/src/ui.rs"
+      ],
+      "classification": "native_replacement_not_drop_in_python_api"
+    },
+    {
+      "python_file": "src/kohdalab/apps/__init__.py",
+      "python_sha256": "75ad4f4c2943325f88064ad2beae890b59674be2bf0404b30afc5584dc4de4bb",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui.py",
+      "python_sha256": "3e349108e4666bb04d595e301440568e5c0006e887a2ea117a430f689f50adf6",
+      "symbols": [
+        {
+          "name": "_format_value",
+          "line": 83,
+          "kind": "function"
+        },
+        {
+          "name": "_motion_axis_display_text",
+          "line": 87,
+          "kind": "function"
+        },
+        {
+          "name": "_fmt_bound",
+          "line": 91,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_cor_key",
+          "line": 95,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_raw_key",
+          "line": 100,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_unit",
+          "line": 105,
+          "kind": "function"
+        },
+        {
+          "name": "_default_axis_range",
+          "line": 109,
+          "kind": "function"
+        },
+        {
+          "name": "_unique_values",
+          "line": 113,
+          "kind": "function"
+        },
+        {
+          "name": "_normalized_by_abs_max",
+          "line": 124,
+          "kind": "function"
+        },
+        {
+          "name": "_format_duration",
+          "line": 134,
+          "kind": "function"
+        },
+        {
+          "name": "_set_combo_text",
+          "line": 147,
+          "kind": "function"
+        },
+        {
+          "name": "_replace_combo_items",
+          "line": 156,
+          "kind": "function"
+        },
+        {
+          "name": "_output_settings",
+          "line": 168,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_ticks",
+          "line": 177,
+          "kind": "function"
+        },
+        {
+          "name": "_valid_scan2d_axes",
+          "line": 190,
+          "kind": "function"
+        },
+        {
+          "name": "MeasurementWorker",
+          "line": 217,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 223
+            },
+            {
+              "name": "stop",
+              "line": 248
+            },
+            {
+              "name": "_should_continue",
+              "line": 251
+            },
+            {
+              "name": "run",
+              "line": 254
+            }
+          ]
+        },
+        {
+          "name": "DeviceCommandWorker",
+          "line": 303,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 308
+            },
+            {
+              "name": "_request",
+              "line": 330
+            },
+            {
+              "name": "_device_ref",
+              "line": 341
+            },
+            {
+              "name": "_execute",
+              "line": 348
+            },
+            {
+              "name": "run_command",
+              "line": 404
+            },
+            {
+              "name": "run",
+              "line": 411
+            }
+          ]
+        },
+        {
+          "name": "MoveWorker",
+          "line": 415,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 421
+            },
+            {
+              "name": "run",
+              "line": 435
+            }
+          ]
+        },
+        {
+          "name": "LiveStatusWorker",
+          "line": 466,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 471
+            },
+            {
+              "name": "_lockin_ref",
+              "line": 476
+            },
+            {
+              "name": "_read_lockin_settings",
+              "line": 482
+            },
+            {
+              "name": "_read_lockin_signal",
+              "line": 488
+            },
+            {
+              "name": "_read_lockin_overload",
+              "line": 494
+            },
+            {
+              "name": "read_full",
+              "line": 501
+            },
+            {
+              "name": "read_lockin",
+              "line": 514
+            }
+          ]
+        },
+        {
+          "name": "ResourceListWorker",
+          "line": 532,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "run",
+              "line": 538
+            }
+          ]
+        },
+        {
+          "name": "GuiLogStream",
+          "line": 556,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 559
+            },
+            {
+              "name": "write",
+              "line": 564
+            },
+            {
+              "name": "flush",
+              "line": 573
+            }
+          ]
+        },
+        {
+          "name": "TRKRGui",
+          "line": 580,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 583
+            },
+            {
+              "name": "_build_widgets",
+              "line": 665
+            },
+            {
+              "name": "_combo",
+              "line": 946
+            },
+            {
+              "name": "_actuators_for_controller",
+              "line": 952
+            },
+            {
+              "name": "_spin",
+              "line": 962
+            },
+            {
+              "name": "_axis_range_spins",
+              "line": 971
+            },
+            {
+              "name": "_range_spin_set",
+              "line": 977
+            },
+            {
+              "name": "_scan2d_role_labels",
+              "line": 985
+            },
+            {
+              "name": "_scan2d_role_hints",
+              "line": 988
+            },
+            {
+              "name": "_hint_label",
+              "line": 991
+            },
+            {
+              "name": "_build_layout",
+              "line": 997
+            },
+            {
+              "name": "_session_group",
+              "line": 1049
+            },
+            {
+              "name": "_collapsible_device",
+              "line": 1070
+            },
+            {
+              "name": "_lockin_settings_tab",
+              "line": 1087
+            },
+            {
+              "name": "_delay_stage_settings_tab",
+              "line": 1101
+            },
+            {
+              "name": "_scanner_settings_tab",
+              "line": 1118
+            },
+            {
+              "name": "_lockin_group",
+              "line": 1148
+            },
+            {
+              "name": "_motion_group",
+              "line": 1171
+            },
+            {
+              "name": "_measurement_group",
+              "line": 1203
+            },
+            {
+              "name": "_signal_tab",
+              "line": 1218
+            },
+            {
+              "name": "_trkr_tab",
+              "line": 1225
+            },
+            {
+              "name": "_srkr_tab",
+              "line": 1235
+            },
+            {
+              "name": "_scan2d_axis_panel",
+              "line": 1245
+            },
+            {
+              "name": "_strkr_tab",
+              "line": 1265
+            },
+            {
+              "name": "_srkr_2d_tab",
+              "line": 1297
+            },
+            {
+              "name": "_measurement_tab",
+              "line": 1329
+            },
+            {
+              "name": "_with_button",
+              "line": 1343
+            },
+            {
+              "name": "_with_hint",
+              "line": 1353
+            },
+            {
+              "name": "_output_run_widget",
+              "line": 1362
+            },
+            {
+              "name": "_attach_output_run_to_tab",
+              "line": 1372
+            },
+            {
+              "name": "_output_group",
+              "line": 1378
+            },
+            {
+              "name": "_run_group",
+              "line": 1399
+            },
+            {
+              "name": "_plot_toolbar",
+              "line": 1407
+            },
+            {
+              "name": "_connect_signals",
+              "line": 1421
+            },
+            {
+              "name": "_handle_measurement_tab_changed",
+              "line": 1493
+            },
+            {
+              "name": "_handle_2d_axis_changed",
+              "line": 1511
+            },
+            {
+              "name": "_normalize_2d_axis_controls",
+              "line": 1519
+            },
+            {
+              "name": "_scan2d_axis_range_widgets",
+              "line": 1536
+            },
+            {
+              "name": "_scan2d_role_spin_widgets",
+              "line": 1543
+            },
+            {
+              "name": "_scan2d_role_label_widgets",
+              "line": 1550
+            },
+            {
+              "name": "_scan2d_role_hint_widgets",
+              "line": 1557
+            },
+            {
+              "name": "_scan2d_control_axes",
+              "line": 1564
+            },
+            {
+              "name": "_sync_scan2d_role_values_to_axis_ranges",
+              "line": 1575
+            },
+            {
+              "name": "_load_scan2d_role_ranges",
+              "line": 1586
+            },
+            {
+              "name": "_install_log_streams",
+              "line": 1604
+            },
+            {
+              "name": "_restore_log_streams",
+              "line": 1614
+            },
+            {
+              "name": "toggle_right_panel",
+              "line": 1622
+            },
+            {
+              "name": "_apply_panel_sizes",
+              "line": 1627
+            },
+            {
+              "name": "append_log",
+              "line": 1650
+            },
+            {
+              "name": "_selected_text",
+              "line": 1653
+            },
+            {
+              "name": "_replace_combo_preserving_current",
+              "line": 1656
+            },
+            {
+              "name": "refresh_lockin_resources",
+              "line": 1665
+            },
+            {
+              "name": "refresh_all_ports",
+              "line": 1668
+            },
+            {
+              "name": "handle_resource_list_ready",
+              "line": 1683
+            },
+            {
+              "name": "handle_resource_list_error",
+              "line": 1692
+            },
+            {
+              "name": "cleanup_resource_thread",
+              "line": 1695
+            },
+            {
+              "name": "refresh_delay_stage_choices",
+              "line": 1699
+            },
+            {
+              "name": "refresh_scanner_choices",
+              "line": 1703
+            },
+            {
+              "name": "_refresh_scanner_scale_label",
+              "line": 1716
+            },
+            {
+              "name": "_refresh_scanner_scale_labels",
+              "line": 1721
+            },
+            {
+              "name": "sync_conexagap_ports",
+              "line": 1725
+            },
+            {
+              "name": "_lockin_config",
+              "line": 1738
+            },
+            {
+              "name": "_store_output_settings",
+              "line": 1744
+            },
+            {
+              "name": "_store_current_output_settings",
+              "line": 1747
+            },
+            {
+              "name": "_default_output_filename",
+              "line": 1751
+            },
+            {
+              "name": "_measurement_output_from_config",
+              "line": 1760
+            },
+            {
+              "name": "_apply_output_settings",
+              "line": 1765
+            },
+            {
+              "name": "_delay_stage_config",
+              "line": 1781
+            },
+            {
+              "name": "_scanner_config",
+              "line": 1789
+            },
+            {
+              "name": "_delay_stage_hint_values",
+              "line": 1817
+            },
+            {
+              "name": "_scanner_hint_values",
+              "line": 1833
+            },
+            {
+              "name": "_axis_hint_values",
+              "line": 1843
+            },
+            {
+              "name": "_refresh_scan2d_role_hints",
+              "line": 1846
+            },
+            {
+              "name": "_refresh_scan_limit_hints",
+              "line": 1860
+            },
+            {
+              "name": "browse_config",
+              "line": 1874
+            },
+            {
+              "name": "load_config_file",
+              "line": 1880
+            },
+            {
+              "name": "save_config_file",
+              "line": 1895
+            },
+            {
+              "name": "_load_config_into_fields",
+              "line": 1907
+            },
+            {
+              "name": "_settings_from_measurement_output",
+              "line": 1994
+            },
+            {
+              "name": "_load_axis_ranges",
+              "line": 2004
+            },
+            {
+              "name": "_axis_ranges_payload",
+              "line": 2011
+            },
+            {
+              "name": "_return_roles_payload",
+              "line": 2021
+            },
+            {
+              "name": "_runtime_config",
+              "line": 2024
+            },
+            {
+              "name": "browse_output_dir",
+              "line": 2135
+            },
+            {
+              "name": "connect_all",
+              "line": 2140
+            },
+            {
+              "name": "_start_device_command",
+              "line": 2143
+            },
+            {
+              "name": "_ensure_experiment",
+              "line": 2182
+            },
+            {
+              "name": "_ensure_device_worker",
+              "line": 2189
+            },
+            {
+              "name": "_ensure_live_worker",
+              "line": 2207
+            },
+            {
+              "name": "_invoke_live_worker",
+              "line": 2223
+            },
+            {
+              "name": "_missing_required_devices",
+              "line": 2227
+            },
+            {
+              "name": "connect_device",
+              "line": 2248
+            },
+            {
+              "name": "disconnect_device",
+              "line": 2256
+            },
+            {
+              "name": "disconnect_all",
+              "line": 2264
+            },
+            {
+              "name": "initialize_device",
+              "line": 2267
+            },
+            {
+              "name": "handle_device_status",
+              "line": 2276
+            },
+            {
+              "name": "handle_device_command_finished",
+              "line": 2280
+            },
+            {
+              "name": "handle_device_initialized",
+              "line": 2333
+            },
+            {
+              "name": "handle_device_error",
+              "line": 2346
+            },
+            {
+              "name": "cleanup_device_thread",
+              "line": 2356
+            },
+            {
+              "name": "cleanup_device_command",
+              "line": 2360
+            },
+            {
+              "name": "cleanup_live_thread",
+              "line": 2365
+            },
+            {
+              "name": "read_live_status",
+              "line": 2369
+            },
+            {
+              "name": "refresh_live_status",
+              "line": 2378
+            },
+            {
+              "name": "_request_full_live_status",
+              "line": 2393
+            },
+            {
+              "name": "_request_lockin_live_status",
+              "line": 2396
+            },
+            {
+              "name": "handle_live_status_ready",
+              "line": 2399
+            },
+            {
+              "name": "handle_lockin_status_ready",
+              "line": 2404
+            },
+            {
+              "name": "handle_live_status_error",
+              "line": 2411
+            },
+            {
+              "name": "_apply_pending_origin",
+              "line": 2415
+            },
+            {
+              "name": "_apply_live_status",
+              "line": 2431
+            },
+            {
+              "name": "_apply_lockin_settings",
+              "line": 2439
+            },
+            {
+              "name": "_apply_overload_status",
+              "line": 2451
+            },
+            {
+              "name": "_apply_signal",
+              "line": 2459
+            },
+            {
+              "name": "set_origin_from_current",
+              "line": 2473
+            },
+            {
+              "name": "_move_axis_label",
+              "line": 2484
+            },
+            {
+              "name": "_move_axis_unit",
+              "line": 2487
+            },
+            {
+              "name": "_move_target_value",
+              "line": 2490
+            },
+            {
+              "name": "_motion_axis_is_blocked_by_measurement",
+              "line": 2493
+            },
+            {
+              "name": "move_absolute",
+              "line": 2498
+            },
+            {
+              "name": "move_corrected",
+              "line": 2544
+            },
+            {
+              "name": "handle_move_status",
+              "line": 2551
+            },
+            {
+              "name": "handle_measurement_status",
+              "line": 2558
+            },
+            {
+              "name": "_set_measurement_axis_status",
+              "line": 2576
+            },
+            {
+              "name": "_restore_running_motion_axis_values",
+              "line": 2581
+            },
+            {
+              "name": "_update_scan2d_eta_from_slow_ready",
+              "line": 2586
+            },
+            {
+              "name": "handle_move_position",
+              "line": 2603
+            },
+            {
+              "name": "handle_move_finished",
+              "line": 2609
+            },
+            {
+              "name": "handle_move_error",
+              "line": 2624
+            },
+            {
+              "name": "cleanup_move_thread",
+              "line": 2632
+            },
+            {
+              "name": "use_tc_wait_time",
+              "line": 2642
+            },
+            {
+              "name": "_measurement_name",
+              "line": 2653
+            },
+            {
+              "name": "_output_path",
+              "line": 2663
+            },
+            {
+              "name": "start_measurement",
+              "line": 2667
+            },
+            {
+              "name": "stop_measurement",
+              "line": 2814
+            },
+            {
+              "name": "handle_point",
+              "line": 2819
+            },
+            {
+              "name": "_eta_text",
+              "line": 2833
+            },
+            {
+              "name": "_scan2d_eta_text",
+              "line": 2838
+            },
+            {
+              "name": "_update_position_from_position",
+              "line": 2849
+            },
+            {
+              "name": "_update_position_from_row",
+              "line": 2857
+            },
+            {
+              "name": "_set_position_value",
+              "line": 2865
+            },
+            {
+              "name": "_refresh_derived_position_labels",
+              "line": 2870
+            },
+            {
+              "name": "_update_snapshot",
+              "line": 2881
+            },
+            {
+              "name": "handle_error",
+              "line": 2892
+            },
+            {
+              "name": "handle_finished",
+              "line": 2896
+            },
+            {
+              "name": "cleanup_thread",
+              "line": 2900
+            },
+            {
+              "name": "_set_running",
+              "line": 2917
+            },
+            {
+              "name": "_set_motion_axis_enabled",
+              "line": 2944
+            },
+            {
+              "name": "_set_device_initializing",
+              "line": 3000
+            },
+            {
+              "name": "_set_move_running",
+              "line": 3032
+            },
+            {
+              "name": "clear_plot",
+              "line": 3050
+            },
+            {
+              "name": "save_rows",
+              "line": 3060
+            },
+            {
+              "name": "_current_2d_axes",
+              "line": 3073
+            },
+            {
+              "name": "_clear_scan2d_plots",
+              "line": 3089
+            },
+            {
+              "name": "_refresh_plot_labels",
+              "line": 3095
+            },
+            {
+              "name": "_update_curves",
+              "line": 3148
+            },
+            {
+              "name": "_update_srkr_curves",
+              "line": 3181
+            },
+            {
+              "name": "_update_scan2d_plots",
+              "line": 3192
+            },
+            {
+              "name": "_set_scan2d_heatmap",
+              "line": 3211
+            },
+            {
+              "name": "_request_async_shutdown",
+              "line": 3254
+            },
+            {
+              "name": "_drain_before_shutdown",
+              "line": 3266
+            },
+            {
+              "name": "_close_worker_threads",
+              "line": 3281
+            },
+            {
+              "name": "closeEvent",
+              "line": 3287
+            },
+            {
+              "name": "resizeEvent",
+              "line": 3296
+            }
+          ]
+        },
+        {
+          "name": "main",
+          "line": 3301,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_advanced.py",
+      "python_sha256": "426e101e01077fc88872df0d74bcd2c4520f6416f8699a91678eabdcd3fcb06f",
+      "symbols": [
+        {
+          "name": "_add_coordinate_items",
+          "line": 92,
+          "kind": "function"
+        },
+        {
+          "name": "_coordinate_value",
+          "line": 99,
+          "kind": "function"
+        },
+        {
+          "name": "_set_coordinate_value",
+          "line": 103,
+          "kind": "function"
+        },
+        {
+          "name": "_set_combo_text",
+          "line": 112,
+          "kind": "function"
+        },
+        {
+          "name": "_replace_combo_items",
+          "line": 121,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_sample_um",
+          "line": 130,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_control_pos",
+          "line": 134,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_move_control_pos",
+          "line": 143,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_move_sample_um",
+          "line": 152,
+          "kind": "function"
+        },
+        {
+          "name": "DeviceConfigTab",
+          "line": 158,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 159
+            }
+          ]
+        },
+        {
+          "name": "CleanDoubleSpinBox",
+          "line": 178,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "textFromValue",
+              "line": 179
+            }
+          ]
+        },
+        {
+          "name": "FixedDecimalSpinBox",
+          "line": 187,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "textFromValue",
+              "line": 188
+            }
+          ]
+        },
+        {
+          "name": "DeviceControlPanel",
+          "line": 192,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 193
+            }
+          ]
+        },
+        {
+          "name": "CollapsibleSection",
+          "line": 219,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 220
+            },
+            {
+              "name": "_toggle",
+              "line": 240
+            }
+          ]
+        },
+        {
+          "name": "TrkrWorker",
+          "line": 247,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 253
+            },
+            {
+              "name": "run",
+              "line": 274
+            },
+            {
+              "name": "stop",
+              "line": 294
+            }
+          ]
+        },
+        {
+          "name": "SignalMonitorWorker",
+          "line": 298,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 304
+            },
+            {
+              "name": "run",
+              "line": 321
+            },
+            {
+              "name": "stop",
+              "line": 339
+            }
+          ]
+        },
+        {
+          "name": "SrkrWorker",
+          "line": 343,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 349
+            },
+            {
+              "name": "run",
+              "line": 374
+            },
+            {
+              "name": "stop",
+              "line": 395
+            }
+          ]
+        },
+        {
+          "name": "DelayStageInitializeWorker",
+          "line": 399,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 404
+            },
+            {
+              "name": "run",
+              "line": 410
+            }
+          ]
+        },
+        {
+          "name": "XYInitializeWorker",
+          "line": 419,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 424
+            },
+            {
+              "name": "run",
+              "line": 431
+            }
+          ]
+        },
+        {
+          "name": "TrkrWindow",
+          "line": 443,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 444
+            },
+            {
+              "name": "_configure_spin_boxes",
+              "line": 834
+            },
+            {
+              "name": "_build_device_tabs",
+              "line": 838
+            },
+            {
+              "name": "_build_layout",
+              "line": 907
+            },
+            {
+              "name": "_harmonize_form_label_widths",
+              "line": 1346
+            },
+            {
+              "name": "_snapshot_config",
+              "line": 1362
+            },
+            {
+              "name": "_rebuild_snapshot_table",
+              "line": 1400
+            },
+            {
+              "name": "_connect_signals",
+              "line": 1407
+            },
+            {
+              "name": "append_log",
+              "line": 1491
+            },
+            {
+              "name": "_refresh_port_combo",
+              "line": 1495
+            },
+            {
+              "name": "_set_combo_value",
+              "line": 1514
+            },
+            {
+              "name": "_is_agap_controller",
+              "line": 1529
+            },
+            {
+              "name": "_axis_options_for_controller",
+              "line": 1532
+            },
+            {
+              "name": "_selected_axis_value",
+              "line": 1537
+            },
+            {
+              "name": "_set_axis_value",
+              "line": 1546
+            },
+            {
+              "name": "_configure_xy_axis_widgets",
+              "line": 1555
+            },
+            {
+              "name": "_apply_xy_controller_defaults",
+              "line": 1577
+            },
+            {
+              "name": "_apply_delay_stage_controller_defaults",
+              "line": 1586
+            },
+            {
+              "name": "refresh_lockin_resources",
+              "line": 1593
+            },
+            {
+              "name": "refresh_all_ports",
+              "line": 1613
+            },
+            {
+              "name": "_update_xy_port_mode",
+              "line": 1622
+            },
+            {
+              "name": "_selected_port",
+              "line": 1641
+            },
+            {
+              "name": "choose_config_file",
+              "line": 1650
+            },
+            {
+              "name": "load_config_file",
+              "line": 1660
+            },
+            {
+              "name": "save_config_file",
+              "line": 1773
+            },
+            {
+              "name": "choose_output_dir",
+              "line": 1796
+            },
+            {
+              "name": "_lockin_config",
+              "line": 1805
+            },
+            {
+              "name": "_lockin_ref_name",
+              "line": 1814
+            },
+            {
+              "name": "_scanner_config",
+              "line": 1818
+            },
+            {
+              "name": "_delay_stage_config",
+              "line": 1862
+            },
+            {
+              "name": "_output_path",
+              "line": 1883
+            },
+            {
+              "name": "_current_output_settings",
+              "line": 1886
+            },
+            {
+              "name": "_save_current_output_settings",
+              "line": 1894
+            },
+            {
+              "name": "_apply_output_settings",
+              "line": 1897
+            },
+            {
+              "name": "_config_snapshot",
+              "line": 1906
+            },
+            {
+              "name": "_collect_config",
+              "line": 1941
+            },
+            {
+              "name": "_api_config_for_measurement",
+              "line": 1944
+            },
+            {
+              "name": "_measurement_name",
+              "line": 1947
+            },
+            {
+              "name": "_measurement_label",
+              "line": 1953
+            },
+            {
+              "name": "_current_rows",
+              "line": 1959
+            },
+            {
+              "name": "_ensure_experiment",
+              "line": 1962
+            },
+            {
+              "name": "_ensure_partial_experiment",
+              "line": 1970
+            },
+            {
+              "name": "_set_experiment_instrument_config",
+              "line": 1983
+            },
+            {
+              "name": "_apply_position_model",
+              "line": 1990
+            },
+            {
+              "name": "_lockin_handle",
+              "line": 2004
+            },
+            {
+              "name": "_delay_stage_handle",
+              "line": 2010
+            },
+            {
+              "name": "_scanner_handle",
+              "line": 2016
+            },
+            {
+              "name": "_connected_refs",
+              "line": 2022
+            },
+            {
+              "name": "_has_connected_lockin",
+              "line": 2027
+            },
+            {
+              "name": "_has_connected_delay_stage",
+              "line": 2030
+            },
+            {
+              "name": "_has_connected_scanner",
+              "line": 2033
+            },
+            {
+              "name": "_sync_connected_flags_from_experiment",
+              "line": 2036
+            },
+            {
+              "name": "_delay_stage_unit_for_coordinate",
+              "line": 2041
+            },
+            {
+              "name": "_scanner_unit_for_coordinate",
+              "line": 2044
+            },
+            {
+              "name": "_scanner_label_for_coordinate",
+              "line": 2052
+            },
+            {
+              "name": "_delay_stage_label_for_coordinate",
+              "line": 2060
+            },
+            {
+              "name": "_coordinate_correction_enabled",
+              "line": 2063
+            },
+            {
+              "name": "_delay_stage_status_value_for_coordinate",
+              "line": 2066
+            },
+            {
+              "name": "_scanner_status_value_for_coordinate",
+              "line": 2074
+            },
+            {
+              "name": "_refresh_delay_stage_cache_if_needed",
+              "line": 2080
+            },
+            {
+              "name": "_refresh_scanner_cache_if_needed",
+              "line": 2097
+            },
+            {
+              "name": "_refresh_move_abs_coordinate_ui",
+              "line": 2120
+            },
+            {
+              "name": "_sync_srkr_axis_ui",
+              "line": 2140
+            },
+            {
+              "name": "_sync_scanner_axis_widgets",
+              "line": 2163
+            },
+            {
+              "name": "_apply_coordinate_edit_locks",
+              "line": 2177
+            },
+            {
+              "name": "_apply_srkr_offsets_to_status",
+              "line": 2207
+            },
+            {
+              "name": "_store_srkr_axis_values",
+              "line": 2211
+            },
+            {
+              "name": "_handle_srkr_axis_change",
+              "line": 2220
+            },
+            {
+              "name": "_sync_srkr_offset_value_from_spin",
+              "line": 2225
+            },
+            {
+              "name": "_sync_srkr_move_value_from_spin",
+              "line": 2238
+            },
+            {
+              "name": "_sync_srkr_corrected_move_value_from_spin",
+              "line": 2243
+            },
+            {
+              "name": "_sync_scanner_offset_from_spin",
+              "line": 2248
+            },
+            {
+              "name": "_sync_scanner_move_from_spin",
+              "line": 2264
+            },
+            {
+              "name": "_sync_scanner_corrected_move_from_spin",
+              "line": 2272
+            },
+            {
+              "name": "_set_srkr_offsets",
+              "line": 2280
+            },
+            {
+              "name": "test_connections",
+              "line": 2288
+            },
+            {
+              "name": "connect_lockin_only",
+              "line": 2327
+            },
+            {
+              "name": "connect_xy_only",
+              "line": 2345
+            },
+            {
+              "name": "connect_t_only",
+              "line": 2369
+            },
+            {
+              "name": "disconnect_all_devices",
+              "line": 2388
+            },
+            {
+              "name": "disconnect_lockin_only",
+              "line": 2405
+            },
+            {
+              "name": "disconnect_xy_only",
+              "line": 2416
+            },
+            {
+              "name": "disconnect_t_only",
+              "line": 2436
+            },
+            {
+              "name": "initialize_xy",
+              "line": 2447
+            },
+            {
+              "name": "initialize_t",
+              "line": 2479
+            },
+            {
+              "name": "open_settings_placeholder",
+              "line": 2507
+            },
+            {
+              "name": "set_srkr_wait_from_lockin",
+              "line": 2510
+            },
+            {
+              "name": "set_scanner_offset_from_current",
+              "line": 2524
+            },
+            {
+              "name": "set_srkr_offset_from_current",
+              "line": 2543
+            },
+            {
+              "name": "_clear_srkr_axis_data",
+              "line": 2546
+            },
+            {
+              "name": "move_scanner_absolute",
+              "line": 2560
+            },
+            {
+              "name": "move_srkr_absolute",
+              "line": 2586
+            },
+            {
+              "name": "move_scanner_corrected",
+              "line": 2591
+            },
+            {
+              "name": "move_srkr_corrected",
+              "line": 2619
+            },
+            {
+              "name": "start_measurement",
+              "line": 2626
+            },
+            {
+              "name": "stop_measurement",
+              "line": 2731
+            },
+            {
+              "name": "clear_plot",
+              "line": 2736
+            },
+            {
+              "name": "save_rows_now",
+              "line": 2745
+            },
+            {
+              "name": "set_wait_from_lockin",
+              "line": 2758
+            },
+            {
+              "name": "set_t_zero_from_current",
+              "line": 2772
+            },
+            {
+              "name": "move_t_absolute",
+              "line": 2791
+            },
+            {
+              "name": "move_t_corrected",
+              "line": 2808
+            },
+            {
+              "name": "refresh_live_status",
+              "line": 2825
+            },
+            {
+              "name": "handle_point",
+              "line": 2859
+            },
+            {
+              "name": "handle_status",
+              "line": 2886
+            },
+            {
+              "name": "handle_error",
+              "line": 2890
+            },
+            {
+              "name": "handle_delay_stage_initialized",
+              "line": 2895
+            },
+            {
+              "name": "handle_xy_initialized",
+              "line": 2917
+            },
+            {
+              "name": "handle_xy_initialize_error",
+              "line": 2940
+            },
+            {
+              "name": "handle_delay_stage_initialize_error",
+              "line": 2946
+            },
+            {
+              "name": "handle_finished",
+              "line": 2952
+            },
+            {
+              "name": "_update_snapshot",
+              "line": 2956
+            },
+            {
+              "name": "_update_curves",
+              "line": 2962
+            },
+            {
+              "name": "_update_top_axis_ticks",
+              "line": 3114
+            },
+            {
+              "name": "_update_top_axis_ticks_from_pairs",
+              "line": 3122
+            },
+            {
+              "name": "_set_standard_plot_ratio",
+              "line": 3131
+            },
+            {
+              "name": "_set_srkr_plot_ratio",
+              "line": 3137
+            },
+            {
+              "name": "_set_srkr_plot_data",
+              "line": 3143
+            },
+            {
+              "name": "_update_voltage_display_from_settings",
+              "line": 3166
+            },
+            {
+              "name": "_update_overload_display",
+              "line": 3178
+            },
+            {
+              "name": "_refresh_overload_display",
+              "line": 3181
+            },
+            {
+              "name": "_set_status_value",
+              "line": 3187
+            },
+            {
+              "name": "_update_position_status",
+              "line": 3190
+            },
+            {
+              "name": "_signal_view_config",
+              "line": 3264
+            },
+            {
+              "name": "_update_signal_status",
+              "line": 3268
+            },
+            {
+              "name": "_refresh_signal_view",
+              "line": 3280
+            },
+            {
+              "name": "_refresh_measurement_view",
+              "line": 3289
+            },
+            {
+              "name": "_set_running_state",
+              "line": 3339
+            },
+            {
+              "name": "_set_device_busy_state",
+              "line": 3394
+            },
+            {
+              "name": "_cleanup_thread",
+              "line": 3433
+            },
+            {
+              "name": "_cleanup_device_thread",
+              "line": 3439
+            },
+            {
+              "name": "closeEvent",
+              "line": 3444
+            }
+          ]
+        },
+        {
+          "name": "main",
+          "line": 3455,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_config.py",
+      "python_sha256": "800b800f217f2912be9f962846c0baa9c6b012ecf47f216bde35f3098f0da70e",
+      "symbols": [
+        {
+          "name": "zero_um_from_config",
+          "line": 10,
+          "kind": "function"
+        },
+        {
+          "name": "first_number",
+          "line": 20,
+          "kind": "function"
+        },
+        {
+          "name": "measurement_map",
+          "line": 31,
+          "kind": "function"
+        },
+        {
+          "name": "output_settings_from_measurement",
+          "line": 35,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_scale_key",
+          "line": 55,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_scale_value",
+          "line": 59,
+          "kind": "function"
+        },
+        {
+          "name": "default_instrument_refs",
+          "line": 69,
+          "kind": "function"
+        },
+        {
+          "name": "LoadedGuiConfig",
+          "line": 78,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "shared_xy_port",
+              "line": 90
+            }
+          ]
+        },
+        {
+          "name": "extract_loaded_gui_config",
+          "line": 96,
+          "kind": "function"
+        },
+        {
+          "name": "_extract_api_config",
+          "line": 103,
+          "kind": "function"
+        },
+        {
+          "name": "_scanner_ref",
+          "line": 167,
+          "kind": "function"
+        },
+        {
+          "name": "_extract_legacy_config",
+          "line": 183,
+          "kind": "function"
+        },
+        {
+          "name": "GuiConfigSnapshot",
+          "line": 199,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "build_saved_config",
+          "line": 222,
+          "kind": "function"
+        },
+        {
+          "name": "build_measurement_config",
+          "line": 292,
+          "kind": "function"
+        },
+        {
+          "name": "_lockin_ref",
+          "line": 358,
+          "kind": "function"
+        },
+        {
+          "name": "_zero_settings",
+          "line": 362,
+          "kind": "function"
+        },
+        {
+          "name": "_output_config",
+          "line": 370,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_coordinates.py",
+      "python_sha256": "f87e24c6112a341cf7f21973438576beecfd55a74751034d7b83c97340cf1fc6",
+      "symbols": [
+        {
+          "name": "delay_stage_unit_for_coordinate",
+          "line": 7,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_unit_for_coordinate",
+          "line": 16,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_label_for_coordinate",
+          "line": 28,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_scale_label_for_actuator",
+          "line": 43,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_axis_spin_value",
+          "line": 47,
+          "kind": "function"
+        },
+        {
+          "name": "delay_stage_label_for_coordinate",
+          "line": 56,
+          "kind": "function"
+        },
+        {
+          "name": "coordinate_correction_enabled",
+          "line": 64,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_devices.py",
+      "python_sha256": "f23ea82299b4223ba3fdf9ba415a0e18ce20683b2b94a15fd62ae017b91f392b",
+      "symbols": [
+        {
+          "name": "device_ref",
+          "line": 6,
+          "kind": "function"
+        },
+        {
+          "name": "lockin_key",
+          "line": 10,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_key",
+          "line": 14,
+          "kind": "function"
+        },
+        {
+          "name": "scanner_keys",
+          "line": 18,
+          "kind": "function"
+        },
+        {
+          "name": "delay_stage_key",
+          "line": 22,
+          "kind": "function"
+        },
+        {
+          "name": "single_instrument_config",
+          "line": 26,
+          "kind": "function"
+        },
+        {
+          "name": "xy_scanner_config",
+          "line": 36,
+          "kind": "function"
+        },
+        {
+          "name": "corrected_target",
+          "line": 52,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_measurement.py",
+      "python_sha256": "e86032bcbda3e6eec51a545896a1d8f9a29d3026de819365fff10b599d471a64",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-core/src/lib.rs",
+        "next/crates/trkr-desktop/src/config.rs"
+      ],
+      "classification": "legacy_reexports_replaced_by_native_plans"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_output.py",
+      "python_sha256": "e7159a1c6ba5c69a27710ba89d067ca3e20d8e4cccae2f537dcc4841af70d0b6",
+      "symbols": [
+        {
+          "name": "output_settings_from_fields",
+          "line": 9,
+          "kind": "function"
+        },
+        {
+          "name": "normalize_output_settings",
+          "line": 28,
+          "kind": "function"
+        },
+        {
+          "name": "build_output_path",
+          "line": 44,
+          "kind": "function"
+        },
+        {
+          "name": "output_config_for_measurement",
+          "line": 52,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_plot.py",
+      "python_sha256": "7a706c3204f421b899c5515c0d180bf226527b9da162f8b5f77a8fd085d58e98",
+      "symbols": [
+        {
+          "name": "sample_axis_ticks",
+          "line": 7,
+          "kind": "function"
+        },
+        {
+          "name": "signal_scale",
+          "line": 20,
+          "kind": "function"
+        },
+        {
+          "name": "scan2d_uses_equal_spatial_units",
+          "line": 24,
+          "kind": "function"
+        },
+        {
+          "name": "SeriesData",
+          "line": 29,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "standard_plot_series",
+          "line": 34,
+          "kind": "function"
+        },
+        {
+          "name": "SrkrPlotData",
+          "line": 53,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "SrkrPlotSeries",
+          "line": 60,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "srkr_plot_series",
+          "line": 67,
+          "kind": "function"
+        },
+        {
+          "name": "signal_monitor_top_labels",
+          "line": 94,
+          "kind": "function"
+        },
+        {
+          "name": "trkr_top_labels",
+          "line": 98,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_signal.py",
+      "python_sha256": "7b57e127427cee7dc53cb0486fa4ccf39f6390fd6a66233f829396b541bf8439",
+      "symbols": [
+        {
+          "name": "voltage_scale_from_sensitivity",
+          "line": 7,
+          "kind": "function"
+        },
+        {
+          "name": "time_constant_display",
+          "line": 17,
+          "kind": "function"
+        },
+        {
+          "name": "SignalViewConfig",
+          "line": 25,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "signal_view_config",
+          "line": 34,
+          "kind": "function"
+        },
+        {
+          "name": "LockinDisplay",
+          "line": 41,
+          "kind": "class",
+          "methods": []
+        },
+        {
+          "name": "lockin_display_from_settings",
+          "line": 53,
+          "kind": "function"
+        },
+        {
+          "name": "overload_display_from_status",
+          "line": 72,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_snapshot.py",
+      "python_sha256": "30d32d8a3ca1b1cebc29f9b76cd0c39dec4fb1e6d3d3369d53294c65f9758d9b",
+      "symbols": [
+        {
+          "name": "format_ps",
+          "line": 17,
+          "kind": "function"
+        },
+        {
+          "name": "format_snapshot_value",
+          "line": 21,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs",
+        "next/crates/trkr-desktop/src/config.rs",
+        "next/crates/trkr-desktop/src/presentation.rs",
+        "next/crates/trkr-desktop/src/plot_history.rs"
+      ],
+      "classification": "partial_ui_parity_see_findings"
+    },
+    {
+      "python_file": "src/kohdalab/apps/trkr_gui_test.py",
+      "python_sha256": "db0567444f2e792aeacad8856db31e85281f89f78e2b1fbf71eb9adcf3788ec3",
+      "symbols": [
+        {
+          "name": "_format_float",
+          "line": 33,
+          "kind": "function"
+        },
+        {
+          "name": "_format_bool",
+          "line": 42,
+          "kind": "function"
+        },
+        {
+          "name": "TrkrGuiTestWindow",
+          "line": 48,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 49
+            },
+            {
+              "name": "_build_layout",
+              "line": 135
+            },
+            {
+              "name": "_add_status_rows",
+              "line": 222
+            },
+            {
+              "name": "_build_scanner_group",
+              "line": 227
+            },
+            {
+              "name": "_connect_signals",
+              "line": 262
+            },
+            {
+              "name": "append_log",
+              "line": 281
+            },
+            {
+              "name": "choose_config",
+              "line": 285
+            },
+            {
+              "name": "load_config",
+              "line": 296
+            },
+            {
+              "name": "_set_combo_text",
+              "line": 313
+            },
+            {
+              "name": "_lockin_config",
+              "line": 320
+            },
+            {
+              "name": "_delay_stage_config",
+              "line": 336
+            },
+            {
+              "name": "_scanner_config",
+              "line": 354
+            },
+            {
+              "name": "_apply_delay_stage_config",
+              "line": 374
+            },
+            {
+              "name": "_apply_scanner_config",
+              "line": 380
+            },
+            {
+              "name": "refresh_resources",
+              "line": 388
+            },
+            {
+              "name": "handle_connect_lockin",
+              "line": 400
+            },
+            {
+              "name": "handle_disconnect_lockin",
+              "line": 411
+            },
+            {
+              "name": "handle_read_lockin",
+              "line": 419
+            },
+            {
+              "name": "handle_read_wait_time",
+              "line": 437
+            },
+            {
+              "name": "handle_connect_delay_stage",
+              "line": 445
+            },
+            {
+              "name": "handle_disconnect_delay_stage",
+              "line": 456
+            },
+            {
+              "name": "handle_read_delay_stage",
+              "line": 464
+            },
+            {
+              "name": "handle_initialize_delay_stage",
+              "line": 479
+            },
+            {
+              "name": "handle_connect_scanner",
+              "line": 492
+            },
+            {
+              "name": "handle_disconnect_scanner",
+              "line": 504
+            },
+            {
+              "name": "handle_read_scanner",
+              "line": 512
+            },
+            {
+              "name": "handle_initialize_scanner",
+              "line": 531
+            },
+            {
+              "name": "closeEvent",
+              "line": 544
+            }
+          ]
+        },
+        {
+          "name": "main",
+          "line": 564,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/ui.rs"
+      ],
+      "classification": "separate_diagnostic_window_not_ported"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/delay_stage/__init__.py",
+      "python_sha256": "130e3f14336eedadffc8d5b3fe08619d1debcecf1123ce5beb755819ab48a287",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/delay_stage/gsc01.py",
+      "python_sha256": "bf21ead526c80463f8987611ec793726e5a0d410d648a93b423d92f4c21b7a1f",
+      "symbols": [
+        {
+          "name": "GSC01",
+          "line": 11,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 19
+            },
+            {
+              "name": "configure",
+              "line": 46
+            },
+            {
+              "name": "close",
+              "line": 60
+            },
+            {
+              "name": "is_connected",
+              "line": 64
+            },
+            {
+              "name": "ask",
+              "line": 67
+            },
+            {
+              "name": "debug_query",
+              "line": 73
+            },
+            {
+              "name": "debug_query_raw",
+              "line": 78
+            },
+            {
+              "name": "send",
+              "line": 91
+            },
+            {
+              "name": "get_status",
+              "line": 95
+            },
+            {
+              "name": "is_ready",
+              "line": 98
+            },
+            {
+              "name": "get_positions",
+              "line": 101
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 107
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 116
+            },
+            {
+              "name": "wait_ready",
+              "line": 119
+            },
+            {
+              "name": "wait_position",
+              "line": 127
+            },
+            {
+              "name": "initialize",
+              "line": 147
+            },
+            {
+              "name": "execute_drive",
+              "line": 160
+            },
+            {
+              "name": "set_logical_zero",
+              "line": 163
+            },
+            {
+              "name": "set_excitation",
+              "line": 166
+            },
+            {
+              "name": "jog",
+              "line": 171
+            },
+            {
+              "name": "move_abs_raw",
+              "line": 177
+            },
+            {
+              "name": "move_rel_raw",
+              "line": 191
+            },
+            {
+              "name": "home",
+              "line": 207
+            },
+            {
+              "name": "stop",
+              "line": 212
+            },
+            {
+              "name": "set_speed",
+              "line": 215
+            },
+            {
+              "name": "query_internal",
+              "line": 218
+            },
+            {
+              "name": "get_microstep_division",
+              "line": 222
+            },
+            {
+              "name": "query_sensor_status",
+              "line": 242
+            },
+            {
+              "name": "write_internal",
+              "line": 245
+            },
+            {
+              "name": "_check_response",
+              "line": 249
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/delay_stage/gsc01a.py",
+      "python_sha256": "1a32dc1f9a54f760de278d1a3a1dec01d217bb0a669243eada58e80959a60841",
+      "symbols": [
+        {
+          "name": "GSC01A",
+          "line": 10,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "set_logical_zero",
+              "line": 19
+            },
+            {
+              "name": "stop",
+              "line": 23
+            },
+            {
+              "name": "immediate_stop",
+              "line": 27
+            },
+            {
+              "name": "query_sensor_status",
+              "line": 30
+            },
+            {
+              "name": "get_microstep_division",
+              "line": 33
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/delay_stage/shot302.py",
+      "python_sha256": "cfabaa060162bb79fd7428e8435a8d8386f2fcd6e1392e0b6dcd07a27db7bfa2",
+      "symbols": [
+        {
+          "name": "Shot302GS",
+          "line": 11,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 19
+            },
+            {
+              "name": "configure",
+              "line": 46
+            },
+            {
+              "name": "close",
+              "line": 60
+            },
+            {
+              "name": "is_connected",
+              "line": 64
+            },
+            {
+              "name": "ask",
+              "line": 67
+            },
+            {
+              "name": "debug_query",
+              "line": 73
+            },
+            {
+              "name": "debug_query_raw",
+              "line": 78
+            },
+            {
+              "name": "send",
+              "line": 91
+            },
+            {
+              "name": "get_status",
+              "line": 95
+            },
+            {
+              "name": "is_ready",
+              "line": 98
+            },
+            {
+              "name": "get_positions",
+              "line": 101
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 107
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 116
+            },
+            {
+              "name": "wait_ready",
+              "line": 119
+            },
+            {
+              "name": "wait_position",
+              "line": 127
+            },
+            {
+              "name": "initialize",
+              "line": 147
+            },
+            {
+              "name": "execute_drive",
+              "line": 160
+            },
+            {
+              "name": "set_logical_zero",
+              "line": 163
+            },
+            {
+              "name": "set_excitation",
+              "line": 166
+            },
+            {
+              "name": "jog",
+              "line": 171
+            },
+            {
+              "name": "move_abs_raw",
+              "line": 177
+            },
+            {
+              "name": "move_rel_raw",
+              "line": 191
+            },
+            {
+              "name": "home",
+              "line": 207
+            },
+            {
+              "name": "stop",
+              "line": 212
+            },
+            {
+              "name": "set_speed",
+              "line": 215
+            },
+            {
+              "name": "query_internal",
+              "line": 218
+            },
+            {
+              "name": "get_microstep_division",
+              "line": 222
+            },
+            {
+              "name": "query_sensor_status",
+              "line": 235
+            },
+            {
+              "name": "query_microstep",
+              "line": 238
+            },
+            {
+              "name": "write_internal",
+              "line": 241
+            },
+            {
+              "name": "_check_response",
+              "line": 245
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/delay_stage/stages.toml",
+      "python_sha256": "2bf14292ae35bc1f8fe48874e94698e98e2a763a14df3d34e6137cecf0739dda",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/lockin/__init__.py",
+      "python_sha256": "4f9fcfe114515d6b5671eaa47cb077dec046f98e37c2f646b8a48089b6d1d423",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/lockin/li5640.py",
+      "python_sha256": "0d93f3fdbd89d5a805393d78ae9934ce60ef5f43a71bfce638f5f1f877844edd",
+      "symbols": [
+        {
+          "name": "LI5640",
+          "line": 81,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 82
+            },
+            {
+              "name": "configure",
+              "line": 88
+            },
+            {
+              "name": "ask",
+              "line": 91
+            },
+            {
+              "name": "ask_float",
+              "line": 100
+            },
+            {
+              "name": "parse_float_response",
+              "line": 107
+            },
+            {
+              "name": "ask_floats",
+              "line": 116
+            },
+            {
+              "name": "_resolve_index_from_table",
+              "line": 124
+            },
+            {
+              "name": "_table_value",
+              "line": 133
+            },
+            {
+              "name": "_restore_output_types",
+              "line": 139
+            },
+            {
+              "name": "_read_output_values",
+              "line": 143
+            },
+            {
+              "name": "_read_display_parameters",
+              "line": 155
+            },
+            {
+              "name": "_restore_display_parameters",
+              "line": 161
+            },
+            {
+              "name": "_read_display_pair",
+              "line": 167
+            },
+            {
+              "name": "get_live_data_raw",
+              "line": 174
+            },
+            {
+              "name": "get_time_constant",
+              "line": 183
+            },
+            {
+              "name": "get_ac_gain",
+              "line": 187
+            },
+            {
+              "name": "get_sensitivity",
+              "line": 190
+            },
+            {
+              "name": "get_ref_freq",
+              "line": 194
+            },
+            {
+              "name": "get_available_couplings",
+              "line": 197
+            },
+            {
+              "name": "get_available_slopes",
+              "line": 200
+            },
+            {
+              "name": "get_available_time_constants",
+              "line": 203
+            },
+            {
+              "name": "get_available_sensitivities",
+              "line": 206
+            },
+            {
+              "name": "get_available_ac_gains",
+              "line": 209
+            },
+            {
+              "name": "get_coupling",
+              "line": 212
+            },
+            {
+              "name": "get_slope",
+              "line": 219
+            },
+            {
+              "name": "get_overload_status",
+              "line": 226
+            },
+            {
+              "name": "get_wait_time",
+              "line": 256
+            },
+            {
+              "name": "auto_phase",
+              "line": 259
+            },
+            {
+              "name": "auto_sensitivity",
+              "line": 262
+            },
+            {
+              "name": "auto_measure",
+              "line": 265
+            },
+            {
+              "name": "set_sensitivity",
+              "line": 268
+            },
+            {
+              "name": "set_time_constant",
+              "line": 272
+            },
+            {
+              "name": "set_ac_gain",
+              "line": 276
+            },
+            {
+              "name": "set_coupling",
+              "line": 279
+            },
+            {
+              "name": "set_slope",
+              "line": 287
+            },
+            {
+              "name": "release_remote",
+              "line": 294
+            },
+            {
+              "name": "close",
+              "line": 298
+            },
+            {
+              "name": "is_connected",
+              "line": 304
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/lockin/sr5210.py",
+      "python_sha256": "c902ace53d7df1fe1a941b222700d05a9069630659be91e14bf02bc7641e1166",
+      "symbols": [
+        {
+          "name": "SR5210",
+          "line": 54,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 55
+            },
+            {
+              "name": "configure",
+              "line": 62
+            },
+            {
+              "name": "ask",
+              "line": 65
+            },
+            {
+              "name": "ask_responses",
+              "line": 80
+            },
+            {
+              "name": "ask_float",
+              "line": 98
+            },
+            {
+              "name": "parse_float_response",
+              "line": 105
+            },
+            {
+              "name": "ask_floats",
+              "line": 114
+            },
+            {
+              "name": "_resolve_index_from_table",
+              "line": 122
+            },
+            {
+              "name": "_table_value",
+              "line": 131
+            },
+            {
+              "name": "_scaled_signal_value",
+              "line": 138
+            },
+            {
+              "name": "get_live_data_raw",
+              "line": 141
+            },
+            {
+              "name": "get_time_constant",
+              "line": 199
+            },
+            {
+              "name": "get_ac_gain",
+              "line": 203
+            },
+            {
+              "name": "get_sensitivity",
+              "line": 206
+            },
+            {
+              "name": "get_ref_freq",
+              "line": 210
+            },
+            {
+              "name": "get_available_couplings",
+              "line": 213
+            },
+            {
+              "name": "get_available_slopes",
+              "line": 216
+            },
+            {
+              "name": "get_available_time_constants",
+              "line": 219
+            },
+            {
+              "name": "get_available_sensitivities",
+              "line": 222
+            },
+            {
+              "name": "get_available_ac_gains",
+              "line": 225
+            },
+            {
+              "name": "get_coupling",
+              "line": 228
+            },
+            {
+              "name": "get_slope",
+              "line": 231
+            },
+            {
+              "name": "get_overload_status",
+              "line": 238
+            },
+            {
+              "name": "get_wait_time",
+              "line": 259
+            },
+            {
+              "name": "auto_phase",
+              "line": 262
+            },
+            {
+              "name": "auto_sensitivity",
+              "line": 265
+            },
+            {
+              "name": "auto_measure",
+              "line": 268
+            },
+            {
+              "name": "set_sensitivity",
+              "line": 271
+            },
+            {
+              "name": "set_time_constant",
+              "line": 275
+            },
+            {
+              "name": "set_ac_gain",
+              "line": 279
+            },
+            {
+              "name": "set_coupling",
+              "line": 282
+            },
+            {
+              "name": "set_slope",
+              "line": 286
+            },
+            {
+              "name": "close",
+              "line": 293
+            },
+            {
+              "name": "is_connected",
+              "line": 296
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/lockin/sr7265.py",
+      "python_sha256": "51ab9bdc0a91623774102128973b4ff3679f6242114b4fa76f09319072c10ff8",
+      "symbols": [
+        {
+          "name": "SR7265",
+          "line": 66,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 67
+            },
+            {
+              "name": "configure",
+              "line": 72
+            },
+            {
+              "name": "ask",
+              "line": 75
+            },
+            {
+              "name": "ask_responses",
+              "line": 84
+            },
+            {
+              "name": "ask_float",
+              "line": 93
+            },
+            {
+              "name": "parse_float_response",
+              "line": 100
+            },
+            {
+              "name": "ask_floats",
+              "line": 109
+            },
+            {
+              "name": "_resolve_index_from_table",
+              "line": 117
+            },
+            {
+              "name": "get_live_data_raw",
+              "line": 125
+            },
+            {
+              "name": "get_time_constant",
+              "line": 148
+            },
+            {
+              "name": "get_ac_gain",
+              "line": 151
+            },
+            {
+              "name": "get_sensitivity",
+              "line": 154
+            },
+            {
+              "name": "get_ref_freq",
+              "line": 157
+            },
+            {
+              "name": "get_imode",
+              "line": 160
+            },
+            {
+              "name": "get_available_couplings",
+              "line": 163
+            },
+            {
+              "name": "get_available_slopes",
+              "line": 166
+            },
+            {
+              "name": "get_available_time_constants",
+              "line": 169
+            },
+            {
+              "name": "get_available_sensitivities",
+              "line": 172
+            },
+            {
+              "name": "get_available_ac_gains",
+              "line": 179
+            },
+            {
+              "name": "get_coupling",
+              "line": 182
+            },
+            {
+              "name": "get_slope",
+              "line": 189
+            },
+            {
+              "name": "get_overload_status",
+              "line": 196
+            },
+            {
+              "name": "get_wait_time",
+              "line": 219
+            },
+            {
+              "name": "auto_phase",
+              "line": 222
+            },
+            {
+              "name": "auto_sensitivity",
+              "line": 225
+            },
+            {
+              "name": "auto_measure",
+              "line": 228
+            },
+            {
+              "name": "set_sensitivity",
+              "line": 231
+            },
+            {
+              "name": "set_time_constant",
+              "line": 239
+            },
+            {
+              "name": "set_ac_gain",
+              "line": 243
+            },
+            {
+              "name": "set_coupling",
+              "line": 247
+            },
+            {
+              "name": "set_slope",
+              "line": 255
+            },
+            {
+              "name": "close",
+              "line": 262
+            },
+            {
+              "name": "is_connected",
+              "line": 265
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/lockin/sr830.py",
+      "python_sha256": "b115a4d54e72ad1bcaab330a3d4c5d2d3be278f83d9303f9a642a822230ec248",
+      "symbols": [
+        {
+          "name": "SR830",
+          "line": 79,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 80
+            },
+            {
+              "name": "configure",
+              "line": 85
+            },
+            {
+              "name": "ask",
+              "line": 88
+            },
+            {
+              "name": "ask_float",
+              "line": 97
+            },
+            {
+              "name": "parse_float_response",
+              "line": 104
+            },
+            {
+              "name": "ask_floats",
+              "line": 113
+            },
+            {
+              "name": "_resolve_index_from_table",
+              "line": 121
+            },
+            {
+              "name": "_table_value",
+              "line": 130
+            },
+            {
+              "name": "get_live_data_raw",
+              "line": 136
+            },
+            {
+              "name": "get_time_constant",
+              "line": 140
+            },
+            {
+              "name": "get_ac_gain",
+              "line": 144
+            },
+            {
+              "name": "get_sensitivity",
+              "line": 147
+            },
+            {
+              "name": "get_ref_freq",
+              "line": 151
+            },
+            {
+              "name": "get_available_couplings",
+              "line": 154
+            },
+            {
+              "name": "get_available_slopes",
+              "line": 157
+            },
+            {
+              "name": "get_available_time_constants",
+              "line": 160
+            },
+            {
+              "name": "get_available_sensitivities",
+              "line": 163
+            },
+            {
+              "name": "get_available_ac_gains",
+              "line": 166
+            },
+            {
+              "name": "get_coupling",
+              "line": 169
+            },
+            {
+              "name": "get_slope",
+              "line": 176
+            },
+            {
+              "name": "get_overload_status",
+              "line": 183
+            },
+            {
+              "name": "get_wait_time",
+              "line": 197
+            },
+            {
+              "name": "auto_phase",
+              "line": 200
+            },
+            {
+              "name": "auto_sensitivity",
+              "line": 203
+            },
+            {
+              "name": "auto_measure",
+              "line": 206
+            },
+            {
+              "name": "set_sensitivity",
+              "line": 209
+            },
+            {
+              "name": "set_time_constant",
+              "line": 213
+            },
+            {
+              "name": "set_ac_gain",
+              "line": 217
+            },
+            {
+              "name": "set_coupling",
+              "line": 220
+            },
+            {
+              "name": "set_slope",
+              "line": 228
+            },
+            {
+              "name": "close",
+              "line": 235
+            },
+            {
+              "name": "is_connected",
+              "line": 238
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/scanner/__init__.py",
+      "python_sha256": "70675ce8bb152a0ccd590cf05abb54e2138158bd711fff96011f10805dc54d6d",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/scanner/actuator.toml",
+      "python_sha256": "31271ddbfb1a7b53d984b540d2600e1a60eabb2c50a1d8e6deffcd94a44cc6a4",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/scanner/conexagap.py",
+      "python_sha256": "3b7dfb7390513166cb7fe566853716d8c07e531f0fe92cbc8f5c5ac1fee46172",
+      "symbols": [
+        {
+          "name": "ConexAgap",
+          "line": 9,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 12
+            },
+            {
+              "name": "_normalize_axis",
+              "line": 41
+            },
+            {
+              "name": "configure",
+              "line": 56
+            },
+            {
+              "name": "close",
+              "line": 70
+            },
+            {
+              "name": "is_connected",
+              "line": 74
+            },
+            {
+              "name": "_cmd",
+              "line": 77
+            },
+            {
+              "name": "write",
+              "line": 84
+            },
+            {
+              "name": "query",
+              "line": 87
+            },
+            {
+              "name": "debug_query",
+              "line": 90
+            },
+            {
+              "name": "get_state",
+              "line": 95
+            },
+            {
+              "name": "_state_code",
+              "line": 98
+            },
+            {
+              "name": "_ensure_ready",
+              "line": 105
+            },
+            {
+              "name": "is_moving",
+              "line": 118
+            },
+            {
+              "name": "wait_until_stopped",
+              "line": 121
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 137
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 140
+            },
+            {
+              "name": "initialize",
+              "line": 147
+            },
+            {
+              "name": "move_abs_raw",
+              "line": 160
+            },
+            {
+              "name": "move_rel_raw",
+              "line": 175
+            },
+            {
+              "name": "stop",
+              "line": 190
+            },
+            {
+              "name": "home",
+              "line": 193
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/instruments/scanner/conexcc.py",
+      "python_sha256": "474f35640c5d939b572b9dd43c7920f3ef657205d15c22dc36977f4b10cbabd2",
+      "symbols": [
+        {
+          "name": "ConexCC",
+          "line": 9,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "__init__",
+              "line": 19
+            },
+            {
+              "name": "configure",
+              "line": 50
+            },
+            {
+              "name": "close",
+              "line": 66
+            },
+            {
+              "name": "is_connected",
+              "line": 70
+            },
+            {
+              "name": "_cmd",
+              "line": 73
+            },
+            {
+              "name": "write",
+              "line": 80
+            },
+            {
+              "name": "query",
+              "line": 83
+            },
+            {
+              "name": "debug_query",
+              "line": 86
+            },
+            {
+              "name": "get_state",
+              "line": 91
+            },
+            {
+              "name": "_parse_ts",
+              "line": 94
+            },
+            {
+              "name": "get_state_code",
+              "line": 102
+            },
+            {
+              "name": "get_error_code",
+              "line": 105
+            },
+            {
+              "name": "_check_error",
+              "line": 108
+            },
+            {
+              "name": "is_moving",
+              "line": 118
+            },
+            {
+              "name": "_set_closed_loop",
+              "line": 121
+            },
+            {
+              "name": "_wait_for_state",
+              "line": 130
+            },
+            {
+              "name": "_wait_for_ready",
+              "line": 151
+            },
+            {
+              "name": "_wait_for_disable",
+              "line": 159
+            },
+            {
+              "name": "_prepare_closed_loop_from_disable",
+              "line": 167
+            },
+            {
+              "name": "_ensure_ready_closed_loop",
+              "line": 173
+            },
+            {
+              "name": "wait_until_stopped",
+              "line": 194
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 210
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 213
+            },
+            {
+              "name": "initialize",
+              "line": 220
+            },
+            {
+              "name": "move_abs_raw",
+              "line": 241
+            },
+            {
+              "name": "move_rel_raw",
+              "line": 257
+            },
+            {
+              "name": "stop",
+              "line": 273
+            },
+            {
+              "name": "home",
+              "line": 276
+            }
+          ]
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/interfaces/__init__.py",
+      "python_sha256": "cd0b8990f289b0dd0f25dd401ea48ed9505d59f35c3e0f07207c7e30564f3573",
+      "symbols": [],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "bindings/python/kohdalab_trkr.py"
+      ],
+      "classification": "legacy_export_facade_replaced_by_native_modules_not_import_compatible"
+    },
+    {
+      "python_file": "src/kohdalab/interfaces/common.py",
+      "python_sha256": "633dfeda97d95f4b7dee90bfc5a486a57cdc08f2c815881a6f8871848b6bef0d",
+      "symbols": [
+        {
+          "name": "load_toml",
+          "line": 8,
+          "kind": "function"
+        },
+        {
+          "name": "merge_config",
+          "line": 13,
+          "kind": "function"
+        },
+        {
+          "name": "midpoint",
+          "line": 19,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/interfaces/delay_stage.py",
+      "python_sha256": "6b897ef2a5e549cf8d3b367554fd302bbe35ea296a96cd8570f1c51cce66bb61",
+      "symbols": [
+        {
+          "name": "_controller_name",
+          "line": 21,
+          "kind": "function"
+        },
+        {
+          "name": "_validate_stage_controller",
+          "line": 25,
+          "kind": "function"
+        },
+        {
+          "name": "_build_delay_stage_config",
+          "line": 41,
+          "kind": "function"
+        },
+        {
+          "name": "_build_delay_stage_controller",
+          "line": 52,
+          "kind": "function"
+        },
+        {
+          "name": "DelayStage",
+          "line": 71,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "configure",
+              "line": 77
+            },
+            {
+              "name": "close",
+              "line": 88
+            },
+            {
+              "name": "is_connected",
+              "line": 92
+            },
+            {
+              "name": "stage_name",
+              "line": 97
+            },
+            {
+              "name": "_axis",
+              "line": 100
+            },
+            {
+              "name": "axis",
+              "line": 104
+            },
+            {
+              "name": "pos_unit",
+              "line": 108
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 111
+            },
+            {
+              "name": "get_pos_um_per_pulse",
+              "line": 114
+            },
+            {
+              "name": "get_microstep_division",
+              "line": 132
+            },
+            {
+              "name": "get_cached_microstep_division",
+              "line": 142
+            },
+            {
+              "name": "pulse_to_pos_um",
+              "line": 146
+            },
+            {
+              "name": "pos_um_to_pulse",
+              "line": 149
+            },
+            {
+              "name": "get_pos_mm",
+              "line": 152
+            },
+            {
+              "name": "pulse_to_pos_mm",
+              "line": 157
+            },
+            {
+              "name": "pos_mm_to_pulse",
+              "line": 160
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 163
+            },
+            {
+              "name": "get_pulse",
+              "line": 167
+            },
+            {
+              "name": "get_positions",
+              "line": 170
+            },
+            {
+              "name": "get_limits",
+              "line": 174
+            },
+            {
+              "name": "_check_range",
+              "line": 188
+            },
+            {
+              "name": "get_status",
+              "line": 195
+            },
+            {
+              "name": "initialize",
+              "line": 199
+            },
+            {
+              "name": "execute_drive",
+              "line": 216
+            },
+            {
+              "name": "move_pos_raw",
+              "line": 220
+            },
+            {
+              "name": "move_pulse",
+              "line": 233
+            },
+            {
+              "name": "move_relative_pos_raw",
+              "line": 242
+            },
+            {
+              "name": "move_pos_mm",
+              "line": 255
+            },
+            {
+              "name": "move_relative_pos_mm",
+              "line": 272
+            },
+            {
+              "name": "jog",
+              "line": 290
+            },
+            {
+              "name": "set_excitation",
+              "line": 294
+            },
+            {
+              "name": "set_logical_zero",
+              "line": 298
+            },
+            {
+              "name": "query_internal",
+              "line": 302
+            },
+            {
+              "name": "home",
+              "line": 306
+            },
+            {
+              "name": "stop",
+              "line": 310
+            }
+          ]
+        },
+        {
+          "name": "connect_delay_stage",
+          "line": 315,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_delay_stage",
+          "line": 341,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    },
+    {
+      "python_file": "src/kohdalab/interfaces/lockin.py",
+      "python_sha256": "25951ae20c424b4326d416bffde634aaebd16631f8f3865a19fac408c876654d",
+      "symbols": [
+        {
+          "name": "open_visa",
+          "line": 13,
+          "kind": "function"
+        },
+        {
+          "name": "list_visa_resources",
+          "line": 20,
+          "kind": "function"
+        },
+        {
+          "name": "_model_name",
+          "line": 28,
+          "kind": "function"
+        },
+        {
+          "name": "_build_lockin_config",
+          "line": 32,
+          "kind": "function"
+        },
+        {
+          "name": "_build_lockin_controller",
+          "line": 38,
+          "kind": "function"
+        },
+        {
+          "name": "Lockin",
+          "line": 49,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "configure",
+              "line": 53
+            },
+            {
+              "name": "close",
+              "line": 58
+            },
+            {
+              "name": "is_connected",
+              "line": 61
+            },
+            {
+              "name": "ask",
+              "line": 64
+            },
+            {
+              "name": "ask_float",
+              "line": 67
+            },
+            {
+              "name": "get_live_data_raw",
+              "line": 70
+            },
+            {
+              "name": "get_time_constant",
+              "line": 73
+            },
+            {
+              "name": "get_ac_gain",
+              "line": 76
+            },
+            {
+              "name": "get_sensitivity",
+              "line": 79
+            },
+            {
+              "name": "get_ref_freq",
+              "line": 82
+            },
+            {
+              "name": "get_available_couplings",
+              "line": 85
+            },
+            {
+              "name": "get_available_slopes",
+              "line": 88
+            },
+            {
+              "name": "get_available_time_constants",
+              "line": 91
+            },
+            {
+              "name": "get_available_sensitivities",
+              "line": 94
+            },
+            {
+              "name": "get_available_ac_gains",
+              "line": 97
+            },
+            {
+              "name": "get_coupling",
+              "line": 100
+            },
+            {
+              "name": "get_slope",
+              "line": 103
+            },
+            {
+              "name": "get_overload_status",
+              "line": 106
+            },
+            {
+              "name": "get_wait_time",
+              "line": 109
+            },
+            {
+              "name": "auto_phase",
+              "line": 112
+            },
+            {
+              "name": "auto_sensitivity",
+              "line": 115
+            },
+            {
+              "name": "auto_measure",
+              "line": 118
+            },
+            {
+              "name": "set_sensitivity",
+              "line": 121
+            },
+            {
+              "name": "set_time_constant",
+              "line": 124
+            },
+            {
+              "name": "set_ac_gain",
+              "line": 127
+            },
+            {
+              "name": "set_coupling",
+              "line": 130
+            },
+            {
+              "name": "set_slope",
+              "line": 133
+            }
+          ]
+        },
+        {
+          "name": "connect_lockin",
+          "line": 137,
+          "kind": "function"
+        },
+        {
+          "name": "read_lockin_signal",
+          "line": 162,
+          "kind": "function"
+        },
+        {
+          "name": "get_lockin_wait_time",
+          "line": 167,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_lockin",
+          "line": 177,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-desktop/src/lockin.rs",
+        "next/crates/trkr-transport/src/lib.rs",
+        "native/visa_helper.cpp",
+        "native/kohdalab_gpib_helper.cpp"
+      ],
+      "classification": "measurement_operations_ported_python_object_api_changed"
+    },
+    {
+      "python_file": "src/kohdalab/interfaces/scanner.py",
+      "python_sha256": "1850d42bbf95cd02e899256a2848ab992305dd72779c224891fd90dc0726cd61",
+      "symbols": [
+        {
+          "name": "_normalize_actuator",
+          "line": 14,
+          "kind": "function"
+        },
+        {
+          "name": "_controller_name",
+          "line": 34,
+          "kind": "function"
+        },
+        {
+          "name": "_actuator_settings",
+          "line": 38,
+          "kind": "function"
+        },
+        {
+          "name": "_validate_actuator_controller",
+          "line": 42,
+          "kind": "function"
+        },
+        {
+          "name": "_axis_key",
+          "line": 58,
+          "kind": "function"
+        },
+        {
+          "name": "_build_scanner_config",
+          "line": 75,
+          "kind": "function"
+        },
+        {
+          "name": "_build_scanner_controller",
+          "line": 83,
+          "kind": "function"
+        },
+        {
+          "name": "Scanner",
+          "line": 104,
+          "kind": "class",
+          "methods": [
+            {
+              "name": "configure",
+              "line": 108
+            },
+            {
+              "name": "close",
+              "line": 117
+            },
+            {
+              "name": "is_connected",
+              "line": 120
+            },
+            {
+              "name": "port",
+              "line": 124
+            },
+            {
+              "name": "ser",
+              "line": 128
+            },
+            {
+              "name": "axis",
+              "line": 132
+            },
+            {
+              "name": "actuator_name",
+              "line": 139
+            },
+            {
+              "name": "pos_unit",
+              "line": 143
+            },
+            {
+              "name": "get_pos_unit",
+              "line": 146
+            },
+            {
+              "name": "origin_pos",
+              "line": 150
+            },
+            {
+              "name": "min_pos",
+              "line": 157
+            },
+            {
+              "name": "max_pos",
+              "line": 162
+            },
+            {
+              "name": "pos_digits",
+              "line": 167
+            },
+            {
+              "name": "_round_pos",
+              "line": 178
+            },
+            {
+              "name": "normalize_pos",
+              "line": 181
+            },
+            {
+              "name": "_get_position",
+              "line": 184
+            },
+            {
+              "name": "get_pos_raw",
+              "line": 187
+            },
+            {
+              "name": "_require_pos_unit",
+              "line": 190
+            },
+            {
+              "name": "get_pos_mm",
+              "line": 194
+            },
+            {
+              "name": "get_pos_deg",
+              "line": 198
+            },
+            {
+              "name": "get_state",
+              "line": 202
+            },
+            {
+              "name": "is_moving",
+              "line": 205
+            },
+            {
+              "name": "wait_until_stopped",
+              "line": 208
+            },
+            {
+              "name": "get_pos_limits",
+              "line": 219
+            },
+            {
+              "name": "_check_pos_range",
+              "line": 222
+            },
+            {
+              "name": "initialize",
+              "line": 228
+            },
+            {
+              "name": "_move_position",
+              "line": 247
+            },
+            {
+              "name": "move_pos_raw",
+              "line": 260
+            },
+            {
+              "name": "move_pos_mm",
+              "line": 269
+            },
+            {
+              "name": "move_pos_deg",
+              "line": 279
+            },
+            {
+              "name": "_move_relative_position",
+              "line": 289
+            },
+            {
+              "name": "move_relative_pos_raw",
+              "line": 303
+            },
+            {
+              "name": "move_relative_pos_mm",
+              "line": 312
+            },
+            {
+              "name": "move_relative_pos_deg",
+              "line": 322
+            },
+            {
+              "name": "stop",
+              "line": 332
+            },
+            {
+              "name": "home",
+              "line": 335
+            }
+          ]
+        },
+        {
+          "name": "connect_scanner",
+          "line": 339,
+          "kind": "function"
+        },
+        {
+          "name": "disconnect_scanner",
+          "line": 381,
+          "kind": "function"
+        }
+      ],
+      "rust_replacement": [
+        "next/crates/trkr-motion/src/lib.rs",
+        "next/crates/trkr-motion/src/protocol.rs",
+        "next/crates/trkr-motion/assets/stages.toml",
+        "next/crates/trkr-motion/assets/actuators.toml"
+      ],
+      "classification": "measurement_operations_ported_maintenance_api_partial"
+    }
+  ],
+  "notebooks": [
+    {
+      "python_file": "notebook/move_abs_notebook.ipynb",
+      "replacement": "notebook/move_abs_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    },
+    {
+      "python_file": "notebook/signal_monitor_notebook.ipynb",
+      "replacement": "notebook/signal_monitor_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    },
+    {
+      "python_file": "notebook/srkr_2d_notebook.ipynb",
+      "replacement": "notebook/srkr_2d_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    },
+    {
+      "python_file": "notebook/srkr_notebook.ipynb",
+      "replacement": "notebook/srkr_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    },
+    {
+      "python_file": "notebook/strkr_notebook.ipynb",
+      "replacement": "notebook/strkr_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    },
+    {
+      "python_file": "notebook/trkr_notebook.ipynb",
+      "replacement": "notebook/trkr_notebook.ipynb",
+      "classification": "rewritten_native_client_not_old_api_compatible"
+    }
+  ],
+  "legacy_test_index": [
+    {
+      "file": "tests/test_auto_connect.py",
+      "sha256": "6b6db16694c9bc73d6bf46e78c34f7c63434390f51b49b0a192f9a950a6630ca",
+      "test_names": [
+        "test_device_session_auto_connects_by_default",
+        "test_device_session_can_require_explicit_lockin_connect",
+        "test_explicit_connect_still_works_when_auto_connect_is_disabled",
+        "test_motion_requires_explicit_connect_when_auto_connect_is_disabled",
+        "test_experiment_passes_auto_connect_policy_to_session"
+      ]
+    },
+    {
+      "file": "tests/test_cli.py",
+      "sha256": "5a8989aff705bfbdef5c5a77a4adccca694ff2b0a2e504ba77906fe0ce3d9dfe",
+      "test_names": [
+        "test_cli_trkr_uses_config_plan_and_prints_progress",
+        "test_cli_srkr_axis_override_uses_config_plan_and_prints_progress",
+        "test_cli_signal_monitor_prints_progress",
+        "test_cli_strkr_prints_progress",
+        "test_cli_srkr_2d_prints_progress",
+        "test_cli_move_abs_formats_position"
+      ]
+    },
+    {
+      "file": "tests/test_conexcc_controller.py",
+      "sha256": "865a1c07f2dfd2ce92bf68f1766367370eb5319d68976e4c6d26b032c66711ed",
+      "test_names": [
+        "test_conexcc_move_enables_closed_loop_from_disable",
+        "test_conexcc_first_ready_move_cycles_through_closed_loop_enable",
+        "test_conexcc_move_rejects_not_referenced_state"
+      ]
+    },
+    {
+      "file": "tests/test_config.py",
+      "sha256": "1d849f28b5653bcd91253efffd8b34c14df17a2205842903233daf75f8253dcc",
+      "test_names": [
+        "test_normalize_config_adds_profile_measurement_defaults_and_legacy_scanner_scale",
+        "test_build_range_points_handles_positive_and_negative_steps",
+        "test_build_range_points_rejects_zero_or_empty_ranges",
+        "test_output_path_respects_legacy_output_settings",
+        "test_output_path_adds_csv_suffix_when_filename_contains_dot"
+      ]
+    },
+    {
+      "file": "tests/test_conversion.py",
+      "sha256": "6a4422a11569eda627117e63df293fd98f1870a352bf7b83bde72a5f55df94ac",
+      "test_names": [
+        "test_scanner_origin_prefers_min_max_midpoint",
+        "test_scanner_origin_uses_configured_origin_when_limits_are_absent",
+        "test_sample_um_and_actuator_position_round_trip_with_new_scale",
+        "test_legacy_unit_specific_scale_is_still_accepted",
+        "test_sample_um_to_actuator_pos_rejects_zero_scale"
+      ]
+    },
+    {
+      "file": "tests/test_delay_stage_cache.py",
+      "sha256": "934ba8d36c0c78c57cf7b0c086c584fe9ac6489e49d4822259e1fc8b27fa0983",
+      "test_names": [
+        "test_connect_delay_stage_reuses_cached_handle_for_same_controller_and_port",
+        "test_delay_stage_move_position_callback_reports_pulses",
+        "test_delay_stage_caches_microstep_division_for_conversions",
+        "test_connect_delay_stage_replaces_stale_cached_handle",
+        "test_delay_stage_cache_key_includes_controller_and_port",
+        "test_disconnect_delay_stage_closes_specific_cached_handle",
+        "test_disconnect_all_delay_stages_closes_each_cached_handle_once"
+      ]
+    },
+    {
+      "file": "tests/test_delay_stage_gsc01a.py",
+      "sha256": "33a79f5e739f22d2b1eeb7194bb19dbcbf77c056a912fd189b918db2a844070e",
+      "test_names": [
+        "test_gsc01a_is_registered",
+        "test_gsc01a_uses_axis_for_logical_zero_and_deceleration_stop",
+        "test_gsc01a_immediate_stop_command",
+        "test_gsc01a_microstep_parser_uses_axis_query",
+        "test_gsc01a_microstep_parser_retries_empty_response",
+        "test_gsc01a_sensor_status_uses_sensor_selector"
+      ]
+    },
+    {
+      "file": "tests/test_delay_stage_microstep.py",
+      "sha256": "c94284dbffe42eec20a745f7cf5120d608cfed0e2ff11a892ab8a47b39ce8462",
+      "test_names": [
+        "test_shot302_microstep_parser_uses_returned_division",
+        "test_shot302_microstep_parser_retries_empty_response"
+      ]
+    },
+    {
+      "file": "tests/test_device_requirements.py",
+      "sha256": "4298de81a61a8197b89389cba90592af0a97557df3e3f7f56184655f404b7fae",
+      "test_names": [
+        "test_required_devices_for_each_measurement",
+        "test_required_devices_respects_measurement_device_keys",
+        "test_missing_devices_compares_against_connected_map",
+        "test_experiment_missing_devices_uses_session_state",
+        "test_required_devices_rejects_invalid_measurement_or_axis"
+      ]
+    },
+    {
+      "file": "tests/test_device_session_locks.py",
+      "sha256": "048d2bfc2611959ab18a08a3640a1fd89b138fcfd637ead146220143985cf236",
+      "test_names": [
+        "test_device_session_serializes_lockin_io",
+        "test_device_session_allows_lockin_io_during_delay_stage_move"
+      ]
+    },
+    {
+      "file": "tests/test_experiment_session_ownership.py",
+      "sha256": "046f98de11f7760058376b869a852f0d0088347db47c6fd8559abce8f25e7109",
+      "test_names": [
+        "test_experiment_run_signal_monitor_passes_existing_session",
+        "test_experiment_run_trkr_passes_existing_session",
+        "test_experiment_run_srkr_passes_existing_session",
+        "test_experiment_run_strkr_passes_existing_session",
+        "test_experiment_run_srkr_2d_passes_existing_session",
+        "test_standalone_measurement_disconnects_temporary_session_on_error",
+        "test_provided_session_is_not_disconnected_on_error"
+      ]
+    },
+    {
+      "file": "tests/test_gui_entrypoints.py",
+      "sha256": "62d81431f842265283d54635b5fa70a3d4a580a5b2a059f57504e0169c513191",
+      "test_names": [
+        "test_gui_entrypoints_are_explicit"
+      ]
+    },
+    {
+      "file": "tests/test_lockin_api.py",
+      "sha256": "2a6fc3086e00688574030eede245a51aa45a1ec9ac118d81917ec1ee6bfed928",
+      "test_names": [
+        "test_set_lockin_settings_applies_only_requested_values",
+        "test_set_lockin_settings_supports_model_specific_ac_gain",
+        "test_set_lockin_settings_noops_when_no_values_are_supplied",
+        "test_device_session_lockin_settings_auto_connect_by_default",
+        "test_device_session_lockin_settings_can_require_explicit_connect",
+        "test_experiment_exposes_lockin_settings_facade"
+      ]
+    },
+    {
+      "file": "tests/test_lockin_cache.py",
+      "sha256": "a1bb13ac15f21f17eaccb983cbd01d8e02e9a01c5ab9b8d30518146c19c6922c",
+      "test_names": [
+        "test_connect_lockin_reuses_cached_handle_for_same_config",
+        "test_connect_lockin_replaces_stale_cached_handle",
+        "test_lockin_cache_key_includes_model_and_resource",
+        "test_disconnect_lockin_closes_specific_cached_handle",
+        "test_disconnect_all_lockins_closes_each_cached_handle_once"
+      ]
+    },
+    {
+      "file": "tests/test_lockin_li5640.py",
+      "sha256": "ec1ec2a2795f8b97dc3840a7808668ccfc3032c97ac46dae4fc96fcaf6d2110e",
+      "test_names": [
+        "test_li5640_is_registered_as_lockin_controller",
+        "test_li5640_read_helpers_match_common_lockin_shape",
+        "test_li5640_read_restores_r_theta_display_when_that_was_active",
+        "test_li5640_common_overload_uses_any_ovcr_overlevel_for_gui_display",
+        "test_li5640_writes_model_specific_setting_commands",
+        "test_li5640_rejects_sr7265_only_ac_gain",
+        "test_li5640_close_sends_go_to_local_before_closing"
+      ]
+    },
+    {
+      "file": "tests/test_lockin_sr5210.py",
+      "sha256": "1c882572509dd3c5eb653e926d82899743d4d0874053026cf5d8aa63e27f88a0",
+      "test_names": [
+        "test_sr5210_is_registered_as_lockin_controller",
+        "test_sr5210_uses_sr7265_style_terminations",
+        "test_sr5210_read_helpers_match_common_lockin_shape_with_unit_conversion",
+        "test_sr5210_output_overload_sets_common_gui_input_overload",
+        "test_sr5210_can_fall_back_to_single_value_signal_queries",
+        "test_sr5210_computes_r_theta_from_xy_when_mp_mag_pha_are_empty",
+        "test_sr5210_retries_empty_response_before_failing",
+        "test_sr5210_writes_model_specific_setting_commands",
+        "test_sr5210_rejects_unsupported_settings"
+      ]
+    },
+    {
+      "file": "tests/test_lockin_sr830.py",
+      "sha256": "6158716111b6a35bde7070de55552bfccaa2f0ca8fd9162c8053be67fdcbea6a",
+      "test_names": [
+        "test_sr830_is_registered_as_lockin_controller",
+        "test_sr830_read_helpers_match_common_lockin_shape",
+        "test_lockin_signal_keeps_device_values_without_sensitivity_based_conversion",
+        "test_sr830_status_bits_are_mapped_to_common_overload_keys",
+        "test_sr830_common_overload_uses_input_overload_only",
+        "test_sr830_writes_model_specific_setting_commands",
+        "test_sr830_rejects_sr7265_only_ac_gain"
+      ]
+    },
+    {
+      "file": "tests/test_measurement_rows.py",
+      "sha256": "1ac56316c0dfdc2a456208b4a726091e895c133fb4ef934c2a39d342359dfbb9",
+      "test_names": [
+        "test_signal_monitor_row_shape",
+        "test_signal_monitor_uses_provided_session_without_disconnect",
+        "test_signal_monitor_accepts_scan_plan",
+        "test_trkr_row_shape_and_return_to_zero",
+        "test_trkr_target_points_are_corrected_display_values",
+        "test_trkr_accepts_scan_plan",
+        "test_trkr_uses_provided_session_without_disconnect",
+        "test_trkr_normalizes_coordinate_aliases",
+        "test_srkr_row_shape_and_return_to_zero",
+        "test_srkr_target_points_are_corrected_display_values",
+        "test_srkr_accepts_scan_plan",
+        "test_srkr_uses_provided_session_without_disconnect",
+        "test_srkr_normalizes_coordinate_aliases",
+        "test_strkr_runs_fast_slow_scan_and_returns_moved_axes",
+        "test_srkr_2d_runs_xy_scan_without_touching_t"
+      ]
+    },
+    {
+      "file": "tests/test_measurement_rows_schema.py",
+      "sha256": "cac75db960af1205949f3859cd370435e588a889906c9342f9d6c3c7c05405ad",
+      "test_names": [
+        "test_signal_monitor_row_order",
+        "test_trkr_row_order",
+        "test_srkr_row_uses_fast_axis_target",
+        "test_scan2d_row_carries_targets_for_both_axes",
+        "test_fields_for_rows_uses_unified_columns",
+        "test_output_row_formats_only_signal_voltages_as_scientific_notation"
+      ]
+    },
+    {
+      "file": "tests/test_notebook_helpers.py",
+      "sha256": "1e147616eab7902286dcf8b1073bdd24f71c669839577ec5be987b35b7662092",
+      "test_names": [
+        "test_srkr_live_update_accepts_fast_axis_alias",
+        "test_strkr_live_update_uses_t_or_spatial_fast_axis",
+        "test_srkr_2d_live_update_rejects_t_fast_axis"
+      ]
+    },
+    {
+      "file": "tests/test_scan_limits.py",
+      "sha256": "91e91f1aa333efacd48e62a620b5b5ef31260d8905accc34b38fb1aa4e1cadab",
+      "test_names": [
+        "test_delay_stage_scan_limits_use_stage_toml_and_t_zero_offset",
+        "test_delay_stage_scan_limits_use_microstep_for_minimum_step_when_available",
+        "test_scanner_scan_limits_use_actuator_toml_and_sample_offset",
+        "test_scan_limits_return_empty_values_for_unknown_specs"
+      ]
+    },
+    {
+      "file": "tests/test_scan_plan_from_config.py",
+      "sha256": "d54dbd296bb88fc846a58926edc3e4aeefb70185f974503df64b18de1f925bb7",
+      "test_names": [
+        "test_signal_monitor_plan_from_config_uses_measurement_settings",
+        "test_trkr_plan_from_config_uses_scan_and_zero",
+        "test_srkr_plan_from_config_uses_axis_scan_and_zero",
+        "test_plan_from_config_allows_runtime_overrides"
+      ]
+    },
+    {
+      "file": "tests/test_scanner_cache.py",
+      "sha256": "3b3d47082bf300b29aad5b69bba6a56627415b836dec0605cfaaab4359373b99",
+      "test_names": [
+        "test_connect_scanner_reuses_cached_handle_for_same_config",
+        "test_scanner_move_position_callback_reports_control_position",
+        "test_conexagap_axes_share_one_serial_on_same_port",
+        "test_conexagap_disconnect_keeps_shared_serial_until_last_axis",
+        "test_disconnect_all_closes_each_serial_once",
+        "test_conexcc_different_ports_use_different_handles_and_serials"
+      ]
+    },
+    {
+      "file": "tests/test_scanner_coordinates.py",
+      "sha256": "5ffe391483e79af92712425d1e5a6b7bf75e7515d544ead4c30d9b4db3a00e2d",
+      "test_names": [
+        "test_normalize_scanner_coordinate_prefers_interface",
+        "test_move_scanner_abs_converts_measurement_um_to_actuator_unit",
+        "test_move_scanner_abs_applies_negative_software_hysteresis_in_measurement_um",
+        "test_move_scanner_abs_reports_software_hysteresis_status",
+        "test_move_scanner_abs_ignores_software_hysteresis_for_conexagap",
+        "test_move_scanner_abs_applies_positive_software_hysteresis_to_interface_target",
+        "test_move_scanner_abs_can_skip_configured_software_hysteresis",
+        "test_move_scanner_abs_treats_raw_scanner_aliases_as_interface",
+        "test_move_scanner_abs_uses_connected_deg_unit_for_interface_alias"
+      ]
+    },
+    {
+      "file": "tests/test_session_refs.py",
+      "sha256": "bc60ac02d59a255d4aff670a8a148bba975b7ceb99924a88d20716f4249e29fc",
+      "test_names": [
+        "test_resolve_ref_aliases",
+        "test_resolve_ref_with_default_kind_treats_plain_ref_as_key",
+        "test_resolve_ref_rejects_plain_ref_without_default_kind",
+        "test_resolve_ref_requires_explicit_key_when_alias_kind_has_multiple_devices"
+      ]
+    },
+    {
+      "file": "tests/test_status.py",
+      "sha256": "e06945827c43e95519ef7af7a33c2d516121c45bd9c8c07eba317e1aff5085c9",
+      "test_names": [
+        "test_moving_axis_status_maps_scan_axes",
+        "test_moving_axis_from_status_parses_measurement_motion",
+        "test_moving_scanner_status_rejects_non_scanner_axes"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_config.py",
+      "sha256": "f6ce0a48ccadbd49609886e16402eb22c927d8957a2d519bdf802f0f8545341e",
+      "test_names": [
+        "test_extract_loaded_gui_config_from_api_config_resolves_refs_and_sections",
+        "test_build_saved_config_from_snapshot",
+        "test_build_measurement_config_from_snapshot",
+        "test_extract_loaded_gui_config_from_legacy_config",
+        "test_small_gui_config_helpers_keep_legacy_behavior"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_coordinates.py",
+      "sha256": "9749aa2cd94272a84d48f9b72d9c9b7b1b85496f6fd4f7a53089d1a726745175",
+      "test_names": [
+        "test_normalize_coordinate",
+        "test_delay_stage_unit_and_label",
+        "test_scanner_unit_and_label_for_measurement_coordinate",
+        "test_scanner_unit_and_label_for_interface_coordinate_use_actuator_unit",
+        "test_scanner_connected_unit_overrides_actuator_lookup",
+        "test_scanner_scale_label_uses_actuator_unit",
+        "test_scanner_axis_spin_value_accepts_agap_axis_names",
+        "test_coordinate_correction_enabled"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_devices.py",
+      "sha256": "4c6c9523632e3ed2d2220ae8b3e3f4812fce9fd2d71a950166a014135b410934",
+      "test_names": [
+        "test_device_ref",
+        "test_instrument_ref_helpers",
+        "test_single_instrument_config_copies_config",
+        "test_xy_scanner_config_uses_refs_and_copies_configs",
+        "test_corrected_target"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_measurement.py",
+      "sha256": "bb34e8271d7612ac5ad891ebc574712417810994376d66d29f2349319481f8c8",
+      "test_names": [
+        "test_signal_monitor_plan_summary_and_values",
+        "test_trkr_plan_offsets_measurement_scan_points_by_zero",
+        "test_trkr_plan_keeps_interface_scan_points_unoffset",
+        "test_srkr_plan_offsets_measurement_scan_points_by_active_axis_zero",
+        "test_srkr_plan_treats_instrument_alias_as_interface_points",
+        "test_srkr_plan_rejects_invalid_axis",
+        "test_strkr_plan_requires_t_and_one_spatial_axis",
+        "test_strkr_plan_rejects_spatial_spatial_axes",
+        "test_srkr_2d_plan_uses_x_y_axes"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_output.py",
+      "sha256": "5164662fc167c0cb751cdb5639068b5a8c310f56be0e067cc564bd18bd8e1dc5",
+      "test_names": [
+        "test_output_settings_from_fields_applies_defaults",
+        "test_normalize_output_settings_accepts_dir_alias",
+        "test_build_output_path_adds_csv_suffix_without_timestamp",
+        "test_build_output_path_adds_csv_suffix_to_non_csv_suffix_with_timestamp",
+        "test_output_config_for_measurement_uses_api_output_shape"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_plot.py",
+      "sha256": "1219b8c0b5515a2a9d831ec455f2ce043c4346f2e89025513a8499b779bce74a",
+      "test_names": [
+        "test_sample_axis_ticks_keeps_short_series",
+        "test_sample_axis_ticks_decimates_long_series_and_keeps_last",
+        "test_signal_scale_leaves_theta_unscaled",
+        "test_scan2d_equal_spatial_units_only_for_xy",
+        "test_standard_plot_series_for_signal_monitor",
+        "test_standard_plot_series_for_trkr_theta_mode",
+        "test_srkr_plot_series_splits_axes_and_scales_signals",
+        "test_top_axis_labels"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_signal.py",
+      "sha256": "d1e7d7e3ecbed9c6784a77ab451c6accae8cb39fae503823c69d4574d1c9ea1b",
+      "test_names": [
+        "test_voltage_scale_from_sensitivity",
+        "test_signal_view_config_for_xy_mode",
+        "test_signal_view_config_for_r_theta_mode",
+        "test_time_constant_display",
+        "test_lockin_display_from_settings_formats_values",
+        "test_lockin_display_from_settings_handles_missing_optional_values",
+        "test_overload_display_from_status_ok_and_missing",
+        "test_overload_display_from_status_ignores_output_flags"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_snapshot.py",
+      "sha256": "1b16bebbf8662f002120564afc9e9cb0ca5da2a9c42b1a9a8b27114d8fadd50d",
+      "test_names": [
+        "test_format_ps_matches_existing_rounding",
+        "test_format_snapshot_float_values",
+        "test_format_snapshot_non_float_values"
+      ]
+    },
+    {
+      "file": "tests/test_trkr_gui_worker.py",
+      "sha256": "3c4f2f557dd485d1bbb6e5b948dcbed3b2a94c38f79a1c0a9b3325ca96df12b4",
+      "test_names": [
+        "test_worker_uses_supplied_experiment_for_signal_monitor",
+        "test_worker_uses_supplied_experiment_for_trkr",
+        "test_worker_uses_supplied_experiment_for_srkr",
+        "test_worker_uses_supplied_experiment_for_strkr",
+        "test_worker_uses_supplied_experiment_for_srkr_2d",
+        "test_worker_stop_updates_should_continue_callback",
+        "test_live_status_worker_reads_full_status_and_overload",
+        "test_live_status_worker_reads_lockin_only_status",
+        "test_resource_list_worker_reads_visa_and_serial_resources",
+        "test_device_command_worker_connects_one_device",
+        "test_device_command_worker_disconnects_all_devices",
+        "test_device_command_worker_runs_delay_stage_initialize",
+        "test_device_command_worker_runs_scanner_initialize",
+        "test_device_command_worker_reads_lockin_wait_time",
+        "test_device_command_worker_applies_lockin_settings",
+        "test_move_worker_runs_delay_stage_move",
+        "test_move_worker_runs_scanner_move",
+        "test_gui_position_update_can_preserve_missing_axes",
+        "test_gui_runtime_config_preserves_scanner_software_hysteresis",
+        "test_gui_title_includes_package_version",
+        "test_gui_switches_to_2d_scan_tabs",
+        "test_gui_measurement_motion_status_updates_axis_labels",
+        "test_gui_move_status_shows_short_bh_label",
+        "test_gui_scan2d_eta_starts_after_next_slow_move",
+        "test_scan2d_heatmap_normalizes_by_abs_max",
+        "test_format_duration_for_eta"
+      ]
+    }
+  ],
+  "selected_probe_evidence": {
+    "note": "Synthetic public-template profiles only. No hardware I/O. before reflects pre-audit binary; after reflects current audit build. Range comparison is archived Python execution versus the inspected Rust Range formula, not an all-input equivalence test.",
+    "profile_before": [
+      {
+        "case": "canonical",
+        "python_trkr_scan": {
+          "min": 17.0,
+          "max": 23.0,
+          "step": 3.0
+        },
+        "python_zero": {
+          "t_ps": 123.0,
+          "x_um": 45.0,
+          "y_um": 67.0
+        },
+        "rust_exit": 0,
+        "rust_error": "",
+        "rust_trkr_plan": {
+          "coordinate": "measurement",
+          "fast": "t",
+          "fast_range": {
+            "max": 23.0,
+            "min": 17.0,
+            "step": 3.0
+          },
+          "interval_s": 2.0,
+          "n_points": 360,
+          "return_fast_between_lines": true,
+          "return_to_zero": [
+            true,
+            true
+          ],
+          "slow": "x",
+          "slow_range": {
+            "max": 30.0,
+            "min": -30.0,
+            "step": 1.0
+          },
+          "theta_deg": 0.0,
+          "workflow": "trkr",
+          "zero": [
+            123.0,
+            45.0,
+            67.0
+          ]
+        }
+      },
+      {
+        "case": "singular_measurement",
+        "python_trkr_scan": {
+          "min": 17.0,
+          "max": 23.0,
+          "step": 3.0
+        },
+        "python_zero": {
+          "t_ps": 123.0,
+          "x_um": 45.0,
+          "y_um": 67.0
+        },
+        "rust_exit": 0,
+        "rust_error": "",
+        "rust_trkr_plan": {
+          "coordinate": "measurement",
+          "fast": "t",
+          "fast_range": {
+            "max": 300.0,
+            "min": -50.0,
+            "step": 5.0
+          },
+          "interval_s": 2.0,
+          "n_points": 360,
+          "return_fast_between_lines": true,
+          "return_to_zero": [
+            true,
+            true
+          ],
+          "slow": "x",
+          "slow_range": {
+            "max": 30.0,
+            "min": -30.0,
+            "step": 1.0
+          },
+          "theta_deg": 0.0,
+          "workflow": "trkr",
+          "zero": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        }
+      },
+      {
+        "case": "legacy_direction_minus_one",
+        "python_trkr_scan": {
+          "min": 17.0,
+          "max": 23.0,
+          "step": 3.0
+        },
+        "python_zero": {
+          "t_ps": 123.0,
+          "x_um": 45.0,
+          "y_um": 67.0
+        },
+        "rust_exit": 1,
+        "rust_error": "Delay direction must be 0 or 1",
+        "rust_trkr_plan": null
+      }
+    ],
+    "profile_after": [
+      {
+        "case": "canonical",
+        "exit": 0,
+        "error": "",
+        "trkr_range": {
+          "max": 23.0,
+          "min": 17.0,
+          "step": 3.0
+        },
+        "zero": [
+          123.0,
+          45.0,
+          67.0
+        ]
+      },
+      {
+        "case": "singular_measurement",
+        "exit": 0,
+        "error": "",
+        "trkr_range": {
+          "max": 23.0,
+          "min": 17.0,
+          "step": 3.0
+        },
+        "zero": [
+          123.0,
+          45.0,
+          67.0
+        ]
+      },
+      {
+        "case": "legacy_direction_minus_one",
+        "exit": 1,
+        "error": "Delay direction must be 0 or 1",
+        "trkr_range": null,
+        "zero": null
+      }
+    ],
+    "range_formula_comparison": [
+      {
+        "range": [
+          0.0,
+          100.0,
+          0.001
+        ],
+        "python_count": 100000,
+        "rust_formula_count": 100001,
+        "different_points": 0,
+        "first_difference": []
+      },
+      {
+        "range": [
+          0.0,
+          10.0,
+          0.001
+        ],
+        "python_count": 10001,
+        "rust_formula_count": 10001,
+        "different_points": 0,
+        "first_difference": []
+      },
+      {
+        "range": [
+          -50.0,
+          300.0,
+          0.01
+        ],
+        "python_count": 35001,
+        "rust_formula_count": 35001,
+        "different_points": 0,
+        "first_difference": []
+      },
+      {
+        "range": [
+          0.0,
+          1.0,
+          0.1
+        ],
+        "python_count": 11,
+        "rust_formula_count": 11,
+        "different_points": 0,
+        "first_difference": []
+      },
+      {
+        "range": [
+          -30.0,
+          30.0,
+          0.001
+        ],
+        "python_count": 60000,
+        "rust_formula_count": 60001,
+        "different_points": 0,
+        "first_difference": []
+      }
+    ],
+    "preset_assets": [
+      {
+        "old": "instruments/delay_stage/stages.toml",
+        "rust": "next/crates/trkr-motion/assets/stages.toml",
+        "old_sha256": "2bf14292ae35bc1f8fe48874e94698e98e2a763a14df3d34e6137cecf0739dda",
+        "rust_sha256": "3d88e33527d02efaf34af2b54b8a8ad166f175d5bd224bdae88c0ea54d77053f"
+      },
+      {
+        "old": "instruments/scanner/actuator.toml",
+        "rust": "next/crates/trkr-motion/assets/actuators.toml",
+        "old_sha256": "31271ddbfb1a7b53d984b540d2600e1a60eabb2c50a1d8e6deffcd94a44cc6a4",
+        "rust_sha256": "22ca65bef0057264366404703eb907937feb5341f017a03d46cc0ba69d84f1e3"
+      }
+    ]
+  },
+  "rust_source_sha256_at_audit": {
+    "next/crates/trkr-core/src/lib.rs": "619bbb9d29176190a08bb8bbecead90dc74ae78e9a162ed4b529576a10443a06",
+    "next/crates/trkr-desktop/build.rs": "3db59eac200aaaff207d7916e26f1b846d0b060208c4e88eebd785a7e9cf22ba",
+    "next/crates/trkr-desktop/src/axis_choices.rs": "81ba7f417495d808da551997de41b7960caa45972108503b7375a2b22302f8e3",
+    "next/crates/trkr-desktop/src/config.rs": "0a3d8da295e9c50bc7840c3b9cd479e883831000db43bcbee180223d72669f02",
+    "next/crates/trkr-desktop/src/demo_launcher.rs": "6b0f7b985c3b12ccfc3abf7462dce9b15122cf9992d731be6cf7cf91684661d8",
+    "next/crates/trkr-desktop/src/engine.rs": "cfa3dba78bacf3349a4cf9ba0315df4423d02fe0ff4ec681aca5e4b0ee46e0bf",
+    "next/crates/trkr-desktop/src/file_dialog.rs": "92e6d9f3268cc98e2606cdf265876df693d4b42a427ebaf823eafb856d4d0480",
+    "next/crates/trkr-desktop/src/live.rs": "decd48a72a604537264bd8b2a845e42e92c033d602d8494c556329793d6c06b7",
+    "next/crates/trkr-desktop/src/live_view.rs": "61fb0fe20a3797a5931cb30f51bddae8abcf85f36ea7ae54672297fd405906f5",
+    "next/crates/trkr-desktop/src/lockin.rs": "93fd65795bfc6bb4295d9e6584f9b27fde01ceb0d2857001b90bdc5bb2276896",
+    "next/crates/trkr-desktop/src/main.rs": "b2c6a2d8a888a4723b9e744d11e1a7b1757a05ae14f1f7162b41312d5dbb4b42",
+    "next/crates/trkr-desktop/src/plot_history.rs": "1883884a47483cc48c06f4622630dd60ee4bff947a90dd418d18e688fabbfb39",
+    "next/crates/trkr-desktop/src/precision.rs": "fcca3ef2bdfc7bb7d051646b248092bf828925604ef873e23fbbfbc6fa49c210",
+    "next/crates/trkr-desktop/src/presentation.rs": "342329b8a40ec1f5858b61e4ff48bb4b6eb67b8505271bb44fc6da5a83182072",
+    "next/crates/trkr-desktop/src/python_parity_tests.rs": "2b9631673ef61ecda199eae6a655758fa0c3077f9c16549311b216e455f31572",
+    "next/crates/trkr-desktop/src/replay_data.rs": "5f9e242f5f7179c8d55fe1bbf8680926d9562f6859b6570aac389e9b5aab463d",
+    "next/crates/trkr-desktop/src/replay_player.rs": "3c91e8e509ffd1e2e35dcb5d1e748109bb08a489010b841860bddcf0c4252a08",
+    "next/crates/trkr-desktop/src/ui/demo.rs": "a2cf31b79f2f7f6245005f97a946368ca036dd1554f6bb30cd8282664a7b3101",
+    "next/crates/trkr-desktop/src/ui.rs": "6a490809123e033f2428e67b57587f3212639ccbe63bd9a675ba2d90114767bf",
+    "next/crates/trkr-motion/src/lib.rs": "8a7348cd642c5a0d882c770c08b6799c93f2e46b70b25056531b25d947da6709",
+    "next/crates/trkr-motion/src/protocol.rs": "1bf99ae75ccd8346f586443a6108c6852b55efc23b07e60114bcfaa99eaa9c4d",
+    "next/crates/trkr-transport/src/lib.rs": "f1475207ef8f60b3d659cd456f6cbc4d38705d0aa9afdfcc4009ac53c8130bd0"
+  }
+}

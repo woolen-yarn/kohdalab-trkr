@@ -43,9 +43,9 @@ def test_notebook_cells_are_clean_and_syntactically_valid() -> None:
 
 
 def test_notebooks_run_in_simulation_against_the_canonical_binary() -> None:
-    binary = ROOT / "next" / "target" / "debug" / (
+    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "next" / "target" / "debug" / (
         "kohdalab-trkr.exe" if sys.platform == "win32" else "kohdalab-trkr"
-    )
+    )))
     if not binary.is_file():
         pytest.skip("Build the canonical native TRKR binary first")
     code = r'''
@@ -84,7 +84,7 @@ for path in sorted((root / "notebook").glob("*.ipynb")):
 
 def test_notebook_setup_finds_portable_and_macos_app_layouts(tmp_path: Path) -> None:
     executable = "kohdalab-trkr.exe" if sys.platform == "win32" else "kohdalab-trkr"
-    binary = ROOT / "next" / "target" / "debug" / executable
+    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "next" / "target" / "debug" / executable))
     if not binary.is_file():
         pytest.skip("Build the canonical native TRKR binary first")
     setup_notebook = ROOT / "notebook" / "trkr_notebook.ipynb"
@@ -123,7 +123,9 @@ namespace = {"__name__": "__main__"}
 exec(compile("".join(setup["source"]), "setup", "exec"), namespace)
 print(json.dumps({"binary": str(namespace["binary"]), "profile": str(namespace["profile_path"])}))
 '''
-        env = os.environ | {"PATH": ""}
+        isolated_home = tmp_path / "empty-home"
+        isolated_home.mkdir(exist_ok=True)
+        env = os.environ | {"PATH": "", "HOME": str(isolated_home), "USERPROFILE": str(isolated_home)}
         env.pop("TRKR_BINARY", None)
         env.pop("TRKR_PROFILE", None)
         result = subprocess.run(

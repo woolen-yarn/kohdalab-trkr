@@ -428,18 +428,15 @@ impl ScannerConfig {
         c.controller = canonical(&c.controller);
         let model = c.model()?;
         if let Some(actuator) = &c.actuator {
-            let (unit, min, max, res, required) = match canonical(actuator).as_str() {
-                "TRA12CC" => ("mm", 0., 12., 0.0002, ScannerModel::ConexCc),
-                "AGM100D" => ("deg", -0.75, 0.75, 0.001, ScannerModel::ConexAgap),
-                _ => return Err(format!("Unknown scanner actuator {actuator}")),
-            };
-            if model != required {
+            let descriptor = actuator_descriptor(actuator)
+                .ok_or_else(|| format!("Unknown scanner actuator {actuator}"))?;
+            if model != descriptor.controller {
                 return Err(format!("{actuator} controller mismatch"));
             }
-            c.pos_unit.get_or_insert(unit.into());
-            c.min_pos.get_or_insert(min);
-            c.max_pos.get_or_insert(max);
-            c.resolution.get_or_insert(res);
+            c.pos_unit.get_or_insert(descriptor.native_unit.into());
+            c.min_pos.get_or_insert(descriptor.minimum);
+            c.max_pos.get_or_insert(descriptor.maximum);
+            c.resolution.get_or_insert(descriptor.resolution);
         }
         if c.port.trim().is_empty() {
             return Err("Scanner serial port is required".into());
@@ -451,7 +448,7 @@ impl ScannerConfig {
         if c.baudrate == 0 || c.controller_address == 0 {
             return Err("Invalid scanner baud rate or address".into());
         }
-        if model == ScannerModel::ConexAgap {
+        if model.capabilities().uses_named_axis {
             c.axis = match c.axis.to_ascii_uppercase().as_str() {
                 "1" | "U" => "U".into(),
                 "2" | "V" => "V".into(),
@@ -562,16 +559,52 @@ impl ScannerConfig {
         }
     }
     fn approach(&self, um: f64) -> Result<Option<f64>, String> {
-        if self.model()? != ScannerModel::ConexCc || !self.software_hysteresis.enabled {
+        self.approach_with_distance(um, self.software_hysteresis.distance_um.unwrap_or(100.))
+    }
+    fn approach_with_distance(&self, um: f64, distance: f64) -> Result<Option<f64>, String> {
+        if !self.model()?.capabilities().supports_software_hysteresis
+            || !self.software_hysteresis.enabled
+        {
             return Ok(None);
         }
-        let distance = self.software_hysteresis.distance_um.unwrap_or(0.);
         if distance == 0. {
             return Ok(None);
         }
         let pre = um + self.hysteresis_sign()? * distance;
         self.raw_target(pre)?;
         Ok(Some(pre))
+    }
+}
+
+/// Defaults that belong to a physical actuator rather than a particular
+/// experiment configuration.  New actuators extend this table without
+/// duplicating their limits and native unit through normalization code.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActuatorDescriptor {
+    native_unit: &'static str,
+    minimum: f64,
+    maximum: f64,
+    resolution: f64,
+    controller: ScannerModel,
+}
+
+fn actuator_descriptor(actuator: &str) -> Option<ActuatorDescriptor> {
+    match canonical(actuator).as_str() {
+        "TRA12CC" => Some(ActuatorDescriptor {
+            native_unit: "mm",
+            minimum: 0.,
+            maximum: 12.,
+            resolution: 0.0002,
+            controller: ScannerModel::ConexCc,
+        }),
+        "AGM100D" => Some(ActuatorDescriptor {
+            native_unit: "deg",
+            minimum: -0.75,
+            maximum: 0.75,
+            resolution: 0.001,
+            controller: ScannerModel::ConexAgap,
+        }),
+        _ => None,
     }
 }
 impl MotionConfig {
@@ -752,6 +785,16 @@ struct Scanner {
     port: usize,
     prepared: bool,
 }
+
+/// A validated two-leg scanner move.  The optional first leg is the existing
+/// backlash-compensation approach; keeping it with its target ensures callers
+/// that validate, scan, and return use the same ordering rules.
+#[derive(Clone, Copy, Debug)]
+struct MovePlan {
+    target: [Option<f64>; 3],
+    approach: [Option<f64>; 3],
+}
+
 pub struct MotionRig {
     ports: Vec<Box<dyn Bus + Send>>,
     delay: Option<Delay>,
@@ -808,7 +851,7 @@ impl MotionRig {
                 if let Some(other) = &rig.scanners[0]
                     && other.port == index
                     && other.config.controller_address == c.controller_address
-                    && (c.model()? != ScannerModel::ConexAgap || other.config.axis == c.axis)
+                    && (!c.model()?.capabilities().uses_named_axis || other.config.axis == c.axis)
                 {
                     return Err("X and Y refer to the same scanner axis".into());
                 }
@@ -916,16 +959,34 @@ impl MotionRig {
     }
     pub fn validate_moves(&self, moves: &[([Option<f64>; 3], [bool; 3])]) -> Result<(), String> {
         for (target, approach) in moves {
-            self.validate_targets(&[*target])?;
-            for i in 0..2 {
-                if approach[i + 1]
-                    && let (Some(s), Some(v)) = (&self.scanners[i], target[i + 1])
-                {
-                    s.config.approach(v)?;
-                }
-            }
+            self.plan_move(*target, *approach)?;
         }
         Ok(())
+    }
+    /// Validate the whole return (including its approach) before scanning starts.
+    pub fn validate_return(&self, target: [Option<f64>; 3]) -> Result<(), String> {
+        self.plan_move(target, [false, true, true])?;
+        Ok(())
+    }
+
+    /// Builds the existing compensation-then-target sequence without issuing
+    /// I/O.  Validation users and execution users deliberately share it so a
+    /// future workflow cannot accept a path that execution would reject.
+    fn plan_move(
+        &self,
+        target: [Option<f64>; 3],
+        use_approach: [bool; 3],
+    ) -> Result<MovePlan, String> {
+        self.validate_targets(&[target])?;
+        let mut approach = [None; 3];
+        for i in 0..2 {
+            if use_approach[i + 1]
+                && let (Some(scanner), Some(value)) = (&self.scanners[i], target[i + 1])
+            {
+                approach[i + 1] = scanner.config.approach(value)?;
+            }
+        }
+        Ok(MovePlan { target, approach })
     }
     pub fn position(&mut self) -> Result<Position, String> {
         let mut out = Position::default();
@@ -970,7 +1031,7 @@ impl MotionRig {
             if let Some(v) = v {
                 let s = self.scanners[i].as_ref().ok_or("Scanner not connected")?;
                 let raw = s.config.raw_target(*v)?;
-                let axis = if s.config.model()? == ScannerModel::ConexAgap {
+                let axis = if s.config.model()?.capabilities().uses_named_axis {
                     s.config.axis.as_str()
                 } else {
                     ""
@@ -990,8 +1051,10 @@ impl MotionRig {
         cancel: &AtomicBool,
         timeout: Duration,
         verify_delay: bool,
+        progress: &mut Option<&mut dyn FnMut(Position) -> Result<(), String>>,
     ) -> Result<(), String> {
         let start = Instant::now();
+        let mut last_position = None;
         loop {
             if cancel.load(Ordering::Acquire) {
                 return Err("motion cancelled".into());
@@ -1019,6 +1082,20 @@ impl MotionRig {
                     ready &= s.config.protocol().ready(&mut self.ports[s.port])?;
                 }
             }
+            if progress.is_some()
+                && last_position
+                    .is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(100))
+            {
+                let position = self.position()?;
+                if let Some(emit) = progress.as_mut() {
+                    emit(position)?;
+                }
+                last_position = Some(Instant::now());
+            }
+            // Stop may arrive while the callback reads another instrument.
+            if cancel.load(Ordering::Acquire) {
+                return Err("motion cancelled".into());
+            }
             if ready {
                 return Ok(());
             }
@@ -1034,16 +1111,36 @@ impl MotionRig {
         approach: [bool; 3],
         cancel: &AtomicBool,
     ) -> Result<Position, String> {
-        self.validate_targets(&[targets])?;
-        let mut pre = [None; 3];
-        for i in 0..2 {
-            if approach[i + 1]
-                && let (Some(s), Some(v)) = (&self.scanners[i], targets[i + 1])
-            {
-                pre[i + 1] = s.config.approach(v)?;
-            }
-        }
-        self.validate_targets(&[pre])?;
+        self.move_to_with_progress(targets, approach, cancel, None)
+    }
+    /// Reads actual encoder positions while waiting. Callbacks run synchronously;
+    /// any callback I/O must observe the same cancellation token promptly.
+    pub fn move_to_with_progress(
+        &mut self,
+        targets: [Option<f64>; 3],
+        approach: [bool; 3],
+        cancel: &AtomicBool,
+        progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
+        self.move_with_approach(targets, approach, cancel, progress)
+    }
+    pub fn return_to_with_progress(
+        &mut self,
+        targets: [Option<f64>; 3],
+        cancel: &AtomicBool,
+        progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
+        self.move_to_with_progress(targets, [false, true, true], cancel, progress)
+    }
+    fn move_with_approach(
+        &mut self,
+        targets: [Option<f64>; 3],
+        approach: [bool; 3],
+        cancel: &AtomicBool,
+        mut progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
+        let plan = self.plan_move(targets, approach)?;
+        self.validate_targets(&[plan.approach])?;
         let result = (|| {
             if cancel.load(Ordering::Acquire) {
                 return Err("motion cancelled".into());
@@ -1057,19 +1154,26 @@ impl MotionRig {
                     s.prepared = true;
                 }
             }
-            if pre.iter().any(Option::is_some) {
-                self.start(pre, cancel)?;
-                self.wait(pre, cancel, Duration::from_secs(30), true)?;
+            if plan.approach.iter().any(Option::is_some) {
+                self.start(plan.approach, cancel)?;
+                self.wait(
+                    plan.approach,
+                    cancel,
+                    Duration::from_secs(30),
+                    true,
+                    &mut progress,
+                )?;
             }
-            self.start(targets, cancel)?;
+            self.start(plan.target, cancel)?;
             self.wait(
-                targets,
+                plan.target,
                 cancel,
-                Duration::from_secs(if targets[0].is_some() { 240 } else { 30 }),
+                Duration::from_secs(if plan.target[0].is_some() { 240 } else { 30 }),
                 true,
+                &mut progress,
             )?;
             let actual = self.position()?;
-            for (i, v) in targets.iter().enumerate() {
+            for (i, v) in plan.target.iter().enumerate() {
                 if let Some(v) = v {
                     if i == 0 {
                         let d = self.delay.as_ref().ok_or("Delay not connected")?;
@@ -1134,6 +1238,41 @@ impl MotionRig {
         home: bool,
         cancel: &AtomicBool,
     ) -> Result<Position, String> {
+        self.initialize_with_progress(axis, home, cancel, None)
+    }
+    /// Python GUI initialization: reference/enable, then move to calibrated
+    /// instrument zero. Low-level initialization remains nonmoving when requested.
+    pub fn initialize_with_origin_progress(
+        &mut self,
+        axis: usize,
+        home: bool,
+        move_to_origin: bool,
+        cancel: &AtomicBool,
+        mut progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
+        if !move_to_origin {
+            return self.initialize_with_progress(axis, home, cancel, progress);
+        }
+        if axis > 2 {
+            return Err("Unknown axis".into());
+        }
+        let targets = std::array::from_fn(|i| (i == axis).then_some(0.));
+        let approach = [false, true, true];
+        self.validate_moves(&[(targets, approach)])?;
+        let mut forward = |position| match progress.as_mut() {
+            Some(callback) => callback(position),
+            None => Ok(()),
+        };
+        self.initialize_with_progress(axis, home, cancel, Some(&mut forward))?;
+        self.move_to_with_progress(targets, approach, cancel, Some(&mut forward))
+    }
+    pub fn initialize_with_progress(
+        &mut self,
+        axis: usize,
+        home: bool,
+        cancel: &AtomicBool,
+        mut progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
         if axis > 2 {
             return Err("Unknown axis".into());
         }
@@ -1144,27 +1283,52 @@ impl MotionRig {
             let mut target = [None; 3];
             target[axis] = Some(0.);
             if axis == 0 {
-                let d = self.delay.as_ref().ok_or("Delay stage not connected")?;
+                let d = self.delay.as_mut().ok_or("Delay stage not connected")?;
+                // Refresh calibration even when homing was explicitly disabled.
+                d.micro = protocol::delay_microstep(
+                    &mut self.ports[d.port],
+                    d.config.model()?,
+                    d.config.controller_axis,
+                )?;
+                d.config.origin(d.micro)?;
                 if home {
                     protocol::delay_home(
                         &mut self.ports[d.port],
                         d.config.model()?,
                         d.config.controller_axis,
                     )?;
-                    self.wait(target, cancel, Duration::from_secs(240), false)?;
+                    self.wait(
+                        target,
+                        cancel,
+                        Duration::from_secs(240),
+                        false,
+                        &mut progress,
+                    )?;
                 }
             } else {
                 let s = self.scanners[axis - 1]
                     .as_ref()
                     .ok_or("Scanner not connected")?;
-                if home {
+                if home && s.config.model()?.capabilities().supports_home {
                     s.config.protocol().home(&mut self.ports[s.port])?;
-                    self.wait(target, cancel, Duration::from_secs(60), false)?;
+                    self.wait(
+                        target,
+                        cancel,
+                        Duration::from_secs(60),
+                        false,
+                        &mut progress,
+                    )?;
                 } else {
                     s.config
                         .protocol()
                         .prepare(&mut self.ports[s.port], cancel)?;
                 }
+            }
+            if axis > 0 {
+                self.scanners[axis - 1]
+                    .as_mut()
+                    .ok_or("Scanner not connected")?
+                    .prepared = false;
             }
             self.position()
         })();
@@ -1179,478 +1343,9 @@ impl MotionRig {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    fn stage() -> DelayConfig {
-        DelayConfig {
-            port: "test".into(),
-            stage: Some("SGSP46-500".into()),
-            direction: 1,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap()
-    }
-    fn scanner() -> ScannerConfig {
-        ScannerConfig {
-            port: "test".into(),
-            controller: "CONEXAGAP".into(),
-            actuator: Some("AG-M100D".into()),
-            sample_um_per_unit: 412.,
-            axis: "V".into(),
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap()
-    }
-    #[test]
-    fn delay_optical_path_and_runtime_microstep() {
-        let c = stage();
-        assert!((c.ps_from_mm(200., 10).unwrap() - 333.564095198152).abs() < 1e-9);
-        assert!((c.to_mm(-122., 10).unwrap() - 268.287339938).abs() < 1e-9);
-        assert_eq!(c.pulse(0., 10).unwrap(), 125000);
-        assert_eq!(c.um_per_pulse(10).unwrap(), 2.);
-        assert!(c.pulse(2000., 10).is_err());
-    }
-    #[test]
-    fn delay_midpoint_uses_runtime_pulse_limits() {
-        let c = DelayConfig {
-            port: "test".into(),
-            max_pulse: Some(10000),
-            pos_um_per_pulse: Some(0.5),
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        assert_eq!(c.origin(8).unwrap(), 2.5);
-        assert_eq!(c.pulse(0., 8).unwrap(), 5000);
-    }
-    #[test]
-    fn scanner_scale_has_no_extra_thousand() {
-        let c = scanner();
-        assert_eq!(c.sample_um_from_raw(0.5), 206.);
-        assert_eq!(c.raw_from_sample_um(-103.), -0.25);
-        assert!(c.raw_target(310.).is_err());
-        assert_eq!(c.raw_target(10.).unwrap(), 0.024);
-        assert_eq!(c.digits(), 3);
-    }
-    #[test]
-    fn scanner_negative_scale_and_preset_alias() {
-        let mut c = scanner();
-        c.sample_um_per_unit = -412.;
-        assert_eq!(c.sample_um_from_raw(-0.5), 206.);
-        assert_eq!(c.raw_from_sample_um(206.), -0.5);
-        let c:ScannerConfig=serde_json::from_str(r#"{"scanner_controller":"CONEX-AGAP","port":"COM2","actuator":"AG-M100D","axis":2,"sample_um_per_unit":412}"#).unwrap();
-        assert_eq!(c.normalized().unwrap().axis, "V");
-    }
-    #[test]
-    fn hysteresis_applies_only_to_cc_and_is_bounded() {
-        let mut c = scanner();
-        c.software_hysteresis = Hysteresis {
-            enabled: true,
-            distance_um: Some(5.),
-            direction: None,
-        };
-        assert_eq!(c.approach(-309.).unwrap(), None);
-        let mut c = ScannerConfig {
-            port: "test".into(),
-            actuator: Some("TRA12CC".into()),
-            sample_um_per_unit: 10.,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        c.software_hysteresis = Hysteresis {
-            enabled: true,
-            distance_um: Some(10.),
-            direction: None,
-        };
-        assert!(c.approach(-60.).is_err());
-        assert_eq!(c.approach(0.).unwrap(), Some(-10.));
-    }
-    #[test]
-    fn rejects_invalid_calibrations_before_serial_io() {
-        let mut c = scanner();
-        c.sample_um_per_unit = 0.;
-        assert!(c.normalized().is_err());
-        let mut d = stage();
-        d.step_angle_deg = Some(f64::NAN);
-        assert!(d.normalized().is_err());
-        assert!(
-            MotionConfig {
-                delay: None,
-                x: Some(scanner()),
-                y: None
-            }
-            .validate_targets(&[[None, Some(400.), None]])
-            .is_err()
-        );
-    }
-}
+#[path = "tests/config.rs"]
+mod tests;
 
 #[cfg(test)]
-mod motion_fake_bus_tests {
-    use super::*;
-    use std::{
-        collections::VecDeque,
-        sync::{Arc, Mutex},
-    };
-
-    struct ScriptedBus {
-        log: Arc<Mutex<Vec<String>>>,
-        replies: Arc<Mutex<VecDeque<Result<String, String>>>>,
-        fail_write: Option<String>,
-    }
-
-    impl ScriptedBus {
-        fn new(log: Arc<Mutex<Vec<String>>>, replies: &[&str]) -> Self {
-            Self {
-                log,
-                replies: Arc::new(Mutex::new(
-                    replies.iter().map(|reply| Ok((*reply).into())).collect(),
-                )),
-                fail_write: None,
-            }
-        }
-
-        fn failing_on(mut self, command: &str) -> Self {
-            self.fail_write = Some(command.into());
-            self
-        }
-    }
-
-    impl Bus for ScriptedBus {
-        fn query(&mut self, command: &str) -> Result<String, String> {
-            self.log.lock().unwrap().push(command.into());
-            self.replies
-                .lock()
-                .unwrap()
-                .pop_front()
-                .unwrap_or_else(|| Err(format!("unexpected query {command}")))
-        }
-
-        fn write(&mut self, command: &str) -> Result<(), String> {
-            self.log.lock().unwrap().push(command.into());
-            if self.fail_write.as_deref() == Some(command) {
-                Err(format!("scripted write failure for {command}"))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn agap(axis: &str) -> ScannerConfig {
-        ScannerConfig {
-            port: "fake".into(),
-            controller: "CONEXAGAP".into(),
-            actuator: Some("AG-M100D".into()),
-            axis: axis.into(),
-            sample_um_per_unit: 1.0,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap()
-    }
-
-    fn cc_with_hysteresis() -> ScannerConfig {
-        ScannerConfig {
-            port: "fake".into(),
-            controller: "CONEXCC".into(),
-            actuator: Some("TRA12CC".into()),
-            sample_um_per_unit: 1.0,
-            software_hysteresis: Hysteresis {
-                enabled: true,
-                distance_um: Some(1.0),
-                direction: Some("negative".into()),
-            },
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap()
-    }
-
-    fn two_scanner_rig(bus: ScriptedBus) -> MotionRig {
-        MotionRig {
-            ports: vec![Box::new(bus)],
-            delay: None,
-            scanners: [
-                Some(Scanner {
-                    config: agap("U"),
-                    port: 0,
-                    prepared: false,
-                }),
-                Some(Scanner {
-                    config: agap("V"),
-                    port: 0,
-                    prepared: false,
-                }),
-            ],
-        }
-    }
-
-    #[test]
-    fn move_starts_both_scanners_before_polling() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let bus = ScriptedBus::new(
-            log.clone(),
-            &[
-                "1TS000032",
-                "1TS000032", // prepare X/Y
-                "1TS000032",
-                "1TS000032", // wait X/Y
-                "1TPU0.000",
-                "1TPV0.000", // readback X/Y
-            ],
-        );
-        let mut rig = two_scanner_rig(bus);
-
-        rig.move_to(
-            [None, Some(0.0), Some(0.0)],
-            [false; 3],
-            &AtomicBool::new(false),
-        )
-        .unwrap();
-
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec![
-                "1TS",
-                "1TS",
-                "1PAU0.000",
-                "1PAV0.000",
-                "1TS",
-                "1TS",
-                "1TPU",
-                "1TPV",
-            ]
-        );
-    }
-
-    #[test]
-    fn failed_second_scanner_start_stops_all_scanners() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let bus =
-            ScriptedBus::new(log.clone(), &["1TS000032", "1TS000032"]).failing_on("1PAV0.000");
-        let mut rig = two_scanner_rig(bus);
-
-        assert!(
-            rig.move_to(
-                [None, Some(0.0), Some(0.0)],
-                [false; 3],
-                &AtomicBool::new(false),
-            )
-            .is_err()
-        );
-        assert_eq!(
-            *log.lock().unwrap(),
-            vec!["1TS", "1TS", "1PAU0.000", "1PAV0.000", "1STU", "1STV"]
-        );
-    }
-
-    #[test]
-    fn cancelled_move_sends_stop_without_starting_motion() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let mut rig = two_scanner_rig(ScriptedBus::new(log.clone(), &[]));
-
-        assert!(
-            rig.move_to(
-                [None, Some(0.0), Some(0.0)],
-                [false; 3],
-                &AtomicBool::new(true),
-            )
-            .is_err()
-        );
-        assert_eq!(*log.lock().unwrap(), vec!["1STU", "1STV"]);
-    }
-
-    #[test]
-    fn delay_readback_mismatch_stops_motion() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let stage = DelayConfig {
-            port: "fake".into(),
-            stage: Some("SGSP46-500".into()),
-            direction: 1,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        let mut rig = MotionRig {
-            ports: vec![Box::new(ScriptedBus::new(
-                log.clone(),
-                &["OK", "OK", "12500", "R", "12501", "OK"],
-            ))],
-            delay: Some(Delay {
-                config: stage,
-                port: 0,
-                micro: 1,
-            }),
-            scanners: [None, None],
-        };
-
-        assert!(
-            rig.move_to([Some(0.0), None, None], [false; 3], &AtomicBool::new(false))
-                .unwrap_err()
-                .contains("readback")
-        );
-        let commands = log.lock().unwrap();
-        assert!(commands.iter().any(|command| command == "A:1+P12500"));
-        assert_eq!(commands.last().unwrap(), "L:E");
-    }
-
-    #[test]
-    fn out_of_bounds_hysteresis_approach_performs_no_io() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let mut rig = MotionRig {
-            ports: vec![Box::new(ScriptedBus::new(log.clone(), &[]))],
-            delay: None,
-            scanners: [
-                Some(Scanner {
-                    config: cc_with_hysteresis(),
-                    port: 0,
-                    prepared: false,
-                }),
-                None,
-            ],
-        };
-
-        assert!(
-            rig.move_to(
-                [None, Some(-6.0), None],
-                [false, true, false],
-                &AtomicBool::new(false),
-            )
-            .is_err()
-        );
-        assert!(log.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn runtime_coordinates_convert_measurement_interface_and_instrument_values() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let stage = DelayConfig {
-            port: "delay".into(),
-            stage: Some("SGSP46-500".into()),
-            direction: 1,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        let x = ScannerConfig {
-            port: "x".into(),
-            controller: "CONEXCC".into(),
-            actuator: Some("TRA12CC".into()),
-            sample_um_per_unit: 1.0,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        let rig = MotionRig {
-            ports: vec![
-                Box::new(ScriptedBus::new(log.clone(), &[])),
-                Box::new(ScriptedBus::new(log, &[])),
-            ],
-            delay: Some(Delay {
-                config: stage.clone(),
-                port: 0,
-                micro: 1,
-            }),
-            scanners: [
-                Some(Scanner {
-                    config: x,
-                    port: 1,
-                    prepared: false,
-                }),
-                None,
-            ],
-        };
-
-        assert_eq!(
-            rig.to_physical(
-                [Some(1.0), Some(2.0), None],
-                "measurement",
-                [10.0, 20.0, 30.0],
-            )
-            .unwrap(),
-            [Some(11.0), Some(22.0), None]
-        );
-        let interface = rig
-            .to_physical([Some(250.0), Some(7.0), None], "interface", [0.0; 3])
-            .unwrap();
-        assert!((interface[0].unwrap() - stage.ps_from_mm(250.0, 1).unwrap()).abs() < 1e-12);
-        assert_eq!(interface[1], Some(1.0));
-        let instrument = rig
-            .to_physical([Some(12_500.0), Some(7.0), None], "instrument", [0.0; 3])
-            .unwrap();
-        assert!((instrument[0].unwrap() - stage.ps_from_mm(250.0, 1).unwrap()).abs() < 1e-12);
-        assert_eq!(instrument[1], Some(1.0));
-        assert!(
-            rig.to_physical([Some(0.5), None, None], "instrument", [0.; 3])
-                .is_err()
-        );
-    }
-    #[test]
-    fn delay_waits_for_target_readback_before_ready_completion() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let config = DelayConfig {
-            port: "fake".into(),
-            stage: Some("SGSP46-500".into()),
-            direction: 1,
-            ..Default::default()
-        }
-        .normalized()
-        .unwrap();
-        let mut rig = MotionRig {
-            ports: vec![Box::new(ScriptedBus::new(
-                log.clone(),
-                &["OK", "OK", "12000", "12500", "R", "12500"],
-            ))],
-            delay: Some(Delay {
-                config,
-                port: 0,
-                micro: 1,
-            }),
-            scanners: [None, None],
-        };
-        let position = rig
-            .move_to([Some(0.), None, None], [false; 3], &AtomicBool::new(false))
-            .unwrap();
-        assert_eq!(position.delay_stage_pulse, Some(12500));
-        assert_eq!(
-            *log.lock().unwrap(),
-            ["A:1+P12500", "G:", "Q:", "Q:", "!:", "Q:"]
-        );
-    }
-
-    #[test]
-    fn delay_calibration_keeps_microstep_unknown_until_connected() {
-        let config = DelayConfig {
-            port: "COM6".into(),
-            stage: Some("SGSP46-500".into()),
-            pos_um_per_pulse: Some(0.5),
-            ..Default::default()
-        };
-        let hint = config.calibration_hint().unwrap();
-        assert_eq!(hint.microstep_division, None);
-        assert_eq!(hint.configured_pos_um_per_pulse, Some(0.5));
-        assert!(hint.effective_ps_per_pulse.unwrap() > 0.);
-        assert_eq!(hint.configuration, Some(config.normalized().unwrap()));
-
-        let rig = MotionRig {
-            ports: vec![],
-            delay: Some(Delay {
-                config: config.normalized().unwrap(),
-                port: 0,
-                micro: 8,
-            }),
-            scanners: [None, None],
-        };
-        let actual = rig.delay_calibration().unwrap().unwrap();
-        assert_eq!(actual.microstep_division, Some(8));
-        assert_eq!(actual.configuration, Some(config.normalized().unwrap()));
-        assert_eq!(actual.effective_pos_um_per_pulse, Some(0.5));
-        assert_eq!(
-            actual.full_step_ps.unwrap(),
-            actual.effective_ps_per_pulse.unwrap() * 8.
-        );
-    }
-}
+#[path = "tests/motion.rs"]
+mod motion_fake_bus_tests;

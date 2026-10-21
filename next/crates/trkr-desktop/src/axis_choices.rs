@@ -1,59 +1,20 @@
-//! UI-only axis choices.  These mirror `Plan::targets` without mutating an
+//! UI axis editing uses the core workflow contract without mutating an
 //! imported plan, so an invalid saved pair remains visible until the user
 //! deliberately changes an axis.
 #[cfg(test)]
 use trkr_core::Range;
 use trkr_core::{Axis, Plan, Workflow};
 
-const ALL: [Axis; 5] = [Axis::T, Axis::X, Axis::Y, Axis::U, Axis::V];
-const SPATIAL: [Axis; 4] = [Axis::X, Axis::Y, Axis::U, Axis::V];
-const XYUV: [Axis; 4] = [Axis::X, Axis::Y, Axis::U, Axis::V];
-const ONLY_T: [Axis; 1] = [Axis::T];
-const ONLY_X: [Axis; 1] = [Axis::X];
-const ONLY_Y: [Axis; 1] = [Axis::Y];
-const ONLY_U: [Axis; 1] = [Axis::U];
-const ONLY_V: [Axis; 1] = [Axis::V];
-
 pub fn fast_options(workflow: Workflow) -> &'static [Axis] {
-    match workflow {
-        Workflow::Strkr => &ALL,
-        Workflow::Srkr2d => &XYUV,
-        Workflow::SignalMonitor | Workflow::Trkr => &[Axis::T],
-        Workflow::Srkr => &SPATIAL,
-    }
+    workflow.fast_options()
 }
 
 pub fn slow_options(workflow: Workflow, fast: Axis) -> &'static [Axis] {
-    match workflow {
-        Workflow::Strkr => {
-            if fast == Axis::T {
-                &SPATIAL
-            } else {
-                &ONLY_T
-            }
-        }
-        Workflow::Srkr2d => match fast {
-            Axis::X => &ONLY_Y,
-            Axis::Y => &ONLY_X,
-            Axis::U => &ONLY_V,
-            Axis::V => &ONLY_U,
-            Axis::T => &[],
-        },
-        Workflow::SignalMonitor | Workflow::Trkr | Workflow::Srkr => &[],
-    }
+    workflow.slow_options(fast)
 }
 
 pub fn valid_pair(workflow: Workflow, fast: Axis, slow: Axis) -> bool {
-    match workflow {
-        Workflow::SignalMonitor => true,
-        Workflow::Trkr => fast == Axis::T,
-        Workflow::Srkr => fast != Axis::T,
-        Workflow::Strkr => (fast == Axis::T) != (slow == Axis::T),
-        Workflow::Srkr2d => matches!(
-            (fast, slow),
-            (Axis::X, Axis::Y) | (Axis::Y, Axis::X) | (Axis::U, Axis::V) | (Axis::V, Axis::U)
-        ),
-    }
+    workflow.valid_pair(fast, slow)
 }
 
 pub fn pair_warning(workflow: Workflow, fast: Axis, slow: Axis) -> Option<String> {

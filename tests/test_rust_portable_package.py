@@ -90,6 +90,7 @@ def test_packager_contents_are_gpib_only(tmp_path: Path) -> None:
     assert not (output / "support" / "iv-support").exists()
     assert (output / "support" / "licenses" / "KohdaLab-TRKR-MIT.txt").is_file()
     assert (output / "support" / "licenses" / "trkr_portable_rust.md").is_file()
+    assert (output / "support" / "licenses" / "python_compatibility_inventory.json").is_file()
     assert "\\n" not in (output / "README.txt").read_text(encoding="utf-8")
 
 
@@ -154,3 +155,28 @@ def test_zip_headers_ignore_checkout_file_timestamps(tmp_path: Path) -> None:
         with zipfile.ZipFile(path,'w') as archive:module.zip_file(archive,source,'src/main.rs')
         archives.append(path.read_bytes())
     assert archives[0]==archives[1]
+
+
+def test_packaged_notebooks_prefer_the_bundled_client_over_an_old_import(tmp_path: Path) -> None:
+    """Exercise the actual installer/portable layout, including a warm kernel."""
+    import json
+
+    inputs = fixture_inputs(tmp_path)
+    output = tmp_path / "out"
+    result = run_package(inputs, output)
+    assert result.returncode == 0, result.stderr
+    assert (output / "notebook/README.md").is_file()
+    code = r'''
+import json, sys, types
+from pathlib import Path
+sys.modules["kohdalab_trkr"] = types.ModuleType("kohdalab_trkr")
+for path in Path.cwd().glob("*.ipynb"):
+    setup = next(c for c in json.loads(path.read_text(encoding="utf-8"))["cells"] if c.get("id") == "setup")
+    bootstrap = "".join(setup["source"]).split("binary = find_binary()", 1)[0]
+    namespace = {}
+    exec(compile(bootstrap, str(path), "exec"), namespace)
+    assert callable(namespace["prepare_profile"])
+    assert Path(namespace["Client"].__init__.__globals__["__file__"]).resolve() == Path.cwd() / "kohdalab_trkr.py"
+'''
+    result = subprocess.run([sys.executable, "-c", code], cwd=output / "notebook", capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr

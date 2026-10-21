@@ -89,6 +89,7 @@ pub struct PlotViewport<'a> {
     pub y_log: bool,
     pub voltage_scale: f64,
     pub voltage_unit: &'a str,
+    pub history: &'a crate::plot_history::History,
 }
 
 pub fn voltage_scale_from_sensitivity(sensitivity_v: f64) -> (f64, &'static str) {
@@ -135,11 +136,7 @@ fn color(i: usize) -> Color32 {
     }
 }
 pub fn plot_count(workflow: Workflow) -> usize {
-    if matches!(workflow, Workflow::SignalMonitor | Workflow::Trkr) {
-        2
-    } else {
-        4
-    }
+    workflow.plot_count()
 }
 struct PlotView<'a> {
     epoch: u64,
@@ -602,7 +599,17 @@ pub fn plots(
             {
                 let rect =
                     Rect::from_min_size(egui::pos2(x, row.min.y), Vec2::new(width, row.height()));
-                view.line(
+                let retained = (axis != plan.fast)
+                    .then(|| viewport.history.srkr_axis(plan, axis))
+                    .flatten();
+                let axis_view = PlotView {
+                    samples: retained
+                        .map(|trace| trace.samples.as_slice())
+                        .unwrap_or(view.samples),
+                    plan: retained.map(|trace| &trace.plan).unwrap_or(view.plan),
+                    ..view
+                };
+                axis_view.line(
                     ui,
                     rect,
                     geometry,
@@ -616,7 +623,7 @@ pub fn plots(
                             "srkr-right"
                         },
                         current_line: false,
-                        show_data: axis == plan.fast,
+                        show_data: axis == plan.fast || retained.is_some(),
                     },
                 );
             }
@@ -766,6 +773,94 @@ mod tests {
         assert_eq!(plotted_y(-1., true), None);
         assert_eq!(plotted_y(-1., false), Some(-1.));
         assert_eq!(format_log_tick(-6.), "1e-6");
+    }
+    #[test]
+    fn srkr_renders_both_retained_axes_with_each_runs_original_coordinates() {
+        for (first, second, theta) in [(Axis::X, Axis::Y, 0.), (Axis::U, Axis::V, 45.)] {
+            let ctx = egui::Context::default();
+            let x = Plan {
+                workflow: Workflow::Srkr,
+                fast: first,
+                theta_deg: theta,
+                zero: [100., 200., 300.],
+                fast_range: trkr_core::Range {
+                    min: -40.,
+                    max: 40.,
+                    step: 40.,
+                },
+                ..Default::default()
+            };
+            let y = Plan {
+                fast: second,
+                zero: [400., 500., 600.],
+                ..x.clone()
+            };
+            let samples = |plan: &Plan| {
+                plan.targets()
+                    .unwrap()
+                    .into_iter()
+                    .map(|target| Sample {
+                        elapsed: 0.,
+                        signal: Signal::new(1e-6, 2e-6, 3e-6, 75.).unwrap(),
+                        position: Position {
+                            physical: target.physical.map(Some),
+                            ..Default::default()
+                        },
+                        target,
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let mut history = crate::plot_history::History::default();
+            history.select(
+                Some(crate::plot_history::Trace {
+                    plan: x.clone(),
+                    samples: samples(&x),
+                    progress: (3, 3),
+                    output: None,
+                }),
+                &y,
+            );
+            let data = samples(&y);
+            let mut cache = [None, None];
+            let mut geometry = crate::precision::Geometry::new();
+            for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+                for _ in 0..3 {
+                    let _ = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                Vec2::new(900., 600.),
+                            )),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().show(ctx, |ui| {
+                                plots(
+                                    ui,
+                                    &data,
+                                    &y,
+                                    mode,
+                                    &mut cache,
+                                    &mut geometry,
+                                    PlotViewport {
+                                        area: ui.max_rect(),
+                                        epoch: 1,
+                                        y_log: false,
+                                        voltage_scale: 1e6,
+                                        voltage_unit: "uV",
+                                        history: &history,
+                                    },
+                                );
+                            });
+                        },
+                    );
+                }
+                verify_visible_data(&ctx, &data, &y, mode, 1e6, 1, false).unwrap();
+                let retained = history.srkr_axis(&y, first).unwrap();
+                verify_visible_data(&ctx, &retained.samples, &retained.plan, mode, 1e6, 1, false)
+                    .unwrap();
+            }
+        }
     }
     #[test]
     fn data_bounds_replace_empty_placeholder_and_mode_has_independent_units() {
