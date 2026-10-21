@@ -1486,7 +1486,7 @@ mod motion_fake_bus_tests {
         .unwrap()
     }
 
-    fn two_scanner_rig(bus: ScriptedBus) -> MotionRig {
+    fn two_scanner_rig(bus: impl Bus + Send + 'static) -> MotionRig {
         MotionRig {
             ports: vec![Box::new(bus)],
             delay: None,
@@ -1545,38 +1545,83 @@ mod motion_fake_bus_tests {
 
     #[test]
     fn manual_move_reports_actual_position_before_completion() {
-        let log = Arc::new(Mutex::new(vec![]));
-        let mut rig = two_scanner_rig(ScriptedBus::new(
-            log.clone(),
-            &[
-                "1TS000032",
-                "1TS000032", // prepare
-                "1TS000028",
-                "1TS000028", // still moving
-                "1TPU0.001",
-                "1TPV0.002", // intermediate encoder readback
-                "1TS000032",
-                "1TS000032", // ready
-                "1TPU0.010",
-                "1TPV0.020", // final readback
-            ],
-        ));
-        let mut positions = vec![];
-        let final_position = rig
-            .move_to_with_progress(
-                [None, Some(0.010), Some(0.020)],
-                [false; 3],
-                &AtomicBool::new(false),
-                Some(&mut |position| {
-                    positions.push(position);
-                    Ok(())
-                }),
-            )
-            .unwrap();
-        assert_eq!(positions.len(), 1);
-        assert_eq!(positions[0].physical, [None, Some(0.001), Some(0.002)]);
-        assert_eq!(final_position.physical, [None, Some(0.010), Some(0.020)]);
-        assert!(!log.lock().unwrap().iter().any(|cmd| cmd.starts_with("1ST")));
+        struct MovingBus {
+            log: Arc<Mutex<Vec<String>>>,
+            status_reads: usize,
+            ready_delay: Duration,
+        }
+        impl Bus for MovingBus {
+            fn query(&mut self, command: &str) -> Result<String, String> {
+                self.log.lock().unwrap().push(command.into());
+                match command {
+                    "1TS" => {
+                        self.status_reads += 1;
+                        if self.status_reads == 5 {
+                            thread::sleep(self.ready_delay);
+                        }
+                        Ok(if matches!(self.status_reads, 3 | 4) {
+                            "1TS000028"
+                        } else {
+                            "1TS000032"
+                        }
+                        .into())
+                    }
+                    "1TPU" => Ok(if self.status_reads <= 4 {
+                        "1TPU0.001"
+                    } else {
+                        "1TPU0.010"
+                    }
+                    .into()),
+                    "1TPV" => Ok(if self.status_reads <= 4 {
+                        "1TPV0.002"
+                    } else {
+                        "1TPV0.020"
+                    }
+                    .into()),
+                    _ => Err(format!("unexpected query {command}")),
+                }
+            }
+            fn write(&mut self, command: &str) -> Result<(), String> {
+                self.log.lock().unwrap().push(command.into());
+                Ok(())
+            }
+        }
+        // Command-based replies permit the additional readback that is correct
+        // when a scheduler delay crosses the live-position update deadline.
+        for ready_delay in [Duration::ZERO, Duration::from_millis(110)] {
+            let log = Arc::new(Mutex::new(vec![]));
+            let mut rig = two_scanner_rig(MovingBus {
+                log: log.clone(),
+                status_reads: 0,
+                ready_delay,
+            });
+            let mut positions = vec![];
+            let final_position = rig
+                .move_to_with_progress(
+                    [None, Some(0.010), Some(0.020)],
+                    [false; 3],
+                    &AtomicBool::new(false),
+                    Some(&mut |position| {
+                        positions.push(position);
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+            assert!(!positions.is_empty());
+            assert_eq!(positions[0].physical, [None, Some(0.001), Some(0.002)]);
+            let expected_final = [None, Some(0.010), Some(0.020)];
+            for position in positions.iter().skip(1) {
+                assert_eq!(position.physical, expected_final);
+            }
+            if !ready_delay.is_zero() {
+                assert!(
+                    positions.len() >= 2,
+                    "delayed ready polling must publish final readback"
+                );
+            }
+            assert_eq!(final_position.physical, expected_final);
+            assert!(!log.lock().unwrap().iter().any(|cmd| cmd.starts_with("1ST")));
+        }
     }
 
     #[test]

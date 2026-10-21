@@ -13,7 +13,7 @@ same Rust engine from Jupyter notebooks.
 
 Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
 
-- **Windows x64:** run `KohdaLab-TRKR-0.3.2-Setup.exe` for a per-user installation
+- **Windows x64:** run `KohdaLab-TRKR-0.3.3-Setup.exe` for a per-user installation
   with a desktop shortcut, or extract the entire portable ZIP and run
   `kohdalab-trkr.exe`. `kohdalab-trkr-demo.exe` replays CSVs without hardware.
 - **macOS Apple silicon, macOS 13+:** open the DMG and drag **KohdaLab TRKR.app**
