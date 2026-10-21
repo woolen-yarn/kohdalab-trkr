@@ -136,11 +136,7 @@ fn color(i: usize) -> Color32 {
     }
 }
 pub fn plot_count(workflow: Workflow) -> usize {
-    if matches!(workflow, Workflow::SignalMonitor | Workflow::Trkr) {
-        2
-    } else {
-        4
-    }
+    workflow.plot_count()
 }
 struct PlotView<'a> {
     epoch: u64,
