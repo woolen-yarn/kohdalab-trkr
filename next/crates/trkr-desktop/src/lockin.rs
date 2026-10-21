@@ -40,6 +40,80 @@ impl Io for trkr_transport::Gpib {
     }
 }
 
+pub trait CancellableIo: Io {
+    fn invalidate(&mut self);
+    fn query_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, String>;
+    fn write_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String>;
+}
+impl CancellableIo for trkr_transport::Gpib {
+    fn invalidate(&mut self) {
+        trkr_transport::Gpib::invalidate(self);
+    }
+    fn query_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<String, String> {
+        trkr_transport::Gpib::query_cancellable(self, command, cancel)
+    }
+    fn write_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), String> {
+        trkr_transport::Gpib::write_cancellable(self, command, cancel)
+    }
+}
+
+/// Display reads during motion/settling observe Stop even during a helper
+/// response. This also covers LI5640 display selection and restoration writes.
+pub fn read_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Result<Signal, String> {
+    struct Cancellable<'a, T> {
+        io: &'a mut T,
+        cancel: &'a std::sync::atomic::AtomicBool,
+    }
+    impl<T: CancellableIo> Io for Cancellable<'_, T> {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.io.query_cancellable(command, self.cancel)
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.io.write_cancellable(command, self.cancel)
+        }
+    }
+    let result = read(
+        model,
+        &mut Cancellable {
+            io: &mut *io,
+            cancel,
+        },
+    );
+    if let Err(error) = &result
+        && model == Model::Li5640
+        && cancel.load(std::sync::atomic::Ordering::Acquire)
+    {
+        // Selection writes may already have succeeded. Never leave this session
+        // marked healthy when cancellation prevented the restoration writes.
+        io.invalidate();
+        return Err(format!(
+            "{}; LI5640 recovery required: reconnect and verify display/output settings",
+            error
+        ));
+    }
+    result
+}
+
 pub fn read(model: Model, io: &mut impl Io) -> Result<Signal, String> {
     match model {
         Model::Sr830 => read_sr830(io),
@@ -554,6 +628,7 @@ mod tests {
         replies: VecDeque<Result<String, String>>,
         commands: Vec<String>,
         fail_write: Option<&'static str>,
+        invalidated: bool,
     }
     impl Fake {
         fn new(replies: &[&str]) -> Self {
@@ -561,6 +636,7 @@ mod tests {
                 replies: replies.iter().map(|v| Ok((*v).into())).collect(),
                 commands: vec![],
                 fail_write: None,
+                invalidated: false,
             }
         }
     }
@@ -616,6 +692,99 @@ mod tests {
             (0.001, -0.0005, 0.00025, 12.345)
         );
         assert_eq!(io.commands, ["SEN\r", "XY\r", "MP\r"]);
+    }
+
+    impl CancellableIo for Fake {
+        fn invalidate(&mut self) {
+            self.invalidated = true;
+        }
+        fn query_cancellable(
+            &mut self,
+            command: &str,
+            cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<String, String> {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("cancelled".into());
+            }
+            self.query(command)
+        }
+        fn write_cancellable(
+            &mut self,
+            command: &str,
+            cancel: &std::sync::atomic::AtomicBool,
+        ) -> Result<(), String> {
+            if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                return Err("cancelled".into());
+            }
+            self.write(command)
+        }
+    }
+    #[test]
+    fn cancellable_li5640_read_selects_and_restores_displays() {
+        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let got = read_cancellable(Model::Li5640, &mut io, &cancel).unwrap();
+        assert_eq!((got.x_v, got.y_v, got.r_v, got.theta_deg), (1., 2., 3., 4.));
+        assert!(io.commands.ends_with(&[
+            "OTYP 9,8\n".into(),
+            "DDEF 1,7\n".into(),
+            "DDEF 2,6\n".into()
+        ]));
+    }
+    #[test]
+    fn cancelled_li5640_read_attempts_all_restores_and_reports_failure() {
+        struct CancelOnSelection {
+            io: Fake,
+            attempted: Vec<String>,
+        }
+        impl Io for CancelOnSelection {
+            fn query(&mut self, c: &str) -> Result<String, String> {
+                self.io.query(c)
+            }
+            fn write(&mut self, c: &str) -> Result<(), String> {
+                self.io.write(c)
+            }
+        }
+        impl CancellableIo for CancelOnSelection {
+            fn invalidate(&mut self) {
+                self.io.invalidate();
+            }
+            fn query_cancellable(
+                &mut self,
+                c: &str,
+                token: &std::sync::atomic::AtomicBool,
+            ) -> Result<String, String> {
+                self.io.query_cancellable(c, token)
+            }
+            fn write_cancellable(
+                &mut self,
+                c: &str,
+                token: &std::sync::atomic::AtomicBool,
+            ) -> Result<(), String> {
+                self.attempted.push(c.into());
+                let result = self.io.write_cancellable(c, token);
+                if c == "DDEF 1,0\n" {
+                    token.store(true, std::sync::atomic::Ordering::Release);
+                }
+                result
+            }
+        }
+        let mut io = CancelOnSelection {
+            io: Fake::new(&["9,8", "7", "6"]),
+            attempted: vec![],
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let error = read_cancellable(Model::Li5640, &mut io, &cancel).unwrap_err();
+        assert!(error.contains("cancelled"));
+        assert!(error.contains("restore LI5640 settings"));
+        assert!(error.contains("LI5640 recovery required"));
+        assert!(io.io.invalidated);
+        assert_eq!(io.io.commands.last().unwrap(), "DDEF 1,0\n");
+        assert!(io.attempted.ends_with(&[
+            "OTYP 9,8\n".into(),
+            "DDEF 1,7\n".into(),
+            "DDEF 2,6\n".into()
+        ]));
     }
 
     #[test]

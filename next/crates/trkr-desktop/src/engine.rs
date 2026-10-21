@@ -29,6 +29,7 @@ pub const FIELDS: &[&str] = &[
     "target_u_cor_um",
     "target_v_cor_um",
     "elapsed_s",
+    "acquisition_elapsed_s",
     "t_cor_ps",
     "t_ps",
     "x_cor_um",
@@ -117,6 +118,123 @@ pub struct Snapshot {
 pub struct LiveReading {
     pub signal: Signal,
     pub position: Position,
+    #[serde(default = "hardware_origin")]
+    pub origin: ReadingOrigin,
+}
+fn hardware_origin() -> ReadingOrigin {
+    ReadingOrigin::Hardware
+}
+
+const LIVE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Shares one cadence between idle, motion, settling and acquisition reads.
+/// Display-only samples never become measurement rows.
+struct LiveMonitor {
+    next: Instant,
+    started: Instant,
+    read_budget: Duration,
+    demo_coordinates: [Option<f64>; 3],
+}
+impl Default for LiveMonitor {
+    fn default() -> Self {
+        let now = Instant::now();
+        Self {
+            next: now,
+            started: now,
+            read_budget: LIVE_INTERVAL,
+            demo_coordinates: [None; 3],
+        }
+    }
+}
+impl LiveMonitor {
+    fn publish(
+        &mut self,
+        signal: Signal,
+        origin: ReadingOrigin,
+        position: &Position,
+        send: &SyncSender<Event>,
+    ) {
+        self.next = Instant::now() + LIVE_INTERVAL;
+        let _ = send.try_send(Event::Live(LiveReading {
+            signal,
+            position: position.clone(),
+            origin,
+        }));
+    }
+    fn publish_if_due(
+        &mut self,
+        signal: Signal,
+        origin: ReadingOrigin,
+        position: &Position,
+        send: &SyncSender<Event>,
+    ) {
+        if Instant::now() >= self.next {
+            self.publish(signal, origin, position, send);
+        }
+    }
+    fn poll(
+        &mut self,
+        read: impl FnOnce() -> Result<Signal, String>,
+        origin: ReadingOrigin,
+        position: &Position,
+        send: &SyncSender<Event>,
+    ) -> Result<Option<Signal>, String> {
+        let now = Instant::now();
+        if now < self.next {
+            return Ok(None);
+        }
+        // Schedule from the start of the read, with no catch-up burst after slow I/O.
+        self.next = now + LIVE_INTERVAL;
+        let signal = read()?;
+        self.read_budget =
+            (now.elapsed() + Duration::from_millis(10)).max(Duration::from_millis(20));
+        let _ = send.try_send(Event::Live(LiveReading {
+            signal,
+            position: position.clone(),
+            origin,
+        }));
+        Ok(Some(signal))
+    }
+}
+
+fn poll_live(
+    monitor: &mut LiveMonitor,
+    source: Source,
+    gpib: Option<&mut Gpib>,
+    state: &mut Snapshot,
+    send: &SyncSender<Event>,
+    cancel: Option<&AtomicBool>,
+) -> Result<(), String> {
+    let origin = match source {
+        Source::Demo => ReadingOrigin::Demo,
+        _ => ReadingOrigin::Hardware,
+    };
+    let position = state.position.clone();
+    let elapsed = monitor.started.elapsed().as_secs_f64();
+    let demo_coordinates = monitor.demo_coordinates;
+    if let Some(signal) = monitor.poll(
+        || match source {
+            Source::Gpib { model, .. } => {
+                let gpib = gpib.ok_or("Lock-in disconnected")?;
+                match cancel {
+                    Some(token) => lockin::read_cancellable(model, gpib, token),
+                    None => lockin::read(model, gpib),
+                }
+            }
+            Source::Demo => Ok(Signal::demo(
+                demo_coordinates[0].unwrap_or(elapsed * 10.),
+                demo_coordinates[1].unwrap_or(0.),
+                demo_coordinates[2].unwrap_or(0.),
+            )),
+        },
+        origin,
+        &position,
+        send,
+    )? {
+        state.signal = Some(signal);
+        state.signal_origin = Some(origin);
+    }
+    Ok(())
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
@@ -147,12 +265,16 @@ pub enum Command {
         targets: [Option<f64>; 3],
         coordinate: Coordinate,
         zero: [f64; 3],
+        #[serde(default = "spatial_approach")]
         approach: [bool; 3],
     },
     Initialize {
         config: HardwareConfig,
         axis: usize,
         home: bool,
+        /// GUI initialization also moves to the instrument's calibrated zero.
+        #[serde(default)]
+        move_to_origin: bool,
     },
     Run {
         source: Source,
@@ -253,11 +375,10 @@ fn controller_with_mode(read_only: bool) -> Controller {
     let working = busy.clone();
     let handle = thread::spawn(move || {
         let mut session = Session::default();
-        let mut last_lockin = Instant::now() - Duration::from_millis(100);
         let mut last_position = Instant::now() - Duration::from_millis(500);
         loop {
             let now = Instant::now();
-            let lockin_due = last_lockin + Duration::from_millis(100);
+            let lockin_due = session.live.next;
             let position_due = last_position + Duration::from_millis(500);
             let timeout = idle_refresh_timeout(
                 session.gpib.is_some(),
@@ -273,14 +394,21 @@ fn controller_with_mode(read_only: bool) -> Controller {
                     let now = Instant::now();
                     let mut changed = false;
                     if session.gpib.is_some() && now >= lockin_due {
-                        last_lockin = now;
-                        if let Err(e) = session.read_lockin() {
+                        let config = session.config.as_ref().expect("connected lock-in config");
+                        let source = Source::Gpib {
+                            model: config.model,
+                            address: config.address,
+                        };
+                        if let Err(e) = poll_live(
+                            &mut session.live,
+                            source,
+                            session.gpib.as_mut(),
+                            &mut session.state,
+                            &send,
+                            None,
+                        ) {
                             let _ = send.send(Event::Error(e));
-                        } else if let Some(signal) = session.state.signal {
-                            let _ = send.try_send(Event::Live(LiveReading {
-                                signal,
-                                position: session.state.position.clone(),
-                            }));
+                        } else {
                             changed = true;
                         }
                     }
@@ -291,6 +419,9 @@ fn controller_with_mode(read_only: bool) -> Controller {
                         } else {
                             changed = true;
                         }
+                    }
+                    if session.clear_failed_lockin() {
+                        changed = true;
                     }
                     if changed {
                         let _ = send.send(Event::State(Box::new(session.state.clone())));
@@ -317,6 +448,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 }
                 let _ = send.send(Event::Error(e.clone()));
             }
+            session.clear_failed_lockin();
             if job {
                 session.state.running = false;
                 session.state.phase = if token.load(Ordering::Acquire) {
@@ -349,12 +481,25 @@ fn controller_with_mode(read_only: bool) -> Controller {
 }
 #[derive(Default)]
 struct Session {
+    live: LiveMonitor,
     gpib: Option<Gpib>,
     rig: Option<MotionRig>,
     config: Option<HardwareConfig>,
     state: Snapshot,
 }
 impl Session {
+    fn clear_failed_lockin(&mut self) -> bool {
+        if self.gpib.as_ref().is_some_and(Gpib::is_poisoned) {
+            self.gpib = None;
+            self.state.devices[0] = false;
+            self.state.signal = None;
+            self.state.signal_origin = None;
+            self.state.transport.clear();
+            self.state.lockin = Value::Null;
+            return true;
+        }
+        false
+    }
     fn connect(&mut self, config: HardwareConfig, devices: Vec<Device>) -> Result<(), String> {
         // Reopening serial handles never initiates motion or homing.
         if devices.contains(&Device::Lockin) {
@@ -498,18 +643,53 @@ impl Session {
                 self.connect(config, devices_for_targets(targets))?;
                 let rig = self.rig.as_mut().ok_or("No motion devices selected")?;
                 let physical = rig.to_physical(targets, coordinate_name(coordinate), zero)?;
-                rig.validate_targets(&[physical])?;
-                self.state.position = rig.move_to(physical, approach, cancel)?;
+                rig.validate_moves(&[(physical, approach)])?;
+                self.state.phase = motion_phase("Moving", targets);
+                let _ = send.send(Event::State(Box::new(self.state.clone())));
+                self.move_live(physical, approach, cancel, send)?;
             }
-            Command::Initialize { config, axis, home } => {
+            Command::Initialize {
+                config,
+                axis,
+                home,
+                move_to_origin,
+            } => {
                 if axis > 2 {
                     return Err("Unknown motion axis".into());
                 }
                 self.connect(config, vec![[Device::T, Device::X, Device::Y][axis]])?;
-                self.rig
-                    .as_mut()
-                    .ok_or("No motion device")?
-                    .initialize(axis, home, cancel)?;
+                self.state.phase = motion_phase(
+                    "Initializing",
+                    std::array::from_fn(|i| (i == axis).then_some(0.)),
+                );
+                let _ = send.send(Event::State(Box::new(self.state.clone())));
+                let state = &mut self.state;
+                let source = self
+                    .gpib
+                    .as_ref()
+                    .and(self.config.as_ref())
+                    .map(|c| Source::Gpib {
+                        model: c.model,
+                        address: c.address,
+                    });
+                let gpib = &mut self.gpib;
+                let live = &mut self.live;
+                let rig = self.rig.as_mut().ok_or("No motion device")?;
+                state.position = rig.initialize_with_origin_progress(
+                    axis,
+                    home,
+                    move_to_origin,
+                    cancel,
+                    Some(&mut |position| {
+                        state.position = position;
+                        let _ = send.try_send(Event::State(Box::new(state.clone())));
+                        if let Some(source) = source {
+                            poll_live(live, source, gpib.as_mut(), state, send, Some(cancel))?;
+                        }
+                        Ok(())
+                    }),
+                )?;
+                state.delay_calibration = rig.delay_calibration()?;
                 self.read()?;
             }
             Command::Run {
@@ -558,6 +738,81 @@ impl Session {
             Command::Stop | Command::Shutdown => {}
         }
         Ok(None)
+    }
+    fn move_live(
+        &mut self,
+        targets: [Option<f64>; 3],
+        approach: [bool; 3],
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<(), String> {
+        self.motion_live(targets, approach, false, cancel, send)
+    }
+    fn motion_live(
+        &mut self,
+        targets: [Option<f64>; 3],
+        approach: [bool; 3],
+        returning: bool,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<(), String> {
+        let source = self
+            .gpib
+            .as_ref()
+            .and(self.config.as_ref())
+            .map(|c| Source::Gpib {
+                model: c.model,
+                address: c.address,
+            });
+        let state = &mut self.state;
+        let gpib = &mut self.gpib;
+        let live = &mut self.live;
+        let rig = self.rig.as_mut().ok_or("Motion disconnected")?;
+        let mut progress = |position| {
+            state.position = position;
+            let _ = send.try_send(Event::State(Box::new(state.clone())));
+            if let Some(source) = source {
+                poll_live(live, source, gpib.as_mut(), state, send, Some(cancel))?;
+            }
+            Ok(())
+        };
+        state.position = if returning {
+            rig.return_to_with_progress(targets, cancel, Some(&mut progress))?
+        } else {
+            rig.move_to_with_progress(targets, approach, cancel, Some(&mut progress))?
+        };
+        Ok(())
+    }
+    fn wait_live(
+        &mut self,
+        deadline: Instant,
+        source: Source,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<bool, String> {
+        while !cancel.load(Ordering::Acquire) {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(true);
+            }
+            // Leave the end of the settling window free for the measurement read.
+            if deadline - now >= self.live.read_budget {
+                poll_live(
+                    &mut self.live,
+                    source,
+                    self.gpib.as_mut(),
+                    &mut self.state,
+                    send,
+                    Some(cancel),
+                )?;
+            }
+            thread::sleep(
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(Duration::from_millis(10)),
+            );
+        }
+        Ok(false)
     }
     fn set_phase(&mut self, phase: String, send: &mpsc::SyncSender<Event>) {
         self.state.phase = phase;
@@ -615,7 +870,9 @@ impl Session {
                     )?;
                 }
                 if let Some(r) = returns.as_mut() {
-                    *r = rig.to_physical(*r, coordinate_name(plan.coordinate), plan.zero)?;
+                    // Return zeros are always measurement coordinates, including
+                    // scans whose input range uses mm, degrees or pulses.
+                    *r = rig.to_physical(*r, "measurement", plan.zero)?;
                 }
                 rig.validate_targets(&physical)?;
                 if let Some(r) = returns {
@@ -624,12 +881,7 @@ impl Session {
                 let mut moves = Vec::with_capacity(targets.len());
                 for (index, target) in targets.iter().enumerate() {
                     let first = index == 0 || target.line != targets[index - 1].line;
-                    if index > 0
-                        && first
-                        && plan.return_fast_between_lines
-                        && !matches!(plan.fast, Axis::U | Axis::V)
-                        && !matches!(plan.slow, Axis::U | Axis::V)
-                    {
+                    if index > 0 && first && reset_fast_before_slow(plan) {
                         let reset = rig.to_physical(
                             line_reset(plan, &targets[index - 1]),
                             coordinate_name(plan.coordinate),
@@ -637,13 +889,14 @@ impl Session {
                         )?;
                         moves.push((reset, [false; 3]));
                     }
-                    moves.push((
-                        physical[index],
-                        std::array::from_fn(|i| mask[i] && index == 0),
-                    ));
+                    for movement in scan_moves(plan, physical[index], first, index == 0) {
+                        moves.push((movement.target, movement.approach));
+                    }
                 }
                 if let Some(r) = returns {
-                    moves.push((r, [false; 3]));
+                    for target in return_moves(plan, r) {
+                        rig.validate_return(target)?;
+                    }
                 }
                 rig.validate_moves(&moves)?;
             }
@@ -654,6 +907,10 @@ impl Session {
         self.state.phase = "Measuring".into();
         let _ = send.send(Event::State(Box::new(self.state.clone())));
         let start = Instant::now();
+        if matches!(source, Source::Demo) {
+            self.state.position = Position::default();
+            self.live.started = start;
+        }
         let mut result = (|| {
             for (index, target) in targets.iter().enumerate() {
                 if cancel.load(Ordering::Acquire) {
@@ -671,30 +928,31 @@ impl Session {
                 }
                 if matches!(source, Source::Gpib { .. }) && plan.workflow != Workflow::SignalMonitor
                 {
-                    let rig = self.rig.as_mut().ok_or("Motion disconnected")?;
                     if index > 0
                         && target.line != targets[index - 1].line
-                        && plan.return_fast_between_lines
-                        && !matches!(plan.fast, Axis::U | Axis::V)
-                        && !matches!(plan.slow, Axis::U | Axis::V)
+                        && reset_fast_before_slow(plan)
                     {
                         let reset = line_reset(plan, &targets[index - 1]);
+                        let rig = self.rig.as_ref().ok_or("Motion disconnected")?;
                         let reset =
                             rig.to_physical(reset, coordinate_name(plan.coordinate), plan.zero)?;
                         rig.validate_targets(&[reset])?;
-                        rig.move_to(reset, [false; 3], cancel)?;
+                        self.move_live(reset, [false; 3], cancel, send)?;
                     }
                     let first = index == 0 || target.line != targets[index - 1].line;
-                    let step = step_axes(plan, first);
-                    let motion =
-                        std::array::from_fn(|i| if step[i] { physical[index][i] } else { None });
-                    self.state.position = rig.move_to(
-                        motion,
-                        std::array::from_fn(|i| mask[i] && index == 0),
-                        cancel,
-                    )?;
+                    for movement in scan_moves(plan, physical[index], first, index == 0) {
+                        self.set_phase(format!("Moving {}", movement.axis.name()), send);
+                        self.move_live(movement.target, movement.approach, cancel, send)?;
+                    }
                 } else if plan.workflow != Workflow::SignalMonitor {
                     self.state.position.physical = physical[index];
+                }
+                if matches!(source, Source::Demo) {
+                    self.live.demo_coordinates = if plan.workflow == Workflow::SignalMonitor {
+                        [None; 3]
+                    } else {
+                        target.corrected.map(Some)
+                    };
                 }
                 let due = if plan.workflow == Workflow::SignalMonitor {
                     start + Duration::from_secs_f64(index as f64 * plan.interval_s)
@@ -702,7 +960,7 @@ impl Session {
                     Instant::now() + Duration::from_secs_f64(plan.interval_s)
                 };
                 self.set_phase("Waiting".into(), send);
-                if !wait_until(due, cancel) {
+                if !self.wait_live(due, source, cancel, send)? {
                     return Ok(());
                 }
                 self.set_phase("Reading".into(), send);
@@ -740,6 +998,15 @@ impl Session {
                         .map_err(|e| e.to_string())?;
                     csv.flush().map_err(|e| e.to_string())?;
                 }
+                self.live.publish_if_due(
+                    signal,
+                    match source {
+                        Source::Demo => ReadingOrigin::Demo,
+                        _ => ReadingOrigin::Hardware,
+                    },
+                    &self.state.position,
+                    send,
+                );
                 self.state.signal = Some(signal);
                 self.state.signal_origin = Some(match source {
                     Source::Demo => ReadingOrigin::Demo,
@@ -750,11 +1017,13 @@ impl Session {
             }
             if !cancel.load(Ordering::Acquire)
                 && matches!(source, Source::Gpib { .. })
-                && let (Some(rig), Some(r)) = (&mut self.rig, returns)
+                && let Some(r) = returns
             {
-                self.state.phase = "Returning".into();
-                let _ = send.send(Event::State(Box::new(self.state.clone())));
-                self.state.position = rig.move_to(r, [false; 3], cancel)?;
+                for target in return_moves(plan, r) {
+                    self.state.phase = motion_phase("Returning", target);
+                    let _ = send.send(Event::State(Box::new(self.state.clone())));
+                    self.motion_live(target, [false; 3], true, cancel, send)?;
+                }
             }
             Ok(())
         })();
@@ -855,7 +1124,9 @@ impl Session {
             self.state.position = position.clone();
             self.state.rows += 1;
             let _ = send.try_send(Event::Sample(Sample {
-                elapsed: get("elapsed_s").unwrap_or(0.),
+                elapsed: get("elapsed_s")
+                    .or_else(|| get("acquisition_elapsed_s"))
+                    .unwrap_or(0.),
                 target,
                 signal,
                 position,
@@ -867,12 +1138,25 @@ impl Session {
         Ok(())
     }
 }
+fn motion_phase(action: &str, targets: [Option<f64>; 3]) -> String {
+    let axes: Vec<_> = ["t", "x", "y"]
+        .into_iter()
+        .zip(targets)
+        .filter_map(|(axis, target)| target.map(|_| axis))
+        .collect();
+    format!("{action} {}", axes.join("/"))
+}
 fn filtered(config: &MotionConfig, mask: &[bool; 4]) -> MotionConfig {
     MotionConfig {
         delay: mask[1].then(|| config.delay.clone()).flatten(),
         x: mask[2].then(|| config.x.clone()).flatten(),
         y: mask[3].then(|| config.y.clone()).flatten(),
     }
+}
+/// Normal standalone positioning compensates spatial axes; the delay stage has
+/// no software scanner hysteresis. Unselected/disabled scanners remain untouched.
+pub(crate) fn spatial_approach() -> [bool; 3] {
+    [false, true, true]
 }
 fn devices_for_targets(targets: [Option<f64>; 3]) -> Vec<Device> {
     targets
@@ -909,30 +1193,64 @@ pub(crate) fn active_axes(p: &Plan) -> [bool; 3] {
     }
     mask
 }
-fn step_axes(p: &Plan, line_start: bool) -> [bool; 3] {
-    let mut fast = p.clone();
-    fast.workflow = if p.fast == Axis::T {
-        Workflow::Trkr
-    } else {
-        Workflow::Srkr
-    };
-    let mut mask = active_axes(&fast);
-    if line_start && p.workflow.is_2d() {
-        let slow = Plan {
-            workflow: if p.slow == Axis::T {
-                Workflow::Trkr
-            } else {
-                Workflow::Srkr
-            },
-            fast: p.slow,
-            ..p.clone()
-        };
-        let slow = active_axes(&slow);
-        for i in 0..3 {
-            mask[i] |= slow[i];
-        }
+struct ScanMove {
+    axis: Axis,
+    target: [Option<f64>; 3],
+    approach: [bool; 3],
+}
+fn axis_mask(axis: Axis) -> [bool; 3] {
+    match axis {
+        Axis::T => [true, false, false],
+        Axis::X => [false, true, false],
+        Axis::Y => [false, false, true],
+        Axis::U | Axis::V => [false, true, true],
     }
-    mask
+}
+fn masked(target: [Option<f64>; 3], mask: [bool; 3]) -> [Option<f64>; 3] {
+    std::array::from_fn(|i| if mask[i] { target[i] } else { None })
+}
+fn coupled_spatial(plan: &Plan) -> bool {
+    plan.workflow.is_2d()
+        && matches!(plan.fast, Axis::U | Axis::V)
+        && matches!(plan.slow, Axis::U | Axis::V)
+}
+/// Python's Cartesian line sequence: slow completes before fast starts.
+/// U/V maps are a Rust extension and require a coupled X/Y target.
+fn scan_moves(
+    plan: &Plan,
+    target: [Option<f64>; 3],
+    line_start: bool,
+    first_point: bool,
+) -> Vec<ScanMove> {
+    let axes = if plan.workflow.is_2d() && line_start && !coupled_spatial(plan) {
+        vec![plan.slow, plan.fast]
+    } else {
+        vec![plan.fast]
+    };
+    axes.into_iter()
+        .map(|axis| {
+            let mask = axis_mask(axis);
+            ScanMove {
+                axis,
+                target: masked(target, mask),
+                approach: std::array::from_fn(|i| {
+                    i > 0 && mask[i] && (first_point || (axis == plan.fast && line_start))
+                }),
+            }
+        })
+        .collect()
+}
+/// Legacy completion returns fast first, then slow; never re-enable a cancelled job.
+fn return_moves(plan: &Plan, target: [Option<f64>; 3]) -> Vec<[Option<f64>; 3]> {
+    if coupled_spatial(plan) {
+        return vec![target];
+    }
+    [Some(plan.fast), plan.workflow.is_2d().then_some(plan.slow)]
+        .into_iter()
+        .flatten()
+        .map(|axis| masked(target, axis_mask(axis)))
+        .filter(|target| target.iter().any(Option::is_some))
+        .collect()
 }
 fn axis_target(p: &Plan, fast: f64, slow: Option<f64>) -> [Option<f64>; 3] {
     let mut xyz = [None; 3];
@@ -988,6 +1306,14 @@ fn return_target(p: &Plan, last: &Target) -> Option<[Option<f64>; 3]> {
         }
     }
     Some(result)
+}
+// Spatial fast axes go straight to the new line's compensation approach after
+// the slow axis moves. Do not first visit the uncompensated scan start.
+fn reset_fast_before_slow(p: &Plan) -> bool {
+    p.workflow.is_2d()
+        && p.return_fast_between_lines
+        && p.fast == Axis::T
+        && !matches!(p.slow, Axis::U | Axis::V)
 }
 fn line_reset(p: &Plan, last: &Target) -> [Option<f64>; 3] {
     let mut target = axis_target(p, p.fast_range.min, None);
@@ -1092,16 +1418,72 @@ fn utc_now() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Python str(float): shortest round-trip digits, .0 for integral fixed values,
+/// fixed notation for 1e-4 <= abs < 1e16, and signed two-digit exponents.
+fn csv_float(value: f64) -> String {
+    let shortest = format!("{value:?}");
+    if !value.is_finite() {
+        return shortest;
+    }
+    let sign = if value.is_sign_negative() { "-" } else { "" };
+    let text = shortest.trim_start_matches('-');
+    let (mantissa, extra) = text
+        .split_once('e')
+        .map(|(m, e)| (m, e.parse::<i32>().expect("Rust exponent")))
+        .unwrap_or((text, 0));
+    let point = mantissa.find('.').unwrap_or(mantissa.len()) as i32;
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let Some(first) = digits.find(|c: char| c != '0') else {
+        return format!("{sign}0.0");
+    };
+    let exponent = point - first as i32 - 1 + extra;
+    let digits = digits[first..].trim_end_matches('0');
+    if !(-4..16).contains(&exponent) {
+        let fraction = if digits.len() > 1 {
+            format!(".{}", &digits[1..])
+        } else {
+            String::new()
+        };
+        format!("{sign}{}{fraction}e{exponent:+03}", &digits[..1])
+    } else if exponent < 0 {
+        format!("{sign}0.{}{}", "0".repeat((-exponent - 1) as usize), digits)
+    } else {
+        let point = exponent as usize + 1;
+        if digits.len() <= point {
+            format!("{sign}{digits}{}.0", "0".repeat(point - digits.len()))
+        } else {
+            format!("{sign}{}.{}", &digits[..point], &digits[point..])
+        }
+    }
+}
+
+fn csv_voltage(value: f64) -> String {
+    let text = format!("{value:.6e}");
+    let Some((mantissa, exponent)) = text.split_once('e') else {
+        return text;
+    };
+    let exponent: i32 = exponent.parse().expect("Rust scientific exponent");
+    format!("{mantissa}e{exponent:+03}")
+}
+
 pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
     let mut result = vec![String::new(); FIELDS.len()];
     let mut put =
         |key: &str, value: String| result[FIELDS.iter().position(|&k| k == key).unwrap()] = value;
     put("timestamp", utc_now()?);
     put("measurement", plan.workflow.key().into());
-    put("elapsed_s", sample.elapsed.to_string());
+    put("acquisition_elapsed_s", csv_float(sample.elapsed));
     let monitor = plan.workflow == Workflow::SignalMonitor;
+    let exported_axes = match plan.workflow {
+        Workflow::SignalMonitor => [false; 3],
+        Workflow::Trkr => [true, false, false],
+        Workflow::Srkr => axis_mask(plan.fast),
+        Workflow::Strkr | Workflow::Srkr2d => [true; 3],
+    };
     if monitor {
-        put("target_elapsed_s", sample.target.fast.to_string());
+        put("elapsed_s", csv_float(sample.elapsed));
+        put("fast_axis", "elapsed_s".into());
+        put("target_elapsed_s", csv_float(sample.target.fast));
     } else {
         put("fast_axis", plan.fast.name().into());
         if plan.workflow.is_2d() {
@@ -1122,45 +1504,51 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
                             "um"
                         }
                     ),
-                    value.to_string(),
+                    csv_float(value),
                 );
             }
         }
         for (i, axis) in ["t", "x", "y"].iter().enumerate() {
             let unit = if i == 0 { "ps" } else { "um" };
-            if let Some(value) = sample.position.physical[i] {
-                put(&format!("{axis}_{unit}"), value.to_string());
+            if exported_axes[i]
+                && let Some(value) = sample.position.physical[i]
+            {
+                put(&format!("{axis}_{unit}"), csv_float(value));
                 put(
                     &format!("{axis}_cor_{unit}"),
-                    (value - plan.zero[i]).to_string(),
+                    csv_float(value - plan.zero[i]),
                 );
             }
         }
         let (s, c) = plan.theta_deg.to_radians().sin_cos();
         let [_, x, y] = sample.target.corrected;
-        put("u_cor_um", (x * c + y * s).to_string());
-        put("v_cor_um", (-x * s + y * c).to_string());
-        put("spatial_theta_deg", plan.theta_deg.to_string());
+        put("u_cor_um", csv_float(x * c + y * s));
+        put("v_cor_um", csv_float(-x * s + y * c));
+        put("spatial_theta_deg", csv_float(plan.theta_deg));
         put("coordinate", coordinate_name(plan.coordinate).into());
     }
-    for (key, value) in [
-        ("delay_stage_mm", sample.position.delay_stage_mm),
-        ("x_scanner_mm", sample.position.x_scanner_mm),
-        ("x_scanner_deg", sample.position.x_scanner_deg),
-        ("y_scanner_mm", sample.position.y_scanner_mm),
-        ("y_scanner_deg", sample.position.y_scanner_deg),
+    for (axis, key, value) in [
+        (0, "delay_stage_mm", sample.position.delay_stage_mm),
+        (1, "x_scanner_mm", sample.position.x_scanner_mm),
+        (1, "x_scanner_deg", sample.position.x_scanner_deg),
+        (2, "y_scanner_mm", sample.position.y_scanner_mm),
+        (2, "y_scanner_deg", sample.position.y_scanner_deg),
     ] {
-        if let Some(value) = value {
-            put(key, value.to_string());
+        if exported_axes[axis]
+            && let Some(value) = value
+        {
+            put(key, csv_float(value));
         }
     }
-    if let Some(value) = sample.position.delay_stage_pulse {
+    if exported_axes[0]
+        && let Some(value) = sample.position.delay_stage_pulse
+    {
         put("delay_stage_pulse", value.to_string());
     }
-    put("X_V", format!("{:.6e}", sample.signal.x_v));
-    put("Y_V", format!("{:.6e}", sample.signal.y_v));
-    put("R_V", format!("{:.6e}", sample.signal.r_v));
-    put("Theta_deg", sample.signal.theta_deg.to_string());
+    put("X_V", csv_voltage(sample.signal.x_v));
+    put("Y_V", csv_voltage(sample.signal.y_v));
+    put("R_V", csv_voltage(sample.signal.r_v));
+    put("Theta_deg", csv_float(sample.signal.theta_deg));
     Ok(result)
 }
 
@@ -1199,6 +1587,208 @@ mod tests {
             motion: MotionConfig::default(),
         }
     }
+    #[test]
+    fn live_monitor_reads_fresh_signals_on_its_own_cadence_without_catchup() {
+        let (send, events) = mpsc::sync_channel(10);
+        let mut monitor = LiveMonitor::default();
+        let position = Position::default();
+        let first = Signal::new(1., 2., 3., 4.).unwrap();
+        let second = Signal::new(5., 6., 7., 8.).unwrap();
+        assert_eq!(
+            monitor
+                .poll(|| Ok(first), ReadingOrigin::Hardware, &position, &send)
+                .unwrap(),
+            Some(first)
+        );
+        // Measurement reads may happen arbitrarily often; they must not add live points.
+        monitor.publish_if_due(second, ReadingOrigin::Hardware, &position, &send);
+        assert!(
+            monitor
+                .poll(
+                    || panic!("not yet due"),
+                    ReadingOrigin::Hardware,
+                    &position,
+                    &send
+                )
+                .unwrap()
+                .is_none()
+        );
+        monitor.next = Instant::now() - Duration::from_secs(5);
+        assert_eq!(
+            monitor
+                .poll(|| Ok(second), ReadingOrigin::Hardware, &position, &send)
+                .unwrap(),
+            Some(second)
+        );
+        assert!(monitor.next > Instant::now());
+        let values: Vec<_> = events
+            .try_iter()
+            .map(|event| match event {
+                Event::Live(live) => live.signal,
+                _ => panic!("not a display-only event"),
+            })
+            .collect();
+        assert_eq!(values, vec![first, second]);
+    }
+
+    #[test]
+    fn live_read_failure_is_reported_without_publishing_stale_data() {
+        let (send, events) = mpsc::sync_channel(10);
+        let mut monitor = LiveMonitor::default();
+        assert_eq!(
+            monitor
+                .poll(
+                    || Err("transport failed".into()),
+                    ReadingOrigin::Hardware,
+                    &Position::default(),
+                    &send
+                )
+                .unwrap_err(),
+            "transport failed"
+        );
+        assert!(events.try_recv().is_err());
+        assert!(monitor.next > Instant::now());
+    }
+
+    #[test]
+    fn live_updates_continue_between_measurement_points_without_adding_csv_rows() {
+        for workflow in [
+            Workflow::Trkr,
+            Workflow::Srkr,
+            Workflow::Strkr,
+            Workflow::Srkr2d,
+            Workflow::SignalMonitor,
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("run.csv");
+            let plan = Plan {
+                workflow,
+                fast: if matches!(workflow, Workflow::Trkr | Workflow::Strkr) {
+                    Axis::T
+                } else {
+                    Axis::X
+                },
+                slow: Axis::Y,
+                fast_range: trkr_core::Range {
+                    min: 0.,
+                    max: 0.,
+                    step: 1.,
+                },
+                slow_range: trkr_core::Range {
+                    min: 0.,
+                    max: 0.,
+                    step: 1.,
+                },
+                interval_s: 0.35,
+                n_points: 2,
+                zero: [10., 20., 30.],
+                ..Default::default()
+            };
+            let expected = plan.targets().unwrap().len();
+            let controller = controller();
+            controller
+                .send(Command::Run {
+                    source: Source::Demo,
+                    config: config(),
+                    plan,
+                    output: Some(path.clone()),
+                })
+                .unwrap();
+            let mut samples = 0;
+            let mut lives = 0;
+            let mut between = 0;
+            let mut phase = String::new();
+            loop {
+                match controller
+                    .events
+                    .recv_timeout(Duration::from_secs(5))
+                    .unwrap()
+                {
+                    Event::Phase(next) => phase = next,
+                    Event::Live(live) => {
+                        assert_eq!(live.origin, ReadingOrigin::Demo);
+                        if workflow == Workflow::SignalMonitor {
+                            assert_eq!(live.position.physical, [None; 3]);
+                        } else {
+                            assert_eq!(live.signal, Signal::demo(0., 0., 0.));
+                        }
+                        lives += 1;
+                        if phase == "Waiting" {
+                            between += 1;
+                        }
+                    }
+                    Event::Sample(sample) => {
+                        samples += 1;
+                        if workflow != Workflow::SignalMonitor {
+                            assert!(sample.elapsed >= 0.35);
+                        }
+                    }
+                    Event::Finished(result) => {
+                        assert_eq!(result.unwrap().0, expected);
+                        break;
+                    }
+                    Event::Error(error) => panic!("{error}"),
+                    _ => {}
+                }
+            }
+            assert_eq!(samples, expected);
+            assert!(
+                between >= 2,
+                "{workflow:?}: only {between} live reads while settling"
+            );
+            assert!(lives > samples, "{workflow:?}");
+            assert_eq!(
+                csv::Reader::from_path(&path).unwrap().records().count(),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cancel_after_live_read_does_not_commit_a_measurement() {
+        let controller = controller();
+        controller
+            .send(Command::Run {
+                source: Source::Demo,
+                config: config(),
+                plan: Plan {
+                    workflow: Workflow::Trkr,
+                    interval_s: 2.,
+                    ..Default::default()
+                },
+                output: None,
+            })
+            .unwrap();
+        loop {
+            match controller
+                .events
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+            {
+                Event::Live(_) => {
+                    controller.stop();
+                    break;
+                }
+                Event::Sample(_) => panic!("premature measurement"),
+                _ => {}
+            }
+        }
+        loop {
+            match controller
+                .events
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+            {
+                Event::Finished(result) => {
+                    assert_eq!(result.unwrap().0, 0);
+                    break;
+                }
+                Event::Sample(_) => panic!("cancelled measurement was committed"),
+                _ => {}
+            }
+        }
+    }
+
     #[test]
     fn idle_refresh_waits_only_for_connected_devices() {
         let now = Instant::now();
@@ -1245,22 +1835,195 @@ mod tests {
         assert_eq!(active_axes(&p), [true, true, true]);
     }
     #[test]
-    fn slow_axis_moves_only_on_line_boundaries() {
+    fn scan_sequence_waits_for_slow_before_fast_and_only_approaches_once() {
+        let physical = [Some(1.), Some(2.), Some(3.)];
+        for (fast, slow) in [
+            (Axis::T, Axis::X),
+            (Axis::X, Axis::T),
+            (Axis::X, Axis::Y),
+            (Axis::Y, Axis::X),
+            (Axis::U, Axis::T),
+        ] {
+            let p = Plan {
+                workflow: if fast == Axis::T || slow == Axis::T {
+                    Workflow::Strkr
+                } else {
+                    Workflow::Srkr2d
+                },
+                fast,
+                slow,
+                ..Default::default()
+            };
+            let moves = scan_moves(&p, physical, true, true);
+            assert_eq!(
+                moves.iter().map(|m| m.axis).collect::<Vec<_>>(),
+                vec![slow, fast]
+            );
+            for movement in moves {
+                assert_eq!(movement.target, masked(physical, axis_mask(movement.axis)));
+            }
+            let line = scan_moves(&p, physical, true, false);
+            assert_eq!(line[0].approach, [false; 3]);
+            assert_eq!(
+                line[1].approach,
+                std::array::from_fn(|i| i > 0 && axis_mask(fast)[i])
+            );
+            let inner = scan_moves(&p, physical, false, false);
+            assert_eq!(inner.len(), 1);
+            assert_eq!(inner[0].axis, fast);
+            assert_eq!(inner[0].target, masked(physical, axis_mask(fast)));
+            assert_eq!(
+                return_moves(&p, physical),
+                vec![
+                    masked(physical, axis_mask(fast)),
+                    masked(physical, axis_mask(slow))
+                ]
+            );
+        }
+    }
+    #[test]
+    fn rotated_maps_keep_coupled_motor_targets_and_returns_do_not_add_disabled_axes() {
         let p = Plan {
-            workflow: Workflow::Strkr,
-            fast: Axis::T,
-            slow: Axis::X,
+            workflow: Workflow::Srkr2d,
+            fast: Axis::U,
+            slow: Axis::V,
             ..Default::default()
         };
-        assert_eq!(step_axes(&p, false), [true, false, false]);
-        assert_eq!(step_axes(&p, true), [true, true, false]);
+        let target = [None, Some(10.), Some(20.)];
+        let moves = scan_moves(&p, target, true, true);
+        assert_eq!(moves.len(), 1);
+        assert_eq!(moves[0].target, target);
+        assert_eq!(return_moves(&p, target), vec![target]);
         let p = Plan {
-            fast: Axis::U,
-            slow: Axis::T,
+            fast: Axis::X,
+            slow: Axis::Y,
             ..p
         };
-        assert_eq!(step_axes(&p, false), [false, true, true]);
-        assert_eq!(step_axes(&p, true), [true, true, true]);
+        assert_eq!(
+            return_moves(&p, [None, None, Some(20.)]),
+            vec![[None, None, Some(20.)]]
+        );
+    }
+    #[test]
+    fn standalone_move_defaults_to_spatial_compensation_with_explicit_opt_out() {
+        let mut value = serde_json::json!({
+            "command": "move", "config": config(),
+            "targets": [null, 20., null], "coordinate": "measurement", "zero": [0., 0., 0.]
+        });
+        let command: Command = serde_json::from_value(value.clone()).unwrap();
+        assert!(
+            matches!(command, Command::Move { approach, .. } if approach == [false, true, true])
+        );
+        value["approach"] = serde_json::json!([false, false, false]);
+        let command: Command = serde_json::from_value(value).unwrap();
+        assert!(matches!(command, Command::Move { approach, .. } if approach == [false; 3]));
+    }
+    #[test]
+    fn all_scan_entries_compensate_their_active_spatial_axes() {
+        let mut cases = vec![(Workflow::Trkr, Axis::T, Axis::X)];
+        for spatial in [Axis::X, Axis::Y, Axis::U, Axis::V] {
+            cases.push((Workflow::Srkr, spatial, Axis::T));
+            cases.push((Workflow::Strkr, spatial, Axis::T));
+            cases.push((Workflow::Strkr, Axis::T, spatial));
+        }
+        for (fast, slow) in [
+            (Axis::X, Axis::Y),
+            (Axis::Y, Axis::X),
+            (Axis::U, Axis::V),
+            (Axis::V, Axis::U),
+        ] {
+            cases.push((Workflow::Srkr2d, fast, slow));
+        }
+        for (workflow, fast, slow) in cases {
+            let plan = Plan {
+                workflow,
+                fast,
+                slow,
+                ..Default::default()
+            };
+            let mut compensated = [false; 3];
+            for movement in scan_moves(&plan, [Some(1.), Some(2.), Some(3.)], true, true) {
+                for (i, applied) in movement.approach.into_iter().enumerate() {
+                    assert!(!applied || movement.target[i].is_some());
+                    compensated[i] |= applied;
+                }
+            }
+            let expected = std::array::from_fn(|i| i > 0 && active_axes(&plan)[i]);
+            assert_eq!(compensated, expected, "{workflow:?}: {fast:?}/{slow:?}");
+            for movement in scan_moves(&plan, [Some(1.), Some(2.), Some(3.)], false, false) {
+                assert_eq!(movement.approach, [false; 3], "interior point {workflow:?}");
+            }
+        }
+    }
+    #[test]
+    fn old_initialize_commands_stay_nonmoving_unless_origin_move_is_explicit() {
+        let command: Command = serde_json::from_value(
+            serde_json::json!({"command":"initialize","config":config(),"axis":1,"home":false}),
+        )
+        .unwrap();
+        assert!(matches!(
+            command,
+            Command::Initialize {
+                home: false,
+                move_to_origin: false,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn spatial_lines_approach_each_scan_start_without_visiting_zero() {
+        for (fast, slow, workflow) in [
+            (Axis::X, Axis::Y, Workflow::Srkr2d),
+            (Axis::Y, Axis::X, Workflow::Srkr2d),
+            (Axis::U, Axis::V, Workflow::Srkr2d),
+            (Axis::V, Axis::U, Workflow::Srkr2d),
+            (Axis::X, Axis::T, Workflow::Strkr),
+            (Axis::U, Axis::T, Workflow::Strkr),
+        ] {
+            let plan = Plan {
+                workflow,
+                fast,
+                slow,
+                fast_range: trkr_core::Range {
+                    min: 10.,
+                    max: 30.,
+                    step: 10.,
+                },
+                slow_range: trkr_core::Range {
+                    min: 5.,
+                    max: 7.,
+                    step: 2.,
+                },
+                return_to_zero: [false; 2],
+                ..Default::default()
+            };
+            assert!(!reset_fast_before_slow(&plan));
+            let targets = plan.targets().unwrap();
+            let mut fast_approaches = 0;
+            for (index, target) in targets.iter().enumerate() {
+                let line_start = index % 3 == 0;
+                let moves = scan_moves(&plan, target.physical.map(Some), line_start, index == 0);
+                for movement in moves {
+                    if movement.axis == fast {
+                        assert_eq!(movement.approach.iter().any(|b| *b), line_start);
+                        fast_approaches += usize::from(line_start);
+                        assert_eq!(
+                            movement.target,
+                            masked(target.physical.map(Some), axis_mask(fast))
+                        );
+                    } else {
+                        assert_eq!(movement.axis, slow);
+                        assert!(line_start);
+                        assert_eq!(
+                            movement.approach.iter().any(|b| *b),
+                            index == 0 && slow != Axis::T
+                        );
+                    }
+                }
+            }
+            assert_eq!(fast_approaches, 2);
+            assert!(return_target(&plan, targets.last().unwrap()).is_none());
+        }
     }
     #[test]
     fn reset_returns_only_fast_axis_to_first_scan_point() {
@@ -1276,6 +2039,7 @@ mod tests {
             ..Default::default()
         };
         let last = *p.targets().unwrap().last().unwrap();
+        assert!(reset_fast_before_slow(&p));
         assert_eq!(line_reset(&p, &last), [Some(50.), None, None]);
     }
     #[test]
@@ -1317,6 +2081,23 @@ mod tests {
         assert_eq!(std::fs::read_to_string(meta).unwrap(), "existing");
     }
     #[test]
+    fn csv_float_preserves_python_repr_thresholds_sign_and_precision() {
+        for (value, expected) in [
+            (0., "0.0"),
+            (-0., "-0.0"),
+            (4., "4.0"),
+            (1e-4, "0.0001"),
+            (1e-5, "1e-05"),
+            (1e15, "1000000000000000.0"),
+            (1e16, "1e+16"),
+            (-1e20, "-1e+20"),
+            (1e-100, "1e-100"),
+            (1.0000000000000002, "1.0000000000000002"),
+        ] {
+            assert_eq!(csv_float(value), expected);
+        }
+    }
+    #[test]
     fn monitor_retains_components_without_inventing_positions() {
         let p = Plan::default();
         let sample = Sample {
@@ -1327,8 +2108,20 @@ mod tests {
         };
         let r = row(&p, &sample).unwrap();
         let get = |k| &r[FIELDS.iter().position(|&v| v == k).unwrap()];
-        assert_eq!(get("Theta_deg"), "4");
+        assert_eq!(get("Theta_deg"), "4.0"); // Python CSV float representation.
         assert!(get("t_ps").is_empty());
+    }
+    #[test]
+    fn manual_motion_phase_names_only_the_commanded_axes() {
+        assert_eq!(motion_phase("Moving", [None, None, Some(1.)]), "Moving y");
+        assert_eq!(
+            motion_phase("Moving", [None, Some(1.), Some(2.)]),
+            "Moving x/y"
+        );
+        assert_eq!(
+            motion_phase("Initializing", [Some(0.), None, None]),
+            "Initializing t"
+        );
     }
     #[test]
     fn scan_progress_preserves_point_order_and_reports_each_phase() {

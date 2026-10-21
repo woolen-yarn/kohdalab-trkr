@@ -239,7 +239,9 @@ fn parse_row(
         number: row_number,
         workflow,
         axes: (fast_axis, slow_axis),
-        elapsed: number("elapsed_s")?.unwrap_or(0.0),
+        elapsed: number("elapsed_s")?
+            .or(number("acquisition_elapsed_s")?)
+            .unwrap_or(0.0),
         fast,
         slow,
         corrected,

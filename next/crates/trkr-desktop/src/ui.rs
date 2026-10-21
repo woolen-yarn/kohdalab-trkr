@@ -33,6 +33,24 @@ struct OutputProfile {
     filename: String,
     auto_timestamp_suffix: bool,
 }
+#[derive(Clone, PartialEq)]
+struct StageDraft {
+    model: String,
+    preset: String,
+    port: String,
+    direction: i32,
+}
+#[derive(Clone, PartialEq)]
+struct ScannerDraft {
+    model: String,
+    actuator: String,
+    port: String,
+    axis: String,
+    scale: f64,
+    hysteresis: bool,
+    hysteresis_distance: f64,
+    hysteresis_direction: String,
+}
 struct ScanColumn<'a> {
     fast: bool,
     x: f32,
@@ -130,6 +148,8 @@ pub struct App {
     stage_preset: String,
     stage_port: String,
     stage_direction: i32,
+    stage_configured: bool,
+    stage_draft: Option<StageDraft>,
     scanner_model: [String; 2],
     scanner_actuator: [String; 2],
     scanner_port: [String; 2],
@@ -138,6 +158,8 @@ pub struct App {
     hysteresis: [bool; 2],
     hysteresis_distance: [f64; 2],
     hysteresis_direction: [String; 2],
+    scanner_configured: [bool; 2],
+    scanner_draft: [Option<ScannerDraft>; 2],
     available_ports: Vec<String>,
     port_refresh: Option<std::sync::mpsc::Receiver<Result<Vec<String>, String>>>,
     sensitivity: f64,
@@ -157,6 +179,8 @@ pub struct App {
     right_was_maximized: bool,
     map_cache: presentation::MapCache,
     dialog: Option<PendingDialog>,
+    initialize_axis: Option<usize>,
+    plot_history: crate::plot_history::History,
     saved_traces: [Vec<Sample>; 5],
     trace_plans: [Option<Plan>; 5],
     scan_progress: [(usize, usize); 5],
@@ -168,8 +192,11 @@ pub struct App {
 }
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, demo_viewer: bool) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        precision::configure(&cc.egui_ctx);
+        Self::with_context(&cc.egui_ctx, demo_viewer)
+    }
+    fn with_context(ctx: &egui::Context, demo_viewer: bool) -> Self {
+        ctx.set_visuals(egui::Visuals::dark());
+        precision::configure(ctx);
         let b = Plan::default();
         let mut p = std::array::from_fn(|_| b.clone());
         p[1].workflow = Workflow::Trkr;
@@ -212,14 +239,18 @@ impl App {
             stage_preset: "SGSP46-500".into(),
             stage_port: "COM6".into(),
             stage_direction: 1,
+            stage_configured: false,
+            stage_draft: None,
             scanner_model: ["CONEXAGAP".into(), "CONEXAGAP".into()],
             scanner_actuator: ["AG-M100D".into(), "AG-M100D".into()],
             scanner_port: ["COM11".into(), "COM11".into()],
             scanner_axis: ["U".into(), "V".into()],
             scanner_scale: [582., 412.],
             hysteresis: [false, false],
-            hysteresis_distance: [20., 50.],
+            hysteresis_distance: [100.; 2],
             hysteresis_direction: ["negative".into(), "negative".into()],
+            scanner_configured: [false; 2],
+            scanner_draft: [None, None],
             available_ports: Vec::new(),
             port_refresh: None,
             sensitivity: 1e-3,
@@ -239,6 +270,8 @@ impl App {
             right_was_maximized: false,
             map_cache: [None, None],
             dialog: None,
+            initialize_axis: None,
+            plot_history: crate::plot_history::History::default(),
             saved_traces: std::array::from_fn(|_| Vec::new()),
             trace_plans: std::array::from_fn(|_| None),
             scan_progress: [(0, 0); 5],
@@ -427,6 +460,7 @@ impl App {
         at.as_bool().unwrap_or(fallback)
     }
     fn hydrate(&mut self) {
+        self.settings.normalize_profile_aliases();
         for w in Workflow::ALL {
             if let Ok(p) = self.settings.plan(w) {
                 self.plans[Self::ix(w)] = p;
@@ -448,7 +482,7 @@ impl App {
         let m = self.raw_str(&["instruments", "lockin", "main", "model"], "SR7265");
         self.model = Model::ALL
             .into_iter()
-            .find(|x| x.name() == m)
+            .find(|x| x.name().eq_ignore_ascii_case(&m))
             .unwrap_or(Model::Sr7265);
         let resource = self.raw_str(
             &["instruments", "lockin", "main", "resource"],
@@ -456,71 +490,105 @@ impl App {
         );
         self.lockin_resource = resource;
         self.address = Self::gpib_address(&self.lockin_resource).unwrap_or(12);
-        self.stage_model = self.raw_str(
-            &["instruments", "delay_stage", "t", "controller"],
-            "SHOT302GS",
-        );
-        self.stage_preset =
-            self.raw_str(&["instruments", "delay_stage", "t", "stage"], "SGSP46-500");
-        self.stage_port = self.raw_str(&["instruments", "delay_stage", "t", "port"], "COM6");
-        self.stage_direction =
-            self.raw_f64(&["instruments", "delay_stage", "t", "direction"], 1.) as i32;
+        self.stage_configured = self
+            .settings
+            .raw
+            .pointer("/instruments/delay_stage/t")
+            .is_some_and(Value::is_object);
+        let motion = self
+            .settings
+            .hardware()
+            .ok()
+            .map(|hardware| hardware.motion);
+        if let Some(delay) = motion
+            .as_ref()
+            .and_then(|motion| motion.delay.as_ref())
+            .and_then(|delay| delay.normalized().ok())
+        {
+            self.stage_model = delay.controller;
+            self.stage_preset = delay.stage.unwrap_or_else(|| "SGSP46-500".into());
+            self.stage_port = delay.port;
+            self.stage_direction = delay.direction;
+        } else {
+            self.stage_model = self.raw_str(
+                &["instruments", "delay_stage", "t", "controller"],
+                "SHOT302GS",
+            );
+            self.stage_preset =
+                self.raw_str(&["instruments", "delay_stage", "t", "stage"], "SGSP46-500");
+            self.stage_port = self.raw_str(&["instruments", "delay_stage", "t", "port"], "COM6");
+            self.stage_direction =
+                self.raw_f64(&["instruments", "delay_stage", "t", "direction"], 1.) as i32;
+        }
+        self.stage_draft = (!self.stage_configured).then(|| self.current_stage_draft());
         for (i, key) in ["x", "y"].into_iter().enumerate() {
             let b = ["instruments", "scanner", key];
-            self.scanner_model[i] = self.raw_str(&[b[0], b[1], b[2], "controller"], "CONEXAGAP");
-            self.scanner_actuator[i] = self.raw_str(&[b[0], b[1], b[2], "actuator"], "AG-M100D");
-            self.scanner_port[i] = self.raw_str(&[b[0], b[1], b[2], "port"], "COM11");
-            self.scanner_axis[i] = self
+            self.scanner_configured[i] = self
                 .settings
                 .raw
-                .pointer(&format!("/instruments/scanner/{key}/axis"))
-                .map(|v| {
-                    if let Some(s) = v.as_str() {
-                        s.into()
+                .pointer(&format!("/instruments/scanner/{key}"))
+                .is_some_and(Value::is_object);
+            let scanner = motion
+                .as_ref()
+                .and_then(|motion| {
+                    if i == 0 {
+                        motion.x.as_ref()
                     } else {
-                        v.to_string()
+                        motion.y.as_ref()
                     }
                 })
-                .unwrap_or_else(|| if i == 0 { "U".into() } else { "V".into() });
-            self.scanner_scale[i] = self.raw_f64(
-                &[b[0], b[1], b[2], "sample_um_per_unit"],
-                if i == 0 { 582. } else { 412. },
-            );
-            self.hysteresis[i] =
-                self.raw_bool(&[b[0], b[1], b[2], "software_hysteresis", "enabled"], false);
-            self.hysteresis_distance[i] = self.raw_f64(
-                &[b[0], b[1], b[2], "software_hysteresis", "distance_um"],
-                20.,
-            );
-            self.hysteresis_direction[i] = self.raw_str(
-                &[b[0], b[1], b[2], "software_hysteresis", "direction"],
-                "negative",
-            );
+                .and_then(|scanner| scanner.normalized().ok());
+            if let Some(scanner) = scanner {
+                self.scanner_model[i] = scanner.controller;
+                self.scanner_actuator[i] = scanner
+                    .actuator
+                    .unwrap_or_else(|| self.raw_str(&[b[0], b[1], b[2], "actuator"], ""));
+                self.scanner_port[i] = scanner.port;
+                self.scanner_axis[i] = scanner.axis;
+                self.scanner_scale[i] = scanner.sample_um_per_unit;
+                self.hysteresis[i] = scanner.software_hysteresis.enabled;
+                self.hysteresis_distance[i] =
+                    scanner.software_hysteresis.distance_um.unwrap_or(100.);
+                self.hysteresis_direction[i] = scanner
+                    .software_hysteresis
+                    .direction
+                    .unwrap_or_else(|| "negative".into());
+            } else {
+                self.scanner_model[i] =
+                    self.raw_str(&[b[0], b[1], b[2], "controller"], "CONEXAGAP");
+                self.scanner_actuator[i] =
+                    self.raw_str(&[b[0], b[1], b[2], "actuator"], "AG-M100D");
+                self.scanner_port[i] = self.raw_str(&[b[0], b[1], b[2], "port"], "COM11");
+                self.scanner_axis[i] = self
+                    .settings
+                    .raw
+                    .pointer(&format!("/instruments/scanner/{key}/axis"))
+                    .map(|v| {
+                        v.as_str()
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| v.to_string())
+                    })
+                    .unwrap_or_else(|| if i == 0 { "U".into() } else { "V".into() });
+                self.scanner_scale[i] = self.raw_f64(&[b[0], b[1], b[2], "sample_um_per_unit"], 1.);
+                self.hysteresis[i] =
+                    self.raw_bool(&[b[0], b[1], b[2], "software_hysteresis", "enabled"], false);
+                self.hysteresis_distance[i] = self.raw_f64(
+                    &[b[0], b[1], b[2], "software_hysteresis", "distance_um"],
+                    100.,
+                );
+                self.hysteresis_direction[i] = self.raw_str(
+                    &[b[0], b[1], b[2], "software_hysteresis", "direction"],
+                    "negative",
+                );
+            }
+            self.scanner_draft[i] =
+                (!self.scanner_configured[i]).then(|| self.current_scanner_draft(i));
         }
     }
     fn hydrate_output(&mut self, workflow: Workflow) {
-        let output = self
-            .settings
-            .raw
-            .pointer(&format!("/measurements/{}/output", workflow.key()));
         let fallback = default_output(workflow);
         let profile = &mut self.outputs[Self::ix(workflow)];
-        profile.dir = output
-            .and_then(|value| value.get("dir").or_else(|| value.get("output_dir")))
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or(fallback.dir);
-        profile.filename = output
-            .and_then(|value| value.get("filename"))
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned)
-            .unwrap_or(fallback.filename);
-        profile.auto_timestamp_suffix = output
-            .and_then(|value| value.get("auto_timestamp_suffix"))
-            .and_then(Value::as_bool)
-            .unwrap_or(fallback.auto_timestamp_suffix);
+        *profile = hydrated_output(&self.settings.raw, workflow, fallback);
     }
     fn sync_output(&mut self, workflow: Workflow) {
         let profile = self.outputs[Self::ix(workflow)].clone();
@@ -540,6 +608,19 @@ impl App {
             &[root[0], root[1], root[2], "auto_timestamp_suffix"],
             json!(profile.auto_timestamp_suffix),
         );
+        if let Some(settings) = self
+            .settings
+            .raw
+            .pointer_mut(&format!("/measurements/{}", workflow.key()))
+            .and_then(Value::as_object_mut)
+        {
+            for key in ["output_dir", "filename", "auto_timestamp_suffix"] {
+                settings.remove(key);
+            }
+            if let Some(output) = settings.get_mut("output").and_then(Value::as_object_mut) {
+                output.remove("output_dir");
+            }
+        }
     }
     fn sync_all_outputs(&mut self) {
         for workflow in Workflow::ALL {
@@ -565,6 +646,7 @@ impl App {
         }
     }
     fn sync(&mut self) {
+        self.settings.normalize_profile_aliases();
         Self::path_set(
             &mut self.settings.raw,
             &["instruments", "lockin", "main", "model"],
@@ -575,27 +657,36 @@ impl App {
             &["instruments", "lockin", "main", "resource"],
             json!(self.lockin_resource),
         );
-        Self::path_set(
-            &mut self.settings.raw,
-            &["instruments", "delay_stage", "t", "controller"],
-            json!(self.stage_model),
-        );
-        Self::path_set(
-            &mut self.settings.raw,
-            &["instruments", "delay_stage", "t", "stage"],
-            json!(self.stage_preset),
-        );
-        Self::path_set(
-            &mut self.settings.raw,
-            &["instruments", "delay_stage", "t", "port"],
-            json!(self.stage_port),
-        );
-        Self::path_set(
-            &mut self.settings.raw,
-            &["instruments", "delay_stage", "t", "direction"],
-            json!(self.stage_direction),
-        );
+        if self.stage_configured || self.stage_has_user_configuration() {
+            self.stage_configured = true;
+            self.stage_draft = None;
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "controller"],
+                json!(self.stage_model),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "stage"],
+                json!(self.stage_preset),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "port"],
+                json!(self.stage_port),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "direction"],
+                json!(self.stage_direction),
+            );
+        }
         for (i, key) in ["x", "y"].into_iter().enumerate() {
+            if !self.scanner_configured[i] && !self.scanner_has_user_configuration(i) {
+                continue;
+            }
+            self.scanner_configured[i] = true;
+            self.scanner_draft[i] = None;
             let p = ["instruments", "scanner", key];
             Self::path_set(
                 &mut self.settings.raw,
@@ -689,6 +780,49 @@ impl App {
             }
         }
     }
+    fn stage_has_user_configuration(&self) -> bool {
+        self.stage_draft
+            .as_ref()
+            .is_some_and(|draft| draft != &self.current_stage_draft())
+    }
+    fn scanner_has_user_configuration(&self, index: usize) -> bool {
+        self.scanner_draft[index]
+            .as_ref()
+            .is_some_and(|draft| draft != &self.current_scanner_draft(index))
+    }
+    fn current_stage_draft(&self) -> StageDraft {
+        StageDraft {
+            model: self.stage_model.clone(),
+            preset: self.stage_preset.clone(),
+            port: self.stage_port.clone(),
+            direction: self.stage_direction,
+        }
+    }
+    fn current_scanner_draft(&self, index: usize) -> ScannerDraft {
+        ScannerDraft {
+            model: self.scanner_model[index].clone(),
+            actuator: self.scanner_actuator[index].clone(),
+            port: self.scanner_port[index].clone(),
+            axis: self.scanner_axis[index].clone(),
+            scale: self.scanner_scale[index],
+            hysteresis: self.hysteresis[index],
+            hysteresis_distance: self.hysteresis_distance[index],
+            hysteresis_direction: self.hysteresis_direction[index].clone(),
+        }
+    }
+    fn configured_devices(&self) -> Vec<Device> {
+        let mut devices = vec![Device::Lockin];
+        if self.stage_configured || self.stage_has_user_configuration() {
+            devices.push(Device::T);
+        }
+        if self.scanner_configured[0] || self.scanner_has_user_configuration(0) {
+            devices.push(Device::X);
+        }
+        if self.scanner_configured[1] || self.scanner_has_user_configuration(1) {
+            devices.push(Device::Y);
+        }
+        devices
+    }
     fn connect(&mut self, d: Vec<Device>) {
         if self.demo_viewer {
             for device in d {
@@ -713,6 +847,18 @@ impl App {
                 return;
             };
             self.address = address;
+        }
+        if d.contains(&Device::T) {
+            self.stage_configured = true;
+            self.stage_draft = None;
+        }
+        if d.contains(&Device::X) {
+            self.scanner_configured[0] = true;
+            self.scanner_draft[0] = None;
+        }
+        if d.contains(&Device::Y) {
+            self.scanner_configured[1] = true;
+            self.scanner_draft[1] = None;
         }
         let reset_live = d.contains(&Device::Lockin);
         let r = self.config().and_then(|c| {
@@ -751,6 +897,7 @@ impl App {
             self.demo_start();
             return;
         }
+        self.select_plot_axes();
         let profile = self.outputs[Self::ix(self.workflow)].clone();
         let suffix = if profile.auto_timestamp_suffix {
             format!("_{}", time::OffsetDateTime::now_utc().unix_timestamp())
@@ -783,6 +930,9 @@ impl App {
                 self.trace_plans[index] = Some(plan);
                 self.output_paths[index] = out;
                 self.active_workflow = self.workflow;
+                // Disable axis edits immediately, including before the worker's first state.
+                self.snapshot.running = true;
+                self.scan_progress[index] = (0, 0);
                 self.note("Measurement started")
             }
             Err(e) => self.note(e),
@@ -804,6 +954,35 @@ impl App {
             Err(error) => self.note(format!("Open demo: {error}")),
         }
     }
+    fn apply_snapshot(&mut self, s: Snapshot) {
+        let completed_run = self.snapshot.running && !s.running;
+        self.live
+            .connection_changed(self.snapshot.devices[0], s.devices[0]);
+        if self.snapshot.running && !s.running && s.total == 0 && s.phase == "Complete" {
+            let action = if self.snapshot.phase.starts_with("Initializing") {
+                "Initialization complete"
+            } else {
+                "Move complete"
+            };
+            self.note(action);
+        }
+        self.snapshot = s;
+        if (self.snapshot.running || completed_run) && self.snapshot.total > 0 {
+            self.scan_progress[Self::ix(self.active_workflow)] =
+                (self.snapshot.rows, self.snapshot.total);
+        }
+        self.hydrate_lockin();
+        if !self.snapshot.running
+            && self.snapshot.devices[0]
+            && !self.source_demo
+            && self.snapshot.signal_origin == Some(engine::ReadingOrigin::Hardware)
+            && (self.live.origin() != Some(engine::ReadingOrigin::Hardware)
+                || self.live.signal().is_none())
+            && let Some(signal) = self.snapshot.signal
+        {
+            self.live.push(signal, engine::ReadingOrigin::Hardware);
+        }
+    }
     fn receive(&mut self) {
         for _ in 0..512 {
             match self.controller.events.try_recv() {
@@ -812,7 +991,9 @@ impl App {
                     self.snapshot.position = s.position.clone();
                     self.snapshot.rows = self.snapshot.rows.saturating_add(1);
                     self.scan_progress[Self::ix(self.active_workflow)].0 = self.snapshot.rows;
-                    self.live.push(s.signal, self.active_live_origin);
+                    if self.active_live_origin == engine::ReadingOrigin::Replay {
+                        self.live.push(s.signal, self.active_live_origin);
+                    }
                     let trace = if self.active_workflow == self.workflow {
                         &mut self.trace
                     } else {
@@ -825,32 +1006,12 @@ impl App {
                 }
                 Ok(Event::Live(reading)) => {
                     self.snapshot.signal = Some(reading.signal);
-                    self.snapshot.signal_origin = Some(engine::ReadingOrigin::Hardware);
+                    self.snapshot.signal_origin = Some(reading.origin);
                     self.snapshot.position = reading.position;
-                    self.live
-                        .push(reading.signal, engine::ReadingOrigin::Hardware);
+                    self.live.push(reading.signal, reading.origin);
                 }
                 Ok(Event::Phase(phase)) => self.snapshot.phase = phase,
-                Ok(Event::State(s)) => {
-                    self.live
-                        .connection_changed(self.snapshot.devices[0], s.devices[0]);
-                    self.snapshot = *s;
-                    if self.snapshot.total > 0 {
-                        self.scan_progress[Self::ix(self.active_workflow)] =
-                            (self.snapshot.rows, self.snapshot.total);
-                    }
-                    self.hydrate_lockin();
-                    if !self.snapshot.running
-                        && self.snapshot.devices[0]
-                        && !self.source_demo
-                        && self.snapshot.signal_origin == Some(engine::ReadingOrigin::Hardware)
-                        && (self.live.origin() != Some(engine::ReadingOrigin::Hardware)
-                            || self.live.signal().is_none())
-                        && let Some(signal) = self.snapshot.signal
-                    {
-                        self.live.push(signal, engine::ReadingOrigin::Hardware);
-                    }
-                }
+                Ok(Event::State(s)) => self.apply_snapshot(*s),
                 Ok(Event::Finished(r)) => match r {
                     Ok((n, p)) => self.note(format!(
                         "Finished · {n} rows{}",
@@ -1824,17 +1985,37 @@ impl App {
             self.disconnect(vec![d]);
         }
         if initialize {
-            match self.config().and_then(|config| {
-                self.controller.send(Command::Initialize {
-                    config,
-                    axis: i,
-                    home: false,
-                })
-            }) {
-                Ok(_) => self.note("Initializing…"),
-                Err(error) => self.note(error),
-            }
+            self.initialize_axis = Some(i);
         }
+    }
+    fn initialize_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(axis) = self.initialize_axis else {
+            return;
+        };
+        let name = ["Stage (t)", "Scanner X", "Scanner Y"][axis];
+        let homes = initialization_homes(axis, &self.scanner_model);
+        egui::Modal::new(egui::Id::new("initialize-motion")).show(ctx, |ui| {
+            ui.heading(format!("Initialize {name}"));
+            ui.label(if homes {
+                "Home the axis, then move to instrument zero (not the experiment zero). The optical position will change."
+            } else {
+                "Enable closed-loop operation, then move the CONEX-AGAP scanner to instrument zero. The optical position will change."
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Cancel").clicked() {
+                    self.initialize_axis = None;
+                }
+                if ui.add_enabled(!self.snapshot.running, egui::Button::new(if homes { "Home & initialize" } else { "Initialize & zero" })).clicked() {
+                    self.initialize_axis = None;
+                    match self.config().and_then(|config| self.controller.send(Command::Initialize {
+                        config, axis, home: homes, move_to_origin: true,
+                    })) {
+                        Ok(_) => self.note(format!("Initializing {name}{}…", if homes { " · homing" } else { "" })),
+                        Err(error) => self.note(error),
+                    }
+                }
+            });
+        });
     }
     fn move_axis(&mut self, axis: usize, target: f64) {
         let targets = std::array::from_fn(|i| if i == axis { Some(target) } else { None });
@@ -1845,12 +2026,40 @@ impl App {
                 targets,
                 coordinate: Coordinate::Measurement,
                 zero,
-                approach: [false; 3],
+                approach: engine::spatial_approach(),
             })
         }) {
             Ok(_) => self.note("Moving…"),
             Err(error) => self.note(error),
         }
+    }
+    fn select_plot_axes(&mut self) {
+        if self.demo_viewer {
+            return;
+        }
+        let index = Self::ix(self.workflow);
+        let desired = self.plans[index].clone();
+        if self.trace_plans[index]
+            .as_ref()
+            .is_some_and(|plan| crate::plot_history::History::same_selection(plan, &desired))
+        {
+            return;
+        }
+        let current = self.trace_plans[index]
+            .take()
+            .map(|plan| crate::plot_history::Trace {
+                plan,
+                samples: std::mem::take(&mut self.trace),
+                progress: self.scan_progress[index],
+                output: self.output_paths[index].take(),
+            });
+        let selected = self.plot_history.select(current, &desired);
+        self.trace = selected.samples;
+        self.trace_plans[index] = Some(selected.plan);
+        self.scan_progress[index] = selected.progress;
+        self.output_paths[index] = selected.output;
+        self.plot_epoch = self.plot_epoch.wrapping_add(1);
+        self.map_cache = [None, None];
     }
     fn switch_workflow(&mut self, workflow: Workflow) {
         if workflow == self.workflow {
@@ -1864,6 +2073,7 @@ impl App {
         self.saved_traces[Self::ix(previous)] = std::mem::take(&mut self.trace);
         self.trace = std::mem::take(&mut self.saved_traces[Self::ix(workflow)]);
         self.workflow = workflow;
+        self.select_plot_axes();
         if self.demo_viewer {
             self.demo_output(workflow);
         } else {
@@ -2248,6 +2458,7 @@ impl App {
             );
         }
         self.plans[Self::ix(self.workflow)] = plan;
+        self.select_plot_axes();
         if browse {
             self.begin_dialog(
                 if self.demo_viewer {
@@ -2542,6 +2753,7 @@ impl App {
                 y_log: self.trkr_log_y,
                 voltage_scale: scale,
                 voltage_unit: unit,
+                history: &self.plot_history,
             },
         );
     }
@@ -2625,7 +2837,7 @@ impl App {
         }
         if connect {
             self.source_demo = false;
-            self.connect(vec![Device::Lockin, Device::T, Device::X, Device::Y]);
+            self.connect(self.configured_devices());
         }
         if disconnect {
             self.disconnect(vec![Device::Lockin, Device::T, Device::X, Device::Y]);
@@ -2736,6 +2948,7 @@ impl App {
             if ui.button("Clear plot").clicked() {
                 self.plot_epoch = self.plot_epoch.wrapping_add(1);
                 self.trace.clear();
+                self.plot_history.clear(self.workflow);
                 self.map_cache = [None, None];
                 ui.close();
             }
@@ -2817,7 +3030,14 @@ impl App {
                 "X_V" | "Y_V" | "R_V" => format!("{value:.6e}"),
                 "Theta_deg" => format!("{value:.3}"),
                 "delay_stage_pulse" => format!("{value:.0}"),
-                "t_ps" | "t_cor_ps" | "x_um" | "x_cor_um" | "y_um" | "y_cor_um" | "elapsed_s" => {
+                "t_ps"
+                | "t_cor_ps"
+                | "x_um"
+                | "x_cor_um"
+                | "y_um"
+                | "y_cor_um"
+                | "elapsed_s"
+                | "acquisition_elapsed_s" => {
                     format!("{value:.3}")
                 }
                 "delay_stage_mm" | "x_scanner_mm" | "x_scanner_deg" | "y_scanner_mm"
@@ -2862,7 +3082,11 @@ impl App {
                                     ui.painter().text(
                                         row.min + Vec2::new(4., row.height() * 0.5),
                                         egui::Align2::LEFT_CENTER,
-                                        *key,
+                                        if *key == "acquisition_elapsed_s" {
+                                            "acq_elapsed_s"
+                                        } else {
+                                            *key
+                                        },
                                         egui::FontId::proportional(12.),
                                         TEXT,
                                     );
@@ -2885,6 +3109,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.receive();
         self.poll_dialog();
+        self.initialize_confirmation(ctx);
         self.demo_tick();
         if !self.demo_viewer
             && !self.snapshot.running
@@ -3093,6 +3318,14 @@ fn device_caption(connected: bool, name: &str, phase: Option<&str>) -> String {
         name.into()
     }
 }
+fn initialization_homes(axis: usize, controllers: &[String; 2]) -> bool {
+    axis == 0
+        || controllers[axis - 1]
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>()
+            .eq_ignore_ascii_case("CONEXCC")
+}
 fn device_phase(
     connected: bool,
     running: bool,
@@ -3118,7 +3351,20 @@ fn device_phase(
         Device::Y => 2,
         Device::Lockin => unreachable!(),
     };
-    if let Some(moving) = phase.strip_prefix("Moving ") {
+    if let Some((label, moving)) = phase
+        .strip_prefix("Moving ")
+        .map(|axes| ("Moving", axes))
+        .or_else(|| {
+            phase
+                .strip_prefix("Initializing ")
+                .map(|axes| ("Initializing", axes))
+        })
+        .or_else(|| {
+            phase
+                .strip_prefix("Returning ")
+                .map(|axes| ("Returning", axes))
+        })
+    {
         let moving = moving.split_whitespace().next().unwrap_or("");
         return moving
             .split('/')
@@ -3129,7 +3375,7 @@ fn device_phase(
                 "u" | "v" => axis > 0,
                 _ => false,
             })
-            .then_some("Moving");
+            .then_some(label);
     }
     if engine::active_axes(plan)[axis] {
         if phase.starts_with("Waiting") {
@@ -3198,6 +3444,37 @@ fn default_output(workflow: Workflow) -> OutputProfile {
         auto_timestamp_suffix: true,
     }
 }
+/// Read both the nested output object written by the GUI and the flat fields
+/// written by legacy Python profiles.  Empty nested strings deliberately fall
+/// back, while an explicit nested `false` remains authoritative.
+fn hydrated_output(raw: &Value, workflow: Workflow, fallback: OutputProfile) -> OutputProfile {
+    let settings = raw.pointer(&format!("/measurements/{}", workflow.key()));
+    let output = settings.and_then(|value| value.get("output"));
+    let nonempty = |value: Option<&Value>| {
+        value
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_owned)
+    };
+    let nested = |key: &str| output.and_then(|value| value.get(key));
+    OutputProfile {
+        dir: nonempty(nested("dir"))
+            .or_else(|| nonempty(nested("output_dir")))
+            .or_else(|| nonempty(settings.and_then(|value| value.get("output_dir"))))
+            .unwrap_or(fallback.dir),
+        filename: nonempty(nested("filename"))
+            .or_else(|| nonempty(settings.and_then(|value| value.get("filename"))))
+            .unwrap_or(fallback.filename),
+        auto_timestamp_suffix: nested("auto_timestamp_suffix")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                settings
+                    .and_then(|value| value.get("auto_timestamp_suffix"))
+                    .and_then(Value::as_bool)
+            })
+            .unwrap_or(fallback.auto_timestamp_suffix),
+    }
+}
 fn output_filename(profile: &OutputProfile, demo: bool) -> String {
     let fallback = "trkr_run";
     let name = profile.filename.trim();
@@ -3257,6 +3534,130 @@ mod ui_tests {
     use super::*;
 
     #[test]
+    fn terminal_progress_survives_missed_samples_and_restored_axes_ignore_idle_progress() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.switch_workflow(Workflow::Srkr);
+        app.active_workflow = Workflow::Srkr;
+        let index = App::ix(Workflow::Srkr);
+        app.plans[index].fast = Axis::X;
+        app.select_plot_axes();
+        // Only one display sample reached the UI, but all 41 rows reached disk.
+        app.scan_progress[index] = (1, 41);
+        app.snapshot.running = true;
+        app.apply_snapshot(Snapshot {
+            rows: 41,
+            total: 41,
+            phase: "Complete".into(),
+            ..Default::default()
+        });
+        assert_eq!(app.scan_progress[index], (41, 41));
+        app.pm().fast = Axis::Y;
+        app.select_plot_axes();
+        app.scan_progress[index] = (3, 3);
+        app.pm().fast = Axis::X;
+        app.select_plot_axes();
+        app.apply_snapshot(Snapshot {
+            rows: 3,
+            total: 3,
+            ..Default::default()
+        });
+        assert_eq!(app.scan_progress[index], (41, 41));
+    }
+    #[test]
+    fn axes_restore_results_progress_and_output_without_idle_state_overwriting_them() {
+        for workflow in [Workflow::Srkr, Workflow::Strkr, Workflow::Srkr2d] {
+            let mut app = App::with_context(&egui::Context::default(), false);
+            app.settings = Settings::default();
+            app.source_demo = true;
+            app.plans = Workflow::ALL.map(|workflow| Plan {
+                workflow,
+                fast: if matches!(workflow, Workflow::Trkr | Workflow::Strkr) {
+                    Axis::T
+                } else {
+                    Axis::X
+                },
+                slow: Axis::Y,
+                fast_range: Range {
+                    min: 0.,
+                    max: 1.,
+                    step: 1.,
+                },
+                slow_range: Range {
+                    min: 0.,
+                    max: 1.,
+                    step: 1.,
+                },
+                interval_s: 0.,
+                ..Default::default()
+            });
+            app.switch_workflow(workflow);
+            let dir = tempfile::tempdir().unwrap();
+            let index = App::ix(workflow);
+            app.outputs[index].dir = dir.path().display().to_string();
+            let initial = app.plan().clone();
+            for run in 0..2 {
+                if run == 1 {
+                    match workflow {
+                        Workflow::Srkr => app.pm().fast = Axis::Y,
+                        Workflow::Strkr => app.pm().slow = Axis::X,
+                        Workflow::Srkr2d => {
+                            app.pm().fast = Axis::Y;
+                            app.pm().slow = Axis::X;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                app.select_plot_axes();
+                assert!(app.trace.is_empty());
+                app.outputs[index].filename = format!("retained-{run}");
+                app.start();
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while app.snapshot.running {
+                    assert!(Instant::now() < deadline, "simulated scan timed out");
+                    app.receive();
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                assert_eq!(app.trace.len(), app.plan().targets().unwrap().len());
+                assert!(app.output_paths[index].as_ref().unwrap().is_file());
+                assert_eq!(app.scan_progress[index], (app.trace.len(), app.trace.len()));
+            }
+            let second = app.plan().clone();
+            let second_len = app.trace.len();
+            app.plans[index] = initial;
+            app.select_plot_axes();
+            assert!(!app.trace.is_empty());
+            let first_len = app.trace.len();
+            assert!(
+                app.output_paths[index]
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("retained-0")
+            );
+            // A worker idle snapshot still describes the last run, not this restored view.
+            app.receive();
+            assert_eq!(app.scan_progress[index], (first_len, first_len));
+            app.switch_workflow(Workflow::Trkr);
+            app.switch_workflow(workflow);
+            assert_eq!(app.trace.len(), first_len);
+            app.plans[index] = second;
+            app.select_plot_axes();
+            assert_eq!(app.trace.len(), second_len);
+            assert!(
+                app.output_paths[index]
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .contains("retained-1")
+            );
+        }
+    }
+
+    #[test]
     fn delay_step_hint_uses_actual_microstep_and_rejects_stale_identity() {
         let settings = Settings::default();
         let config = settings.hardware().unwrap().motion.delay.unwrap();
@@ -3313,6 +3714,15 @@ mod ui_tests {
         assert_eq!(step_progress(0, 0), "-");
     }
     #[test]
+    fn initialization_distinguishes_homing_and_agap_enable_with_controller_aliases() {
+        for cc in ["CONEXCC", "CONEX-CC", "conex_cc", "CONEX CC"] {
+            let controllers = [cc.into(), "CONEXAGAP".into()];
+            assert!(initialization_homes(0, &controllers));
+            assert!(initialization_homes(1, &controllers));
+            assert!(!initialization_homes(2, &controllers));
+        }
+    }
+    #[test]
     fn device_headers_show_only_connected_names_and_relevant_motion() {
         let plan = Plan {
             workflow: Workflow::Strkr,
@@ -3330,6 +3740,28 @@ mod ui_tests {
             Some("Moving")
         );
         assert_eq!(device_phase(true, true, "Moving t", Device::X, &plan), None);
+        assert_eq!(
+            device_phase(true, true, "Returning x", Device::X, &plan),
+            Some("Returning")
+        );
+        assert_eq!(
+            device_phase(true, true, "Returning x", Device::T, &plan),
+            None
+        );
+
+        assert_eq!(
+            device_phase(true, true, "Moving y", Device::Y, &plan),
+            Some("Moving")
+        );
+        assert_eq!(
+            device_phase(true, true, "Initializing x", Device::X, &plan),
+            Some("Initializing")
+        );
+        assert_eq!(
+            device_phase(true, true, "Initializing x", Device::Y, &plan),
+            None
+        );
+
         for device in [Device::X, Device::Y] {
             assert_eq!(
                 device_phase(true, true, "Moving u · loop 1", device, &plan),
@@ -3367,6 +3799,208 @@ mod ui_tests {
             ..normal
         };
         assert_eq!(output_filename(&marked, true), "Demo_TRKR");
+    }
+
+    #[test]
+    fn output_hydration_accepts_legacy_flat_fields_and_nested_priority() {
+        let mut raw = json!({
+            "measurements": {
+                "trkr": {
+                    "output_dir": "legacy-runs",
+                    "filename": "legacy-name",
+                    "auto_timestamp_suffix": true,
+                    "output": {
+                        "dir": "nested-runs",
+                        "output_dir": "ignored-runs",
+                        "filename": "nested-name",
+                        "auto_timestamp_suffix": false
+                    }
+                }
+            }
+        });
+        let fallback = default_output(Workflow::Trkr);
+        assert_eq!(
+            hydrated_output(&raw, Workflow::Trkr, fallback.clone()),
+            OutputProfile {
+                dir: "nested-runs".into(),
+                filename: "nested-name".into(),
+                auto_timestamp_suffix: false,
+            }
+        );
+
+        raw["measurements"]["trkr"]["output"] = json!({
+            "dir": "   ",
+            "output_dir": "nested-legacy-runs",
+            "filename": "",
+        });
+        assert_eq!(
+            hydrated_output(&raw, Workflow::Trkr, fallback),
+            OutputProfile {
+                dir: "nested-legacy-runs".into(),
+                filename: "legacy-name".into(),
+                auto_timestamp_suffix: true,
+            }
+        );
+    }
+
+    #[test]
+    fn sync_output_canonicalizes_known_legacy_output_fields() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.settings.raw["measurements"]["trkr"] = json!({
+            "output_dir": "flat-dir",
+            "filename": "flat-name",
+            "auto_timestamp_suffix": false,
+            "output": {"output_dir": "nested-alias", "metadata": {"keep": true}}
+        });
+        app.hydrate_output(Workflow::Trkr);
+        app.sync_output(Workflow::Trkr);
+        let settings = &app.settings.raw["measurements"]["trkr"];
+        assert!(settings.get("output_dir").is_none());
+        assert!(settings.get("filename").is_none());
+        assert!(settings.get("auto_timestamp_suffix").is_none());
+        assert!(settings["output"].get("output_dir").is_none());
+        assert_eq!(settings["output"]["dir"], "nested-alias");
+        assert_eq!(settings["output"]["filename"], "flat-name");
+        assert_eq!(settings["output"]["auto_timestamp_suffix"], false);
+        assert_eq!(settings["output"]["metadata"]["keep"], true);
+    }
+
+    #[test]
+    fn ordinary_sync_does_not_create_missing_motion_devices() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.settings.raw["instruments"]["delay_stage"] = json!({});
+        app.settings.raw["instruments"]["scanner"] = json!({});
+        app.hydrate();
+        app.sync();
+        assert!(
+            app.settings.raw["instruments"]["delay_stage"]
+                .get("t")
+                .is_none()
+        );
+        assert!(
+            app.settings.raw["instruments"]["scanner"]
+                .get("x")
+                .is_none()
+        );
+        assert!(
+            app.settings.raw["instruments"]["scanner"]
+                .get("y")
+                .is_none()
+        );
+        assert_eq!(app.configured_devices(), vec![Device::Lockin]);
+    }
+
+    #[test]
+    fn ordinary_sync_keeps_only_the_configured_y_scanner() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let y = app.settings.raw["instruments"]["scanner"]["y"].clone();
+        app.settings.raw["instruments"]["delay_stage"] = json!({});
+        app.settings.raw["instruments"]["scanner"] = json!({"y": y});
+        app.hydrate();
+        app.sync();
+        assert!(
+            app.settings.raw["instruments"]["scanner"]
+                .get("x")
+                .is_none()
+        );
+        assert!(app.settings.raw["instruments"]["scanner"]["y"].is_object());
+        assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+    }
+
+    #[test]
+    fn editing_an_unconfigured_device_promotes_only_that_device_on_sync() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.settings.raw["instruments"]["delay_stage"] = json!({});
+        app.settings.raw["instruments"]["scanner"] = json!({});
+        app.hydrate();
+        app.scanner_port[1] = "COM5".into();
+        // All Connect builds its list before config() calls sync().
+        assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+        app.sync();
+        assert!(
+            app.settings.raw["instruments"]["scanner"]
+                .get("x")
+                .is_none()
+        );
+        assert_eq!(
+            app.settings.raw["instruments"]["scanner"]["y"]["port"],
+            "COM5"
+        );
+        assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+    }
+
+    #[test]
+    fn legacy_hardware_aliases_roundtrip_through_hydrate_and_sync() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let delay = app.settings.raw["instruments"]["delay_stage"]["t"]
+            .as_object_mut()
+            .unwrap();
+        delay.remove("controller");
+        delay.insert("delay_stage_controller".into(), json!("SHOT-302GS"));
+
+        let x = app.settings.raw["instruments"]["scanner"]["x"]
+            .as_object_mut()
+            .unwrap();
+        x.remove("controller");
+        x.remove("sample_um_per_unit");
+        x.insert("scanner_controller".into(), json!("CONEX-CC"));
+        x.insert("actuator".into(), json!("TRA12CC"));
+        x.insert("axis".into(), json!(1));
+        x.insert("sample_um_per_actuator_mm".into(), json!(321.));
+        x.insert("sample_um_per_actuator_deg".into(), json!(999.));
+        x.insert(
+            "software_hysteresis".into(),
+            json!({"enabled": true, "approach_distance_um": 37., "approach": "positive"}),
+        );
+        x.insert("vendor_metadata".into(), json!({"keep": true}));
+
+        app.hydrate();
+        assert_eq!(app.stage_model, "SHOT302GS");
+        assert_eq!(app.scanner_model[0], "CONEXCC");
+        assert_eq!(app.scanner_scale[0], 321.);
+        assert_eq!(app.hysteresis_distance[0], 37.);
+        assert_eq!(app.hysteresis_direction[0], "positive");
+
+        app.sync();
+        let delay = &app.settings.raw["instruments"]["delay_stage"]["t"];
+        let x = &app.settings.raw["instruments"]["scanner"]["x"];
+        assert_eq!(delay["controller"], "SHOT302GS");
+        assert_eq!(x["controller"], "CONEXCC");
+        assert_eq!(x["sample_um_per_unit"], 321.);
+        assert_eq!(x["software_hysteresis"]["distance_um"], 37.);
+        assert_eq!(x["software_hysteresis"]["direction"], "positive");
+        assert_eq!(x["vendor_metadata"]["keep"], true);
+        for alias in [
+            "scanner_controller",
+            "sample_um_per_actuator_mm",
+            "sample_um_per_actuator_deg",
+        ] {
+            assert!(x.get(alias).is_none(), "{alias}");
+        }
+        assert!(delay.get("delay_stage_controller").is_none());
+        assert!(
+            x["software_hysteresis"]
+                .get("approach_distance_um")
+                .is_none()
+        );
+        assert!(x["software_hysteresis"].get("approach").is_none());
+        assert!(app.settings.hardware().is_ok());
+    }
+
+    #[test]
+    fn lockin_model_alias_hydrates_case_insensitively_and_syncs_canonical_model() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let lockin = app.settings.raw["instruments"]["lockin"]["main"]
+            .as_object_mut()
+            .unwrap();
+        lockin.remove("model");
+        lockin.insert("lockin_model".into(), json!("sr830"));
+        app.hydrate();
+        assert_eq!(app.model, Model::Sr830);
+        app.sync();
+        let lockin = &app.settings.raw["instruments"]["lockin"]["main"];
+        assert_eq!(lockin["model"], "SR830");
+        assert!(lockin.get("lockin_model").is_none());
     }
 
     #[test]

@@ -7,8 +7,11 @@ mod file_dialog;
 mod live;
 mod live_view;
 mod lockin;
+mod plot_history;
 mod precision;
 mod presentation;
+#[cfg(test)]
+mod python_parity_tests;
 mod replay_data;
 mod replay_player;
 mod ui;

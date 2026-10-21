@@ -90,6 +90,7 @@ def test_packager_contents_are_gpib_only(tmp_path: Path) -> None:
     assert not (output / "support" / "iv-support").exists()
     assert (output / "support" / "licenses" / "KohdaLab-TRKR-MIT.txt").is_file()
     assert (output / "support" / "licenses" / "trkr_portable_rust.md").is_file()
+    assert (output / "support" / "licenses" / "python_compatibility_inventory.json").is_file()
     assert "\\n" not in (output / "README.txt").read_text(encoding="utf-8")
 
 

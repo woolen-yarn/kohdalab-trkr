@@ -13,7 +13,7 @@ same Rust engine from Jupyter notebooks.
 
 Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
 
-- **Windows x64:** run `KohdaLab-TRKR-0.3.1-Setup.exe` for a per-user installation
+- **Windows x64:** run `KohdaLab-TRKR-0.3.2-Setup.exe` for a per-user installation
   with a desktop shortcut, or extract the entire portable ZIP and run
   `kohdalab-trkr.exe`. `kohdalab-trkr-demo.exe` replays CSVs without hardware.
 - **macOS Apple silicon, macOS 13+:** open the DMG and drag **KohdaLab TRKR.app**
@@ -24,7 +24,8 @@ Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
 
 The application starts disconnected. Configure ports, resources, coordinate
 origins, travel limits and calibration before using instruments. Existing JSON
-profiles and CSVs remain compatible. User-created profiles and measurement data
+profiles and legacy CSVs are supported; remaining Python interface differences are
+listed in the [compatibility audit](docs/trkr_portable_rust.md). User-created profiles and measurement data
 are preserved on uninstall. The installer does not install or replace drivers.
 
 ## Workflows

@@ -9,9 +9,10 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
 const VISA_LIST_TIMEOUT: Duration = Duration::from_secs(8);
@@ -169,7 +170,40 @@ impl Gpib {
         String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
     }
 
+    /// Cancels an outstanding helper response promptly. An interrupted wire
+    /// transaction invalidates the session so a late reply cannot be reused.
+    pub fn write_cancellable(&mut self, command: &str, cancel: &AtomicBool) -> Result<(), String> {
+        self.request_cancellable("WRITE", command.as_bytes(), Some(cancel))
+            .map(|_| ())
+    }
+    pub fn query_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        let bytes = self.request_cancellable("QUERY", command.as_bytes(), Some(cancel))?;
+        String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
+    }
+    /// Prevent further I/O when an interrupted device protocol left state uncertain.
+    pub fn invalidate(&mut self) {
+        self.poisoned = true;
+        let _ = self.child.kill();
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
+    }
     fn request(&mut self, operation: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
+        self.request_cancellable(operation, payload, None)
+    }
+    fn request_cancellable(
+        &mut self,
+        operation: &str,
+        payload: &[u8],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+            return Err("GPIB read cancelled".into());
+        }
         if self.poisoned {
             return Err("GPIB session has failed; reconnect before further I/O".into());
         }
@@ -188,7 +222,7 @@ impl Gpib {
             self.input
                 .flush()
                 .map_err(|e| format!("Flush GPIB helper: {e}"))?;
-            let line = self.receive(COMMAND_TIMEOUT)?;
+            let line = self.receive_cancellable(COMMAND_TIMEOUT, cancel)?;
             parse_frame(&line).map(|(status, data)| (status.to_owned(), data))
         })();
         let (status, data) = match result {
@@ -214,10 +248,34 @@ impl Gpib {
     }
 
     fn receive(&self, timeout: Duration) -> Result<String, String> {
-        match self.lines.recv_timeout(timeout) {
-            Ok(result) => result,
-            Err(RecvTimeoutError::Timeout) => Err("GPIB helper response timed out".into()),
-            Err(RecvTimeoutError::Disconnected) => Err("GPIB helper exited unexpectedly".into()),
+        self.receive_cancellable(timeout, None)
+    }
+    fn receive_cancellable(
+        &self,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err("GPIB read cancelled; reconnect the lock-in".into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err("GPIB helper response timed out".into());
+            }
+            let slice = if cancel.is_some() {
+                remaining.min(Duration::from_millis(20))
+            } else {
+                remaining
+            };
+            match self.lines.recv_timeout(slice) {
+                Ok(result) => return result,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err("GPIB helper exited unexpectedly".into());
+                }
+            }
         }
     }
 }
@@ -480,6 +538,67 @@ mod tests {
     fn executable(path: &Path, source: &str) {
         std::fs::write(path, source).unwrap();
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn stalled_query_is_cancelled_promptly_and_late_replies_cannot_be_reused() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("stalled-helper.sh");
+        let marker = dir.path().join("query-started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf started > '{}'\nwhile IFS= read -r line; do :; done\n",
+                marker.display()
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let token = cancel.clone();
+        let stopped = stopped_at.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "query never started");
+                thread::sleep(Duration::from_millis(5));
+            }
+            *stopped.lock().unwrap() = Some(Instant::now());
+            token.store(true, Ordering::Release);
+        });
+        let error = gpib.query_cancellable("XY.\r", &cancel).unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(stopped_at.lock().unwrap().unwrap().elapsed() < Duration::from_secs(1));
+        assert!(gpib.is_poisoned());
+        assert!(gpib.query("XY.\r").unwrap_err().contains("reconnect"));
+    }
+
+    #[test]
+    fn cancellation_before_io_preserves_a_healthy_session() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do printf 'KIV\\tOK\\t-\\n'; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = AtomicBool::new(true);
+        assert!(
+            gpib.query_cancellable("XY.\r", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            gpib.write_cancellable("DDEF 1,0\n", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(!gpib.is_poisoned());
+        cancel.store(false, Ordering::Release);
+        gpib.write_cancellable("DDEF 1,0\n", &cancel).unwrap();
     }
 
     #[test]

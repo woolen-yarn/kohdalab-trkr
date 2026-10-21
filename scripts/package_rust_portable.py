@@ -307,6 +307,10 @@ def main() -> None:
         Path(__file__).parents[1] / "docs" / "trkr_portable_rust.md",
         stage / "support" / "licenses" / "trkr_portable_rust.md",
     )
+    shutil.copy2(
+        ROOT / "docs" / "python_compatibility_inventory.json",
+        stage / "support" / "licenses" / "python_compatibility_inventory.json",
+    )
     shutil.copytree(
         ROOT / "bindings" / "python",
         stage / "notebook",

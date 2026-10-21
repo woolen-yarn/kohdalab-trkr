@@ -236,6 +236,10 @@ class Client:
         zero: list[float] | None = None,
         approach: list[bool] | None = None,
     ) -> None:
+        """Position selected axes, using configured X/Y compensation by default.
+
+        Pass an explicit approach mask only to override normal positioning.
+        """
         self.send(
             {
                 "command": "move",
@@ -243,7 +247,7 @@ class Client:
                 "targets": targets,
                 "coordinate": coordinate,
                 "zero": zero or [0.0] * 3,
-                "approach": approach or [False] * 3,
+                "approach": approach if approach is not None else [False, True, True],
             }
         )
 

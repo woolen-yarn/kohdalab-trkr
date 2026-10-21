@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.3.2 — 2026-10-21
+
+- Audit all 50 legacy runtime source files and index 219 legacy test functions; document remaining GUI, profile, plotting, maintenance and Notebook API gaps.
+- Preserve singular `measurement` profile ranges/zeros and validate manual-move device references before connection.
+- Enable configured spatial compensation for GUI/Notebook standalone Move and the post-initialization instrument-zero move; preflight the entire approach before positioning or homing.
+- Restore return-to-zero hysteresis for enabled CONEX-CC scanners; use the common scan/return distance (100 µm default), preflight limits and preserve Stop cancellation.
+- Compensate each 2D spatial fast-axis line before acquisition; omit redundant uncompensated line-start visits and never return to experiment zero between lines.
+- Restore Cartesian 2D slow-before-fast motion, fast-before-slow completion returns and measurement-zero returns after raw-coordinate scans.
+- Restore GUI initialization's calibrated instrument-zero move, with explicit action wording and opt-in native command compatibility.
+- Accept legacy coordinate/output aliases; reject unsupported named-instrument selection before connecting instead of silently selecting a different device.
+- Preserve legacy hardware aliases, device omissions and calibration values through GUI profile load/save; canonicalize known output aliases while retaining unknown metadata.
+- Match frozen Python CSV common columns and numeric text; retain all scan timing in the additive `acquisition_elapsed_s` column.
+
+- Retain the latest plot per SRKR axis and ordered STRKR/SRKR 2D axis pair; restore original calibration, progress and recorded CSV when switching back.
+
+- Keep the XY/Rθ live monitor updating at approximately 100 ms during motion and scan settling, independently of recorded points.
+
+- Show device-local Moving status and actual encoder positions during manual moves (approximately 100 ms updates).
+- Make Initialize explicitly confirm mechanical homing for delay stages/CONEX-CC; CONEX-AGAP enables closed-loop operation.
+- Report initialization completion, refresh delay calibration, and preserve cancellation/STOP on motion errors.
+
 ## 0.3.1 — 2026-10-19
 
 - Automatically discover installed Windows/macOS applications from the Notebook client.
