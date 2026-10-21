@@ -2,6 +2,8 @@
 
 ## 0.3.4 — 2026-10-21
 
+- Make the fake-device homing progress test tolerate an additional time-driven position read on slow CI runners, and cover a delayed-ready response without changing production motion code.
+
 - Preserve existing measurement, GUI, JSON, CSV and Notebook behavior while separating recording, sequencing, profile compatibility and tests into focused modules.
 - Share workflow names, ordering, axis rules, output names and plot counts between core validation and the GUI.
 - Centralize scanner capabilities, actuator defaults, lock-in setting options and auto commands; use one compensation plan for preflight and execution.

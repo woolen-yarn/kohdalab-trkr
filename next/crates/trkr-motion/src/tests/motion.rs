@@ -306,36 +306,88 @@ fn initialize_agap_enables_closed_loop_without_home_command() {
 
 #[test]
 fn initialize_cc_homes_and_reports_intermediate_position() {
-    let log = Arc::new(Mutex::new(vec![]));
-    let mut rig = MotionRig {
-        ports: vec![Box::new(ScriptedBus::new(
-            log.clone(),
-            &["1TS00001E", "1TP1.0", "1TS000032", "1TP0.0"],
-        ))],
-        delay: None,
-        scanners: [
-            Some(Scanner {
-                config: cc_with_hysteresis(),
-                port: 0,
-                prepared: true,
-            }),
-            None,
-        ],
-    };
-    let mut positions = vec![];
-    rig.initialize_with_progress(
-        1,
-        true,
-        &AtomicBool::new(false),
-        Some(&mut |p| {
-            positions.push(p);
-            Ok(())
-        }),
-    )
-    .unwrap();
-    assert_eq!(log.lock().unwrap()[0], "1OR");
-    assert_eq!(positions[0].x_scanner_mm, Some(1.0));
-    assert!(!rig.scanners[0].as_ref().unwrap().prepared);
+    // Progress polling is time-driven: a slow runner may read position again
+    // on the ready iteration. Model device state rather than a fixed reply queue.
+    struct HomingBus {
+        log: Arc<Mutex<Vec<String>>>,
+        status_polls: usize,
+        delayed_ready: bool,
+    }
+    impl Bus for HomingBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.log.lock().unwrap().push(command.into());
+            match command {
+                "1TS" => {
+                    self.status_polls += 1;
+                    if self.status_polls == 1 {
+                        Ok("1TS00001E".into())
+                    } else {
+                        if self.delayed_ready {
+                            std::thread::sleep(Duration::from_millis(110));
+                        }
+                        Ok("1TS000032".into())
+                    }
+                }
+                "1TP" if self.status_polls == 1 => Ok("1TP1.0".into()),
+                "1TP" if self.status_polls >= 2 => Ok("1TP0.0".into()),
+                _ => Err(format!("unexpected query {command}")),
+            }
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.into());
+            if command == "1OR" {
+                Ok(())
+            } else {
+                Err(format!("unexpected write {command}"))
+            }
+        }
+    }
+    for delayed_ready in [false, true] {
+        let log = Arc::new(Mutex::new(vec![]));
+        let mut rig = MotionRig {
+            ports: vec![Box::new(HomingBus {
+                log: log.clone(),
+                status_polls: 0,
+                delayed_ready,
+            })],
+            delay: None,
+            scanners: [
+                Some(Scanner {
+                    config: cc_with_hysteresis(),
+                    port: 0,
+                    prepared: true,
+                }),
+                None,
+            ],
+        };
+        let mut positions = vec![];
+        let final_position = rig
+            .initialize_with_progress(
+                1,
+                true,
+                &AtomicBool::new(false),
+                Some(&mut |p| {
+                    positions.push(p);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let commands = log.lock().unwrap();
+        assert_eq!(commands[0], "1OR");
+        assert_eq!(commands.iter().filter(|c| c.as_str() == "1TS").count(), 2);
+        assert!(
+            commands
+                .iter()
+                .all(|c| matches!(c.as_str(), "1OR" | "1TS" | "1TP"))
+        );
+        assert_eq!(positions[0].x_scanner_mm, Some(1.0));
+        assert_eq!(final_position.x_scanner_mm, Some(0.0));
+        if delayed_ready {
+            assert_eq!(positions.len(), 2);
+            assert_eq!(positions[1].x_scanner_mm, Some(0.0));
+        }
+        assert!(!rig.scanners[0].as_ref().unwrap().prepared);
+    }
 }
 
 fn return_rig(log: Arc<Mutex<Vec<String>>>, replies: &[&str]) -> MotionRig {
