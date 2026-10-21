@@ -1,139 +1,98 @@
+<img src="crates/trkr-desktop/assets/icon.png" width="64" height="64" align="right" alt="KohdaLab TRKR icon">
+
 # KohdaLab TRKR
 
-[![Test](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
-[![Release build](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/release.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/release.yml)
+[![CI](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/woolen-yarn/kohdalab-trkr)](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Native Rust application for time-resolved Kerr rotation experiments. The GUI,
-measurement planning, lock-in protocols, stage/scanner control, CSV recording and
-CSV demo playback run without Python. A small optional Python client calls the
-same Rust engine from Jupyter notebooks.
+Rust desktop application for time-resolved Kerr rotation measurements, live lock-in monitoring, and stage/scanner control.
 
-## Install
+[Download](https://github.com/woolen-yarn/kohdalab-trkr/releases) · [Documentation](docs/README.md) · [Report an issue](https://github.com/woolen-yarn/kohdalab-trkr/issues)
 
-Download from [Releases](https://github.com/woolen-yarn/kohdalab-trkr/releases).
+- Signal Monitor, TRKR, SRKR, STRKR, and SRKR 2D.
+- Live XY/Rθ traces, retained spatial scans, rotated u/v axes, and heatmaps.
+- Shared Rust measurement engine for the desktop GUI and optional Python/Jupyter client.
 
-- **Windows x64:** run `KohdaLab-TRKR-0.3.4-Setup.exe` for a per-user installation
-  with a desktop shortcut, or extract the entire portable ZIP and run
-  `kohdalab-trkr.exe`. `kohdalab-trkr-demo.exe` replays CSVs without hardware.
-- **macOS Apple silicon, macOS 13+:** open the DMG and drag **KohdaLab TRKR.app**
-  and optionally **KohdaLab TRKR Demo.app** to Applications. The Mac build uses an
-  ad hoc signature; if Gatekeeper requires confirmation, use Finder's Open action.
-- Current Windows binaries are unsigned. SignPath application preparation is
-  documented in [Code signing](CODE_SIGNING_POLICY.md); acceptance is not claimed.
+## Interface
 
-The application starts disconnected. Configure ports, resources, coordinate
-origins, travel limits and calibration before using instruments. Existing JSON
-profiles and legacy CSVs are supported; remaining Python interface differences are
-listed in the [compatibility audit](docs/trkr_portable_rust.md). User-created profiles and measurement data
-are preserved on uninstall. The installer does not install or replace drivers.
+![KohdaLab TRKR interface](docs/images/gui-trkr.png)
 
-## Workflows
+Synthetic TRKR data; no instruments connected. The same interface is used on Windows and macOS.
 
-Signal Monitor, TRKR, SRKR, STRKR and SRKR 2D share one engine and CSV schema.
-XY/Rθ displays, SI-scaled live signals, positive-value TRKR log plots, Python-compatible
-heatmaps, rotated u/v scans and paired-axis validation are included. Step displays
-acquired/total points (for example `9/41`), independent of retained plot history.
-Moving, Waiting and Reading appear beside the relevant device names.
+## Downloads
 
-## GUI
-
-Screenshots from the native macOS application using synthetic demo data, with
-no instruments connected. Windows uses the same GUI. The dark layout, device
-readouts, live XY/Rθ traces, fixed side panels and plots share one implementation.
-
-**TRKR — time trace with R/θ display and Linear/Log selection**
-
-![TRKR desktop GUI with synthetic data](docs/images/gui-trkr.png)
-
-**SRKR 2D — line profiles and spatial heatmaps**
-
-![SRKR 2D desktop GUI with synthetic data](docs/images/gui-srkr-2d.png)
-
-## Supported instruments
-
-The following models are implemented in the Rust drivers. Protocols are covered
-by simulated-I/O tests; this is not a claim that every hardware/firmware
-combination has been tested on a physical apparatus. See the
-[compatibility audit](docs/trkr_portable_rust.md) for the verification scope and
-legacy maintenance operations that are outside the measurement API.
-
-| Category | Model / family | Connection | Implemented measurement operations |
-| --- | --- | --- | --- |
-| Lock-in | SR7265 | GPIB | XY/Rθ acquisition, sensitivity, time constant, coupling, slope, AC gain, auto actions |
-| Lock-in | SR830 | GPIB | XY/Rθ acquisition, sensitivity, time constant, coupling, slope, auto actions |
-| Lock-in | SR5210 | GPIB | XY/Rθ acquisition, sensitivity, time constant, slope, auto actions; AC coupling only |
-| Lock-in | LI5640 | GPIB | XY/Rθ acquisition with display restoration, sensitivity, time constant, coupling, slope, auto actions |
-| Delay controller | SHOT302GS | Serial | Position readback, absolute moves, microstep readout, initialization/home, normal Stop |
-| Delay controller | GSC01 / GSC01A | Serial | Position readback, absolute moves, microstep readout, initialization/home, normal Stop |
-| Scanner controller | CONEX-CC | Serial | Position readback, absolute moves, home/initialization, Stop, configurable software hysteresis compensation |
-| Scanner controller | CONEX-AGAP | Serial | U/V axis control, position readback, absolute moves, closed-loop initialization and Stop |
-
-Built-in motion presets supply defaults; experiment origins, sample conversion,
-direction and limits remain profile settings.
-
-| Stage / actuator preset | Controller | Native travel / unit |
+| Channel | Version | Platforms |
 | --- | --- | --- |
-| SGSP46-500 | SHOT302GS | 500 mm travel |
-| OSMS20-35 | SHOT302GS / GSC01 / GSC01A | 35 mm travel |
-| OSMS26-300 | SHOT302GS / GSC01 / GSC01A | 300 mm travel |
-| OSMS33-600 | SHOT302GS | 600 mm travel |
-| TRA12CC | CONEX-CC | 0–12 mm |
-| AG-M100D | CONEX-AGAP | −0.75–+0.75° |
+| Stable | [0.3.4](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.3.4) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
 
-GPIB supports primary addresses 1–30. On Windows, the application can use a
-system **64-bit VISA runtime** for the selected `GPIB0::<address>::INSTR` resource.
-The separate native USB-GPIB helper supports **NI USB-GPIB-HS+** and an
-**already initialized Agilent 82357B**. Drivers and adapter initialization are
-not bundled. VISA failures do not trigger a native-adapter fallback. On macOS,
-serial devices use their `/dev/cu.*` ports. See
-[transport setup and limitations](docs/trkr_portable_rust.md) and
-[native helper details](native/README.md).
+Rust and Python are not required to run the packaged application. Current Windows
+artifacts are unsigned; download packages and checksums together from Releases.
+macOS bundles use ad hoc signing and are not Apple-notarized.
 
-The demo bundles synthetic CSVs only. Experimental CSVs in a local `demo_csv/`
-directory are ignored by Git and never copied into release artifacts.
+## Supported hardware
 
-## Notebook access
+| Role | Implemented models |
+| --- | --- |
+| Lock-in | SR7265, SR830, SR5210, LI5640 |
+| Delay controller | SHOT302GS, GSC01, GSC01A |
+| Scanner controller | CONEX-CC, CONEX-AGAP |
 
-```sh
-python -m pip install .
-# Optional Jupyter tools:
-python -m pip install '.[notebook]'
-```
+See [hardware and transport](docs/reference/hardware.md) for stage/actuator presets, GPIB adapters, and validation scope. Implemented protocol support does not imply physical qualification of every device/firmware combination.
 
-See [the thin client](bindings/python/README.md) and the six examples in
-[`notebook/`](notebook). They automatically find installed Windows/macOS applications
-or a nearby portable package. They default to simulation and require an explicit
-hardware opt-in. All instrument I/O, scan validation and CSV writing remain in Rust.
-The former Python GUI, drivers and experiment engine were removed in v0.3.0;
-old releases remain available in Git history and Releases.
+## Quick start
 
-## Build and test
+1. Install the application or extract the complete portable package.
+2. Explore synthetic data using the separate Demo application before connecting hardware.
+3. Load a reviewed profile, check the selected devices, ports, origins, calibration, and limits, then connect deliberately.
+4. Choose a workflow and output location. Keep the CSV and its `.run.json` metadata together.
+
+Python/Jupyter access: [client guide](bindings/python/README.md) · [notebooks](notebook/).
+
+## Development
+
+Run commands from the repository root. The root `Cargo.toml` and `Cargo.lock`
+are the workspace entry point; product packages live under `crates/`.
 
 ```sh
-cargo test --manifest-path next/Cargo.toml --locked
-cargo clippy --manifest-path next/Cargo.toml --all-targets --locked -- -D warnings
-cargo build --manifest-path next/Cargo.toml --release --locked
-python -m pip install pytest
-python -m pytest tests
-bash scripts/build_native.sh
+cargo test --workspace --locked
+cargo build --release --locked
+cargo run --locked --bin kohdalab-trkr
 ```
 
-Rust is pinned in `rust-toolchain.toml`. For native helper prerequisites and
-relinking instructions, see [native/REBUILDING.md](native/REBUILDING.md).
-
-```sh
-python scripts/build_release.py --platform macos-arm64 \
-  --binaries-dir next/target/release --native-dir build/native --output dist
-# In Windows/MSYS2 use --platform windows-x64; NSIS must be available on PATH.
+```text
+crates/       Rust application, measurement core, motion, and transport
+bindings/     Thin Python/Jupyter client
+native/       Isolated native helpers and upstream notices
+notebook/     Rust-backed notebook examples
+scripts/      Build, package, and validation entry points
+tests/        Packaging/client tests and frozen reference fixtures
+docs/         Guides, development notes, references, validation, images
 ```
 
-GitHub Actions runs Rust and packaging/client tests on Linux, Windows and macOS.
-Tag `v<workspace version>` builds both distributions from source and publishes
-only after all jobs pass. Artifacts include corresponding source, dependency
-notices, checksums and build-origin metadata. The external GPL helper is kept
-separate from the first-party SignPath signing set. See [redistribution](REDISTRIBUTION.md).
+See [repository layout](docs/development/repository-layout.md) and
+[CONTRIBUTING.md](CONTRIBUTING.md) before changing device or build boundaries.
+Tests must not connect hardware, move stages, enable outputs, or alter drivers.
 
-Checksums identify the exact artifacts from a CI run. Source/portable ZIP entry
-timestamps are normalized; platform linker signatures and DMG filesystem metadata
-are not promised to be bit-for-bit identical across independent builds.
+## Documentation
+
+- [Documentation index](docs/README.md): the entry point for all guides and references.
+- `docs/guides/`: installation and everyday operation.
+- `docs/development/`: architecture, extension points, and build/release maintenance.
+- `docs/reference/`: hardware, protocols, formats, and compatibility contracts.
+- `docs/validation/`: versioned evidence and measured limitations.
+- `docs/images/`: repository screenshots and figures.
+
+## KohdaLab applications
+
+[IV](https://github.com/woolen-yarn/kohdalab-iv) · [TRKR](https://github.com/woolen-yarn/kohdalab-trkr) · [Camera](https://github.com/woolen-yarn/kohdalab-camera)
+
+The applications share a root Cargo workspace, `crates/` source packages, focused
+build scripts, and the same documentation categories. Hardware backends and
+qualification remain product-specific.
+
+## License
+
+Project code is [MIT licensed](LICENSE). Native helpers and redistributed
+dependencies retain their own licenses; keep the accompanying notices and source.
+See [redistribution terms](REDISTRIBUTION.md), [code signing](CODE_SIGNING_POLICY.md), and [privacy](PRIVACY.md).

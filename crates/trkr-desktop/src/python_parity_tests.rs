@@ -10,7 +10,7 @@ use serde_json::Value;
 use trkr_core::{Axis, Coordinate, Plan, Range, Signal, Target, Workflow};
 use trkr_motion::Position;
 
-const FIXTURE: &str = include_str!("../../../../tests/fixtures/python_measurement_reference.json");
+const FIXTURE: &str = include_str!("../../../tests/fixtures/python_measurement_reference.json");
 
 fn fixture() -> Value {
     serde_json::from_str(FIXTURE).expect("valid frozen Python parity fixture")

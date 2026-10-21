@@ -83,6 +83,9 @@ def find_binary(
     for root in _roots(search_from):
         candidates.extend((
             root / executable,
+            root / "target/release" / executable,
+            root / "target/debug" / executable,
+            root / "target/x86_64-pc-windows-msvc/release" / executable,
             root / "next/target/release" / executable,
             root / "next/target/debug" / executable,
             root / "next/target/x86_64-pc-windows-msvc/release" / executable,
@@ -127,6 +130,7 @@ def find_profile(
         ))
     candidates.extend(Path.home() / ".kohdalab/config" / name
                       for name in ("trkr-next.json", "default.json"))
+    candidates.extend(root / "crates/trkr-desktop/assets/default.json" for root in roots)
     candidates.extend(root / "next/crates/trkr-desktop/assets/default.json" for root in roots)
     found = _first_file(candidates)
     if found:

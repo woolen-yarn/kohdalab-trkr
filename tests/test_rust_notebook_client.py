@@ -39,7 +39,7 @@ def test_notebook_runs_native_workflows_recovers_errors_and_stops(
         os.environ.get(
             "TRKR_NATIVE_BINARY",
             ROOT
-            / "next"
+
             / "target"
             / "debug"
             / (
@@ -57,7 +57,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(sys.argv[1]) / 'bindings/python'))
 from kohdalab_trkr import Client
 root, binary, output = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
-prepared = json.loads(subprocess.check_output([binary, '--profile-json', root/'next/crates/trkr-desktop/assets/default.json'], text=True))
+prepared = json.loads(subprocess.check_output([binary, '--profile-json', root/'crates/trkr-desktop/assets/default.json'], text=True))
 with Client(binary) as client:
     for key, plan in prepared['plans'].items():
         plan.update(interval_s=0., n_points=7)
