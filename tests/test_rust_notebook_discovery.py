@@ -105,7 +105,7 @@ def test_prepare_profile_uses_rust_validation_in_utf8(client, tmp_path, monkeypa
 
 
 def test_saved_gui_profile_precedes_source_example_defaults(client, tmp_path):
-    source = touch(tmp_path / "next/crates/trkr-desktop/assets/default.json")
+    source = touch(tmp_path / "crates/trkr-desktop/assets/default.json")
     saved = touch(Path.home() / ".kohdalab/config/trkr-next.json")
     assert client.find_profile(search_from=tmp_path) == saved
     saved.unlink()
@@ -120,3 +120,16 @@ def test_saved_gui_profile_precedes_nearby_app_bundled_defaults(client, tmp_path
     assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == saved
     saved.unlink()
     assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == bundled
+
+
+def test_root_workspace_precedes_legacy_source_layout_and_keeps_fallback(client, tmp_path):
+    legacy = touch(tmp_path / "next/target/debug/kohdalab-trkr")
+    current = touch(tmp_path / "target/debug/kohdalab-trkr")
+    assert client.find_binary(search_from=tmp_path) == current
+    current.unlink()
+    assert client.find_binary(search_from=tmp_path) == legacy
+    legacy_profile = touch(tmp_path / "next/crates/trkr-desktop/assets/default.json")
+    current_profile = touch(tmp_path / "crates/trkr-desktop/assets/default.json")
+    assert client.find_profile(search_from=tmp_path) == current_profile
+    current_profile.unlink()
+    assert client.find_profile(search_from=tmp_path) == legacy_profile

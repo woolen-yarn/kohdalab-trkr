@@ -43,7 +43,7 @@ def test_notebook_cells_are_clean_and_syntactically_valid() -> None:
 
 
 def test_notebooks_run_in_simulation_against_the_canonical_binary() -> None:
-    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "next" / "target" / "debug" / (
+    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "target" / "debug" / (
         "kohdalab-trkr.exe" if sys.platform == "win32" else "kohdalab-trkr"
     )))
     if not binary.is_file():
@@ -84,11 +84,11 @@ for path in sorted((root / "notebook").glob("*.ipynb")):
 
 def test_notebook_setup_finds_portable_and_macos_app_layouts(tmp_path: Path) -> None:
     executable = "kohdalab-trkr.exe" if sys.platform == "win32" else "kohdalab-trkr"
-    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "next" / "target" / "debug" / executable))
+    binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "target" / "debug" / executable))
     if not binary.is_file():
         pytest.skip("Build the canonical native TRKR binary first")
     setup_notebook = ROOT / "notebook" / "trkr_notebook.ipynb"
-    source_profile = ROOT / "next" / "crates" / "trkr-desktop" / "assets" / "default.json"
+    source_profile = ROOT / "crates" / "trkr-desktop" / "assets" / "default.json"
     source_client = ROOT / "bindings" / "python" / "kohdalab_trkr.py"
 
     for kind in ("portable", "app"):

@@ -21,6 +21,6 @@ Do not disable SmartScreen, Defender, or Windows security controls to work
 around an unsigned-download warning. Obtain releases from GitHub and verify the
 published SHA-256 sums.
 
-See [the policy](../CODE_SIGNING_POLICY.md),
-[application configuration](../.signpath/application-pe.xml), and the official
+See [the policy](../../CODE_SIGNING_POLICY.md),
+[application configuration](../../.signpath/application-pe.xml), and the official
 [SignPath GitHub documentation](https://docs.signpath.io/trusted-build-systems/github).

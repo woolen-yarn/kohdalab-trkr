@@ -35,5 +35,5 @@ END
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser();p.add_argument('--output',type=Path,required=True);p.add_argument('--filename',required=True);p.add_argument('--description',required=True);a=p.parse_args()
-    v=tomllib.loads((Path(__file__).resolve().parents[1]/'next/Cargo.toml').read_text())['workspace']['package']['version']
+    v=tomllib.loads((Path(__file__).resolve().parents[1]/'Cargo.toml').read_text())['workspace']['package']['version']
     a.output.write_text(resource(a.filename,a.description,v))

@@ -33,12 +33,21 @@ demo_csv/*.csv
 /config/*.json
 
 # Rust preview builds and local acquisition output.
-/next/target/
-/next/dist/
-/next/runs/
+/target/
+/dist/
+/runs/
 
 # Native release products and local validation history.
 /build/
 /dist/
 /validation/local/
 *.dmg
+
+# Shared root workspace outputs. Legacy ignored folders remain private.
+/target/
+/runs/
+
+# Private outputs from older checkouts must never become public.
+/next/target/
+/next/dist/
+/next/runs/

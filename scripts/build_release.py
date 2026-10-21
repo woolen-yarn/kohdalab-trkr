@@ -34,7 +34,7 @@ def make_zip(folder: Path, destination: Path) -> None:
 
 def make_icon(destination: Path, scratch: Path) -> None:
     iconset=scratch/'AppIcon.iconset';iconset.mkdir()
-    source=ROOT/'next/crates/trkr-desktop/assets/icon.png'
+    source=ROOT/'crates/trkr-desktop/assets/icon.png'
     for n in (16,32,128,256,512):
         for retina in (False,True):
             size=n*(2 if retina else 1)
@@ -66,7 +66,7 @@ def make_app(stage: Path, destination: Path, executable: str, version: str, icon
 
 
 def build(platform: str, binaries: Path, native: Path, output: Path) -> list[Path]:
-    version=tomllib.loads((ROOT/'next/Cargo.toml').read_text())['workspace']['package']['version']
+    version=tomllib.loads((ROOT/'Cargo.toml').read_text())['workspace']['package']['version']
     if os.environ.get('GITHUB_REF_TYPE')=='tag' and os.environ.get('GITHUB_REF_NAME')!='v'+version:
         raise ValueError('Tag must match the Rust workspace version')
     output=output.resolve();output.mkdir(parents=True,exist_ok=True)

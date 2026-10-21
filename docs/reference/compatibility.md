@@ -88,7 +88,7 @@ Run requests are serialized, and Stop may be sent from another Python thread.
 CI builds all application/helper binaries from checked-in source on GitHub-hosted
 runners. Windows portable/Setup and Mac application ZIP/DMG include source and
 licenses. SHA256SUMS and BUILD-ORIGIN files accompany each platform. Signing
-preparation is described in `docs/windows_code_signing.md`.
+preparation is described in `docs/development/windows-signing.md`.
 
 Simulation, cancellation, CSV replay and read-only instrument checks were run
 during migration. Motion of the laboratory's unreferenced X axis was deliberately
@@ -172,7 +172,7 @@ Remaining explicit interface differences:
 
 対象は `v0.2.0` の `src/kohdalab` にある全50ファイル（Python 48、TOML 2）、
 同梱Notebook 6本、旧テスト35ファイル・219テスト関数の項目索引。
-[全ファイル・関数索引](python_compatibility_inventory.json) に旧ファイルのSHA256、
+[全ファイル・関数索引](../validation/python-compatibility-inventory.json) に旧ファイルのSHA256、
 クラス／関数名と行番号、Rustの対応先、分類を保存した。索引は関数ごとの
 動作同一性を自動証明するものではない。旧テスト219本をRustに対してそのまま
 実行したという意味でもない。現在の疑似機器テスト・固定参照データ・ソース照合で
@@ -225,3 +225,5 @@ Remaining explicit interface differences:
   関する厳格化は維持する。
 - 実機の移動・原点復帰・センサー・travel limit・各機種の実応答は今回検証していない。
   コード照合と疑似機器の成功を、そのまま装置の動作保証にはしない。
+
+監査JSON内の旧 `next/` パスは監査時点の記録です。[現行レイアウトへの対応表](../validation/compatibility-audit-layout.md)を参照してください。

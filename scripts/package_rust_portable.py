@@ -22,7 +22,7 @@ def collect_rust_notices(destination: Path, target: str | None) -> None:
         os.environ.get("CARGO", "cargo"),
         "metadata",
         "--manifest-path",
-        str(ROOT / "next/Cargo.toml"),
+        str(ROOT / "Cargo.toml"),
         "--format-version",
         "1",
         "--locked",
@@ -69,7 +69,7 @@ def zip_file(archive: zipfile.ZipFile, path: Path, name: str | Path) -> None:
 def application_source(destination: Path) -> None:
     with zipfile.ZipFile(destination, "w", zipfile.ZIP_DEFLATED) as archive:
         for name in (
-            "next", "native", "scripts", "bindings", "notebook", "tests", ".github", ".signpath",
+            "Cargo.toml", "Cargo.lock", "crates", "native", "scripts", "bindings", "notebook", "tests", ".github", ".signpath",
             "rust-toolchain.toml", "pyproject.toml", "README.md", "LICENSE",
             "REDISTRIBUTION.md", "CODE_SIGNING_POLICY.md", "PRIVACY.md", "CHANGELOG.md", "docs",
         ):
@@ -285,7 +285,7 @@ def main() -> None:
     stage = args.output
     (stage / "support" / "licenses").mkdir(parents=True)
     shutil.copy2(binary, stage / binary.name)
-    shutil.copy2(ROOT / "next/crates/trkr-desktop/assets/icon.ico", stage / "kohdalab-trkr.ico")
+    shutil.copy2(ROOT / "crates/trkr-desktop/assets/icon.ico", stage / "kohdalab-trkr.ico")
     if demo_binary:
         shutil.copy2(demo_binary, stage / demo_binary.name)
     shutil.copy2(helper, stage / "support" / helper.name)
@@ -304,11 +304,11 @@ def main() -> None:
         stage / "support" / "licenses" / "KohdaLab-TRKR-MIT.txt",
     )
     shutil.copy2(
-        Path(__file__).parents[1] / "docs" / "trkr_portable_rust.md",
+        ROOT / "docs/reference/compatibility.md",
         stage / "support" / "licenses" / "trkr_portable_rust.md",
     )
     shutil.copy2(
-        ROOT / "docs" / "python_compatibility_inventory.json",
+        ROOT / "docs/validation/python-compatibility-inventory.json",
         stage / "support" / "licenses" / "python_compatibility_inventory.json",
     )
     shutil.copytree(
@@ -321,10 +321,10 @@ def main() -> None:
     (stage / "config").mkdir()
     write_demo_csvs(stage / "demo_csv")
     shutil.copy2(
-        ROOT / "next" / "crates" / "trkr-desktop" / "assets" / "default.json",
+        ROOT / "crates" / "trkr-desktop" / "assets" / "default.json",
         stage / "config" / "default.json",
     )
-    shutil.copy2(ROOT / "next/crates/trkr-desktop/assets/default_demo.json", stage / "config/default_demo.json")
+    shutil.copy2(ROOT / "crates/trkr-desktop/assets/default_demo.json", stage / "config/default_demo.json")
     (stage / "README.txt").write_text(
         "KohdaLab TRKR Rust portable\nUnzip the entire folder and run kohdalab-trkr. No Python installation is needed.\nStarts disconnected. Native hardware workflows: Signal Monitor, TRKR, SRKR, STRKR, SRKR 2D.\nIf included, run kohdalab-trkr-demo.exe to preview the synthetic demo_csv files without opening hardware. Drag one existing CSV onto it to load that CSV. Select a tab, Browse/Load the CSV, Connect All (virtual), then Start/Stop. Wait (s) controls timing; zero gives fast playback. Playback loops without recording or modifying source files.\nSerial motion: SHOT302GS/GSC01/GSC01A and CONEXCC/CONEXAGAP. Review your ports, calibration, origins and limits before hardware use.\nPython notebook access is in notebook/. Settings can import existing Python JSON profiles. Physical scan validation remains required.\nIf system VISA enumerates the GPIB resource, official VISA is selected. Otherwise the adapter must have IV native WinUSB setup. Failed VISA I/O is never replayed on native GPIB.\nSee support/licenses/trkr_portable_rust.md for setup and limitations.\nGPIB helper source: support/SOURCE.zip. Application source: support/TRKR-SOURCE.zip.\n",
         encoding="utf-8",

@@ -49,13 +49,13 @@ jobs:
           "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Check Rust formatting
         if: runner.os == 'Linux'
-        run: cargo fmt --manifest-path next/Cargo.toml --all --check
+        run: cargo fmt --manifest-path Cargo.toml --all --check
       - name: Lint Rust workspace
         if: runner.os == 'Linux'
-        run: cargo clippy --manifest-path next/Cargo.toml --workspace --all-targets --locked -- -D warnings
+        run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --locked -- -D warnings
       - name: Test Rust workspace
-        run: cargo test --manifest-path next/Cargo.toml --workspace --locked
+        run: cargo test --manifest-path Cargo.toml --workspace --locked
       - name: Build controller for notebook integration checks
-        run: cargo build --manifest-path next/Cargo.toml --bin kohdalab-trkr --locked
+        run: cargo build --manifest-path Cargo.toml --bin kohdalab-trkr --locked
       - name: Test packaging, bridge, and layout checks
         run: python -m pytest tests

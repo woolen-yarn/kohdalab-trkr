@@ -7,13 +7,13 @@ REFERENCE=json.loads((ROOT/'tests/fixtures/python_heatmap_reference.json').read_
 
 
 def test_native_palette_matches_frozen_python_lookup_table():
-    data=(ROOT/'next/crates/trkr-desktop/assets/rdbu_r_lut.rgb').read_bytes()
+    data=(ROOT/'crates/trkr-desktop/assets/rdbu_r_lut.rgb').read_bytes()
     assert len(data)==256*3
     assert hashlib.sha256(data).hexdigest()==REFERENCE['lut_sha256']
 
 
 def test_native_index_mapping_matches_frozen_python_rgba():
-    lut=(ROOT/'next/crates/trkr-desktop/assets/rdbu_r_lut.rgb').read_bytes()
+    lut=(ROOT/'crates/trkr-desktop/assets/rdbu_r_lut.rgb').read_bytes()
     rgba=bytearray()
     for i in range(257):
         value=-1+i/128
