@@ -90,3 +90,60 @@ Signal Monitor、TRKR、SRKR、STRKR、SRKR 2Dは、`prepared["plans"]` の `sig
 CSVを保存する場合は `run(..., output="new_run.csv")` と指定します。同名ファイルは上書きしません。実機で使う際は、Notebookの表示した設定と計画を確認した上で `HARDWARE` を明示的に変更します。原点復帰は自動で行いません。
 
 `run()` は同期処理です。並列の測定ジョブは同じクライアント内で直列化します。生の移動命令は `move(...)` の後に `wait_for_finished()` で完了を待ちます。
+
+## English
+
+The GUI, acquisition, and device control run in Rust. This client passes commands and results over JSON; Python device drivers and Qt are not required.
+
+### Compatibility
+
+Profiles, `--stdio` JSON-lines commands/events, measurement CSVs, and adjacent `.run.json` files retain the unversioned revision-1 contract without adding fields to existing data. Arbitrary user metadata is not interpreted as a schema version. Python constants `PROFILE_COMPATIBILITY_REVISION`, `JSON_LINES_API_REVISION`, and `RECORDING_COMPATIBILITY_REVISION` are all `1`. Future revisions will be explicit opt-ins while existing profiles, notebooks, and CSVs remain readable.
+
+### Setup
+
+On Windows, run TRKR Setup. On macOS, place **KohdaLab TRKR.app** in `/Applications` or `~/Applications`. Extract the complete portable folder. To use the source client, install it into the Notebook's Python environment using `python -m pip install .`.
+
+The six bundled notebooks load their adjacent client, `notebook-client/`, or the source `bindings/python/` automatically, preferring the bundled client over an older pip installation.
+
+### Try without specifying paths
+
+Use the `Client`, `find_binary`, `find_profile`, and `prepare_profile` example above. `prepare_profile()` reads and validates the profile in Rust without connecting instruments. Copy `prepared["plans"]["trkr"]`, set `interval_s = 0.0` for fast simulation, and run with the source `{"type": "demo"}`. Extract `sample` events to count acquired points.
+
+This example is simulation only: it does not connect instruments, move hardware, or save CSV. Bundled notebooks such as `trkr_notebook.ipynb` also start with `HARDWARE = False`.
+
+### Discovery order
+
+Executable discovery only checks whether files exist, in this order:
+
+1. An explicit argument such as `Client(binary=...)`, then `TRKR_BINARY`.
+2. The working directory and nearby portable distributions, source builds, or Mac apps.
+3. `kohdalab-trkr` on `PATH`.
+4. Windows: the per-user location recorded by Setup, then `%LOCALAPPDATA%\KohdaLab\TRKR`.
+5. macOS: `~/Applications/KohdaLab TRKR.app`, then `/Applications/KohdaLab TRKR.app`.
+
+Profile discovery uses an explicit argument or `TRKR_PROFILE`, nearby `config/default.json`, user `~/.kohdalab/config/trkr-next.json` or `default.json`, source defaults, then bundled defaults from the discovered app. `trkr-next.json` remains the Rust GUI's existing settings filename.
+
+**Check the displayed selected profile.** A nearby portable profile wins, and GUI-saved user settings win over source defaults. To choose an experiment explicitly, use `prepare_profile("C:/Users/me/.kohdalab/config/kim.json")`, or `prepare_profile("~/.kohdalab/config/kim.json")` on Mac/Linux.
+
+For custom locations, set `TRKR_BINARY` and `TRKR_PROFILE` at the start of the Notebook, as in the example above. A missing explicit path is an error; the client does not silently switch to another application or profile.
+
+### Migrating old notebooks
+
+The old `kohdalab.api.Experiment` and the new client are different APIs. Copy an existing experimental notebook and first verify simulation with the corresponding bundled notebook. Supported JSON uses canonical `instruments` / `measurements`; arbitrary named-device selection and old Advanced profiles still have compatibility gaps. See the [compatibility audit](https://github.com/woolen-yarn/kohdalab-trkr/blob/v0.3.4/docs/trkr_portable_rust.md). The dedicated Demo can read measurement CSVs; this does not guarantee exact equivalence of the old API or every saved format.
+
+| Old Notebook role | Rust-backed replacement |
+| --- | --- |
+| `load_config()` and Python planning | `prepare_profile()` → `hardware` and `plans` |
+| `Experiment(config, auto_connect=False)` | `Client()`; starting the client alone does not connect hardware |
+| `experiment.run_trkr(...)` and other runs | `client.run(hardware, plan, source, output)` |
+| Live updates and measurement rows | Use the `data` of `sample` events |
+| `point["R_V"]` and other signals | `sample["signal"]["r_v"]`; analogous X/Y/Theta fields |
+| Stop acquisition | `client.stop()` from another thread/cell |
+
+Select `signal_monitor`, `trkr`, `srkr`, `strkr`, or `srkr_2d` in `prepared["plans"]` for the corresponding workflow. Each notebook shows smaller ranges, background acquisition, Stop, and plotting.
+
+`sample["target"]["corrected"]` is the commanded coordinate; `sample["position"]["physical"]` is readback. Keep them distinct and let Rust convert/save the established CSV format. Add `matplotlib` to the same Python environment only when using `PLOT_RESULT = True`.
+
+To save CSV, specify `run(..., output="new_run.csv")`. Existing files are not overwritten. Before hardware use, review the displayed profile and plan, then explicitly change `HARDWARE`. Homing is not automatic.
+
+`run()` is synchronous, and concurrent acquisition jobs within one client are serialized. After a raw `move(...)` command, use `wait_for_finished()` to wait for completion.

@@ -20,3 +20,15 @@ ConfigをLoadすると、各測定につき1ファイルを自動選択します
 Kohdalab内部のDemoリポジトリへ配布するときだけ、公開リポジトリとは別の
 作業コピーでCSVを追加してください。同じGit履歴にCSVをコミットしてリモートだけ
 切り替える運用は、誤pushによる公開を防げないため使用しません。
+
+## English
+
+Place experimental CSV files used by the replay GUI in this directory. Filenames are unrestricted. The `measurement` column identifies TRKR, SRKR, STRKR, or SRKR 2D. Loading Config automatically selects one file per measurement.
+
+Required set: one CSV each for TRKR, SRKR, STRKR, and SRKR 2D.
+
+### Data handling
+
+The `*.csv` files here are experimental data and are excluded from Git in the public `woolen-yarn/kohdalab-trkr` repository by `.gitignore`.
+
+Only add CSVs in a separate working copy when distributing to the internal Kohdalab Demo repository. Do not commit them into the same Git history and merely switch remotes: that does not prevent accidental public pushes.

@@ -8,3 +8,12 @@
 Python/Jupyter access: [client guide](../../bindings/python/README.md) · [notebooks](../../notebook/).
 
 See [supported hardware](../reference/hardware.md) before physical operation.
+
+## 日本語
+
+1. アプリをインストールするか、portable版をフォルダーごと展開します。
+2. 実機接続前に、専用Demoアプリで合成データを試します。
+3. 確認済み設定を読み込み、機器・ポート・原点・校正・制限を確認してから接続します。
+4. 測定と保存先を選びます。CSVと`.run.json`は一緒に保管してください。
+
+Python/Jupyterからの利用：[クライアント](../../bindings/python/README.md)・[Notebook](../../notebook/)。実機操作の前に[対応機器](../reference/hardware.md)を参照してください。

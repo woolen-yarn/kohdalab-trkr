@@ -227,3 +227,122 @@ Remaining explicit interface differences:
   コード照合と疑似機器の成功を、そのまま装置の動作保証にはしない。
 
 監査JSON内の旧 `next/` パスは監査時点の記録です。[現行レイアウトへの対応表](../validation/compatibility-audit-layout.md)を参照してください。
+
+## 日本語 — アプリ・測定・互換性監査
+
+### ネイティブアプリと通信
+
+0.3.0でPython GUIと測定バックエンドをRustへ置き換えました。Pythonは任意の薄いNotebookクライアントだけに使います。外部USB-GPIB/VISA helperはC/C++で、REDISTRIBUTION.mdに記載しています。
+
+- ロックイン：SR5210・SR7265・SR830・LI5640。GPIB一次アドレス1–30。
+- 遅延コントローラー：SHOT302GS・GSC01/GSC01A。
+- スキャナ：CONEX-CC（TRA12CCを含む）・CONEX-AGAP。
+- Windowsでは選択リソースが列挙されればシステム64-bit VISAを使います。列挙はGPIB機器アドレスの走査ではありません。helperはコンソールを表示しません。VISAで失敗した操作をUSB-GPIBで再試行しません。
+- 独立helperはNI USB-GPIB-HS+と初期化済みAgilent 82357Bに対応します。許可された初期化と適切なアクセス・ドライバーが必要です。ファームウェアやドライバー導入プログラムは同梱しません。
+- MacではDevice設定で実際の`/dev/cu.*`を選びます。
+
+接続だけでは原点復帰・移動しません。実機に合わせてコントローラー、アクチュエータ、換算、ソフトウェアヒステリシス、方向、原点、制限を設定します。基準位置が確立されていない軸は、操作者が状態を解決するまでスキャンを開始できません。
+
+Initializeは操作ダイアログを開きます。遅延ステージとCONEX-CCは**Home & initialize**で機械原点復帰し、光学位置が変わります。CONEX-AGAPは閉ループを有効にします。その後どちらもPython GUIと同様、校正済み**機器原点**（遅延`t_ps=0`、スキャナ`x_um/y_um=0`）へ移動し、保存済みの実験原点には移動しません。Cancelでは機器を変更しません。機械原点復帰で基準を確立した後のゼロ移動は、保存済み測定原点を変更しません。低レベルJSON Initializeの`move_to_origin`は、明示指定がなければ`false`です。手動Moveは対象機器にMovingを表示し、実座標を約100 msごとに更新します（シリアル応答時間に依存）。Stopで中断できます。
+
+接続後はmicrostep分割から実効遅延ステップを読み取ります。接続前はfull-stepの推定値であると明示して表示します。
+
+### 測定と画面
+
+Configは機器欄のスクロール領域の上に固定します。左の矢印で設定パネルを収納・復元できます。右パネルは300論理pixelで固定し、ウィンドウを広げた際は中央だけが伸びます。タブ間で横幅は変わりません。Output・Run枠の外側と枠間は12 pixelです。
+
+未接続の機器見出しは`----`です。接続名のそばにMoving/Waiting/Readingを表示し、数値を置換しません。Stepは表示履歴の点数ではなく取得数/総数です。TRKRのツールバーでLinear・Log（正値のみ）を切り替えます。生信号とCSVは変わりません。ヒートマップは固定のPython RdBu 256色参照を使います。
+
+SRKRは最新X/YまたはU/Vを同時保持します。STRKRとSRKR 2Dは順序付きfast/slowペアごとに最新結果を保持し、過去のペアを選ぶとプロット、Step、Save Now用の記録CSVを復元します。再測定で置き換わるのは対象軸・ペアだけです。各結果の原点とthetaを使い、U/Vは保存thetaが選択角度と一致するときだけ表示します。theta変更で履歴を無制限に増やしません。Clear plotはそのタブの保持結果を消します。
+
+SRKR 2Dはx/yまたはu/vのみで、thetaはuの横に1つです。STRKRはtとx/y/u/vのいずれかを両順序で組み合わせます。取得前に目標と復帰経路を検証します。待機期限、移動後の取得、点ごとのCSV flushを維持します。XY/Rθモニターは、待機・移動・アイドルのいずれでも機器応答に応じて約100 msごとに新規取得します。表示用読取はCSVやStepに加算しません。保存用信号は待機後に取得し、待機終了間際は追加表示読取より測定を優先します。Stopは進行中のライブ応答を中断でき、中断した通信はロックイン接続を無効化して再接続を要求します。LI5640の表示選択途中の中断では、表示・出力設定の確認も要求します。
+
+### 読取専用Demo
+
+Windowsは`kohdalab-trkr-demo.exe`を起動するか、CSVを1つドロップします。MacはKohdaLab TRKR Demo.appを開きます。CSVを読み込み、Connect All（仮想）、Startを押します。Stopまで繰り返し、Wait=0で高速再生します。実機接続、移動、新規CSV記録、元CSV上書きはできません。配布例は合成データだけです。
+
+### Notebook・自動化
+
+stdio APIは1行1JSON命令です。標準ライブラリーだけのClientは`bindings/python`、シミュレーションを先に行う6つの例は`notebook/`にあります。`--profile-json FILE`はI/Oなしで設定を検証し機器と計画を出力します。`--stdio`はstate・phase・sample・live・error・finishedイベントを出力します。通知用phaseは非同期でブロックせず、liveは取得点に数えません。runは直列化され、別PythonスレッドからStopを送れます。
+
+### 検証と配布
+
+CIはGitHub runner上で管理ソースからアプリとhelperをビルドします。Windows portable・Setup、Mac ZIP・DMGにはソースとライセンスを同梱し、各環境にSHA256SUMSとBUILD-ORIGINを付けます。署名準備は`docs/development/windows-signing.md`を参照してください。
+
+移行中にシミュレーション、キャンセル、CSV再生、読取専用実機確認を行いました。基準未確立の実験室X軸は意図的に移動させていません。完全な実機スキャン検証は装置立上げ時に行う必要があります。リポジトリのテスト・配布ビルドに実機移動は不要です。
+
+### Python互換性監査 — 2026-10-21
+
+参照はPythonタグ`v0.2.0`、コミット`2ed1ed32ec141fd5eff49340aaad8a02b05e1ac0`です。取得、範囲計画、機器通信、設定解析、CSV、GUI初期化、任意のNotebook連携を比較しました。`tests/fixtures/python_measurement_reference.json`は、保存した純Pythonモジュールと実際の`output_row`から生成した範囲15ケースと測定行6ケースです。参照値を変えずRust側を修正しました。
+
+| 項目 | 結果 |
+| --- | --- |
+| 範囲 | 昇順・降順、端点がstepに一致しない場合、9桁丸めが固定Pythonケースと一致。 |
+| 直交2D順序 | slow移動完了後に空間fastの補償とスキャンを行う。各行を補償し、旧版の最初の点だけの挙動を拡張。行間の実験原点復帰はせず、任意のT-fast行リセットは保持。終了時はfast→slowで復帰。 |
+| 終了接近 | 有効なCONEX-CC補償を原点復帰にも適用し、全接近経路を事前検証。 |
+| 測定座標以外 | mm・degree・pulse入力でも実験原点復帰の意味を変えない。 |
+| 初期化 | GUIは基準確立・有効化後に校正済み機器原点へ移動。低レベルのno-home・no-origin指定では移動しない。 |
+| 設定 | 旧保存先・名前・suffix・単位別名をnested優先と機器単位確認で読み込む。機器・換算・補償別名をGUIの読込・保存で保持し、重複やGUI既定値への置換をしない。未知メタデータを保持し、測定座標設定で未使用スキャナを必須にしない。 |
+| CSV | 共通列、欠損値、数値表記が固定行と一致。U/V・theta・取得時間はRustの追加列。 |
+| Stop・エラー | Python同様に移動を停止し、自動復帰・再開しない。接近途中のStopでは後続ゼロ移動もしない。 |
+
+空間スキャンと終了復帰は、既存の`enabled`・`direction`に従います。`software_hysteresis.distance_um`1つをスキャン開始、空間fastの各行開始、許可された終了復帰に共用します。既定は**100 µm**で、既存設定の明示値は維持します。負方向接近は`line_start - distance_um → line_start → scan`、復帰は`experiment_zero - distance_um → experiment_zero`です。行間で実験原点には戻らず、補償前に未補償の行始点へ寄りません。slowは最初の移動を補償し、以後は行位置に従います。U/Vのfast接近はX/Y連動です。Python同様CONEX-AGAPは補償対象外です。全行の接近・復帰でtravel limitを事前確認します。開発中だけの`return_distance_um`は除去し、設定正規化で共通距離に集約します。私有設定や校正原点は読込・テストで書き換えません。
+
+GUI単独Move、Notebookの`Client.move()`、`approach`省略のnative Moveは設定済みX/Y補償を要求します。明示マスクは低レベルの上書きとして残します。TRKR・SRKR・STRKR・SRKR 2Dの全対応ペア（T-fast・U/Vを含む）の開始を確認しています。補償はスキャン・空間fast行の開始時で、各サンプルではありません。初期化後の機器原点移動も補償を要求し、機械原点復帰前に全接近経路を検証します。機械原点復帰自体は専用操作です。補償は有効なCONEX-CC設定が前提で、無効スキャナとCONEX-AGAPは変わりません。
+
+### 明示的なインターフェース差
+
+- GUIはロックイン`main`、ステージ`t`、X/Yスキャナの固定構成です。測定ごとの任意名・複数機器選択は未対応で、該当設定は接続前に拒否し、最初の要素へ勝手に切り替えません。
+- Notebookは`kohdalab_trkr.Client`とJSON経由です。旧`kohdalab.Experiment`・callback APIの差替え互換ではありません。`run(output=None)`では意図的にCSVを作らず、保存には出力パスが必要です。
+- U/VはRust拡張でX/Yが連動し、直交2Dの独立したモーター移動順序は適用しません。
+- GPIB失敗を別の読取命令で再試行せず接続無効とします。LI5640は表示を一時選択する前に全表示・出力状態の保存を必要とし、復元と通信安全性を保持します。
+- 遅延位置は検証済みのカンマ区切り応答を解析します。旧正規表現が許容した未文書化形式は、実応答なしで互換とは主張しません。監査で実機移動は行っておらず、移動・制限は装置ごとの検証が必要です。
+
+## English — full-source re-audit, 2026-10-21
+
+**Conclusion: complete compatibility with the Python version has not been reached.** Porting the main measurements is distinct from compatibility with every legacy API, profile, and GUI feature. The remaining items below prevent claims of “no missing ports” or “all hardware behavior verified.”
+
+Scope: all 50 files under `src/kohdalab` at `v0.2.0` (48 Python and 2 TOML), six notebooks, and an index of 35 legacy test files / 219 test functions. The [file/function inventory](../validation/python-compatibility-inventory.json) records Python SHA256 hashes, classes/functions and lines, Rust replacements, and classifications. It is not an automated proof of function-level equivalence, nor evidence that all 219 old tests were run unchanged against Rust. Distinguish current fake-device tests, frozen references, and source comparisons from checks requiring hardware.
+
+### Newly corrected profile omissions
+
+| Item | Reproduction and correction |
+| --- | --- |
+| Singular `measurement` | Python accepted this, but Rust ignored it. A synthetic profile with range17→23, step3 and zero=[123,45,67] became −50→300, step5 and zero=[0,0,0]. Loading now migrates it to canonical `measurements`; canonical wins if both exist, and malformed types are rejected. |
+| Manual Move device references | Device selection had been checked only for the five measurements, omitting `move_abs`. Alternate `delay_stage_key` / `scanner_keys` could silently use canonical devices. Manual Move now validates these and rejects unsupported selections before connection. An arbitrary-name/multiple-device registry itself is not ported. |
+
+### Remaining unported or incompatible items
+
+| Priority | Feature | Legacy evidence / current Rust behavior |
+| --- | --- | --- |
+| High | Old Advanced and older JSON import | `apps/trkr_gui_config.py::_extract_legacy_config` accepts root-level `lockin`, `xy_scanner`, `scanner1/2`, `delayline`, etc. Rust uses canonical `instruments`. Advanced fallbacks such as `srkr.zero`, `x/y.minimum/maximum`, `corrected_origin/offset/center`, and mm-based zero are not ported. Preserving unknown keys does not guarantee execution uses them. |
+| High | Arbitrary names, multiple devices, per-measurement selection | `api/session.py` and `device_requirements.py` provide named registries, reference aliases, and per-measurement selection. Rust fixes main/t/x/y. Unsupported explicit selections error rather than silently choosing another device; there is no equivalent registry. |
+| High | GUI return-to-zero toggles | Legacy standard/Advanced GUI had TRKR `Return to t zero` and SRKR `Return to origin` checkboxes. Rust GUI lacks them. JSON/native Plan `return_to_zero` is loaded, saved, and executed but cannot be edited in the GUI. |
+| High | Large-run plot retention | After `ui.rs::MAX_TRACE=50_000`, Rust drops early display points. CSV remains, but long 1D/large 2D plots and retained histories do not retain every acquired point. Python retained measurement rows. |
+| Medium | GUI coordinate-system switching | Advanced GUI supported measurement/interface/instrument for Move/TRKR/SRKR. Rust Plan/JSON handles 1D raw coordinates without the equivalent GUI switch. GUI unit labels for loaded raw profiles need dedicated acceptance checks. |
+| Medium | Old Notebook API | `kohdalab.api.Experiment`, `DeviceSession`, typed Position/MeasurementPoint, `on_point`/`on_status`/`should_continue`, `required_devices`/`missing_devices`, and `auto_connect=False` do not exist as the same Client API. Events/Stop replace some uses, but old notebooks do not run unchanged. |
+| Medium | Nonuniform points | Legacy `run_trkr/run_srkr(scan_points=..., target_points=...)` accepts arbitrary point sequences. Rust Plan provides uniform min/max/step ranges without that entry point. |
+| Medium | Notebook live-plot helpers | `api/notebook.py::make_*_live_update` and typed point callbacks are not ported. New notebooks provide background threads and result plots, without compatibility with those helpers. Raw Client event subscriptions can be implemented separately. |
+| Medium | Stage maintenance API | SHOT302/GSC01 `execute_drive`, `set_logical_zero`, `set_excitation`, `jog`, speed/acceleration `set_speed`, `query_internal/write_internal`, `query_sensor_status`, and debug communication lack native public APIs. They are distinct from normal absolute move/home/stop. |
+| Medium | GSC01A emergency-stop API | Old `gsc01a.py::immediate_stop()` uses `L:E`, distinct from normal `L:{axis}`. Rust implements normal Stop without a separate immediate_stop command. |
+| Medium | Relative moves and preset enumeration | No public equivalent of legacy driver/interface relative moves or `list_stages/list_actuators`. Calibration/presets exist internally, and current position plus absolute move can approximate the operation, but this is not old-API compatibility. |
+| Medium | Old CLI and diagnostic GUI | `kohdalab-cli --config ... trkr/srkr/.../move-abs` and separate `trkr_gui_test.py` are not ported. Native stdio and the main GUI replace some functions without command/window compatibility. |
+| Medium | Profile search and last-path state | Search for `KOHDALAB_CONFIG`, `KOHDALAB_DEFAULT_CONFIG`, `KOHDALAB_STATE_DIR`, `KOHDALAB_LAST_CONFIG_STATE_PATH`, and `last_config.json` differs. Client uses `TRKR_PROFILE/TRKR_BINARY`; GUI uses its dedicated user settings path. |
+| Medium | Plot-image export and standard controls | Equivalent pyqtgraph context-menu Export and per-plot settings are missing. Rust supports zoom/pan, TRKR log, Clear, CSV replay but no user-facing image export. Distinguish library-provided features from explicitly implemented legacy features. |
+| Medium | Stage direction=-1 | Legacy standard GUI accepts −1..1; conversion treats nonzero values with the same sign. Rust accepts only0/1 and rejects −1. Rejection was reproduced on a synthetic profile; no silent sign change was made. |
+| Medium | Exact CSV identity | New CSV adds columns/fixed header and uses UTC RFC3339 timestamps rather than local naive ISO milliseconds. Signal Monitor `elapsed_s` was scheduled time, now actual elapsed time. Old 1D with omitted zero could leave corrected fields empty; new Plan assumes numeric zero=0. Six frozen rows do not cover these differences. |
+| Medium | Point counts in long ranges | Python accumulates floats; Rust uses index×step. −30→30 at .001 gives60000 old versus60001 new points. Old0→100 at .001 gives100000; new100001 exceeds Rust's axis limit and is rejected. Matching15 frozen cases does not prove all ranges identical. Whether to reproduce legacy rounding error is a separate decision. |
+| Medium | Native Replay command | GUI Replay CSV opens Demo using `replay_data.rs`. Stdio `engine.rs::replay` has a separate parser differing for Y-only fast columns, 2D lines, U/V, etc. Unifying these is a Rust-internal issue, distinct from Python parity. |
+| Low | Read Live, shared-port and actuator UI | Automatic updates replace manual Read Live. No shared-XY-port toggle exists, but MotionRig shares serial communication when ports match. Actuator candidates changed from ComboBox to free text, reducing input assistance. |
+
+### Intentional changes and validation scope
+
+- Portable connections are GPIB-based as requested, not fully compatible with arbitrary old VISA resources.
+- Settings, units, and normal measurement operations were compared for four lock-ins (SR830/SR7265/SR5210/LI5640), three delay controllers (SHOT302GS/GSC01/GSC01A), and two scanners (CONEX-CC/CONEX-AGAP). This does not imply all maintenance APIs or physical testing of every model.
+- Shared calibration for four stage and two actuator presets matches legacy TOML. Text hashes differ due to comments/formatting; old stage `pos_unit="pulse"` is omitted in current assets.
+- Per-line spatial-fast compensation, U/V, readback during Moving,100 ms live reads, and invalidation after interrupted communication are new behavior. Returns and compensation share one distance; no experiment-zero return occurs between lines.
+- CSV overwrite changed from Python overwrite to Rust refusal; `.run.json` is additional metadata. Native `run(output=None)` does not autosave, unlike the old default.
+- Stop does not start a subsequent return. Range checks, GPIB invalidation, and stricter LI5640 save/restore remain.
+- Physical movement, homing, sensors, travel limits, and actual model replies were not tested in this re-audit. Source comparisons and fake-device success do not guarantee apparatus behavior.
+
+The old `next/` paths in the JSON identify the historical audit layout. See [current-path mapping](../validation/compatibility-audit-layout.md).
