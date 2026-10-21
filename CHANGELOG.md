@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.3 — 2026-10-21
+
+- Make manual-position polling verification deterministic under slow CI scheduling, including a delayed-ready case.
+- Include the motion/live-display/configuration fixes listed below. Version 0.3.2 did not publish binaries because its timing-dependent test failed on CI.
+
 ## 0.3.2 — 2026-10-21
 
 - Audit all 50 legacy runtime source files and index 219 legacy test functions; document remaining GUI, profile, plotting, maintenance and Notebook API gaps.

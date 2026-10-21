@@ -63,7 +63,7 @@ os.environ["TRKR_PROFILE"] = "D:/Lab/config/kim.json"
 
 ## 旧Notebookからの移行
 
-旧 `kohdalab.api.Experiment` と新クライアントは同じAPIではありません。既存の実験Notebookはコピーを作り、まず同梱の対応するNotebookでシミュレーションを確認してください。JSONはcanonicalな`instruments`／`measurements`形式が対象です。任意名の機器選択や旧Advanced形式など、未互換の設定も残っています。[互換性監査](https://github.com/woolen-yarn/kohdalab-trkr/blob/v0.3.2/docs/trkr_portable_rust.md)に残件を記載しています。測定CSVは専用Demoで読めますが、旧APIや保存形式全体の厳密な同一性を保証するものではありません。
+旧 `kohdalab.api.Experiment` と新クライアントは同じAPIではありません。既存の実験Notebookはコピーを作り、まず同梱の対応するNotebookでシミュレーションを確認してください。JSONはcanonicalな`instruments`／`measurements`形式が対象です。任意名の機器選択や旧Advanced形式など、未互換の設定も残っています。[互換性監査](https://github.com/woolen-yarn/kohdalab-trkr/blob/v0.3.3/docs/trkr_portable_rust.md)に残件を記載しています。測定CSVは専用Demoで読めますが、旧APIや保存形式全体の厳密な同一性を保証するものではありません。
 
 | 旧Notebookの役割 | Rust版での置き換え |
 | --- | --- |
