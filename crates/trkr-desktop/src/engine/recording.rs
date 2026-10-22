@@ -73,6 +73,37 @@ impl Recording {
         self.audit.flush().map_err(|e| e.to_string())
     }
 
+    /// Count a flushed CSV row before persisting its later completion event.
+    /// The completion time cannot truthfully be embedded in the row just written.
+    pub(super) fn write_sample(
+        &mut self,
+        plan: &Plan,
+        sample: &Sample,
+        origin: std::time::Instant,
+        point_index: usize,
+        rows: &mut usize,
+    ) -> Result<(), String> {
+        let (result, window, _) = super::timing::observe(origin, || {
+            self.write_record(row(plan, sample)?)
+                .map_err(|error| error.to_string())?;
+            self.flush().map_err(|error| error.to_string())
+        });
+        if result.is_ok() {
+            *rows += 1;
+        }
+        let audit = self.append_audit(&serde_json::json!({
+            "event":"csv_write", "point_index":point_index,
+            "status":if result.is_ok() { "ok" } else { "error" },
+            "timing":window, "error":result.as_ref().err(),
+        }));
+        match (result, audit) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(audit)) => Err(format!("{error}; record CSV write timing: {audit}")),
+        }
+    }
+
     /// Attach immutable run context without rewriting the audit history.
     pub(super) fn set_context(&mut self, context: &Value) -> Result<(), String> {
         let mut metadata: Value =
@@ -128,7 +159,7 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
         "plan": plan, "timestamp": utc_now()?,
         "schema_version": 2,
-        "recording_revision": 3,
+        "recording_revision": 4,
         "coordinate_policy": {
             "readback_fields": "all_available_axes; missing readings stay empty",
             "rotated_origin": "measurement_zero_xy",
@@ -139,7 +170,13 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "csv_scientific_fields": ["X_V", "Y_V", "R_V"],
         "other_numeric_fields": "shortest_roundtrip_python_compatible",
         "precision_policy": "no_accuracy_claim",
-        "readings_schema_version": 1,
+        "readings_schema_version": 2,
+        "timing_policy": {
+            "clock": "host UTC labels and monotonic elapsed seconds; device timestamp unknown",
+            "csv_timestamp": "signal read completion; empty when unavailable",
+            "position": "aggregate position read window before signal read",
+            "csv_write": "separate audit event; completion after CSV flush, not per-row fsync",
+        },
         "readings_file": readings_path.file_name().and_then(|name| name.to_str())
             .ok_or_else(|| "Readings filename must be valid UTF-8".to_string())?,
     });
@@ -324,7 +361,15 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
     let mut result = vec![String::new(); FIELDS.len()];
     let mut put =
         |key: &str, value: String| result[FIELDS.iter().position(|&k| k == key).unwrap()] = value;
-    put("timestamp", utc_now()?);
+    put(
+        "timestamp",
+        sample
+            .timing
+            .signal
+            .as_ref()
+            .and_then(|window| window.finished_at.clone())
+            .unwrap_or_default(),
+    );
     put("measurement", plan.workflow.key().into());
     put("acquisition_elapsed_s", csv_float(sample.elapsed));
     let monitor = plan.workflow == Workflow::SignalMonitor;
@@ -442,6 +487,37 @@ mod tests {
     }
 
     #[test]
+    fn csv_row_is_counted_when_later_timing_audit_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.csv");
+        let plan = Plan::default();
+        let mut recording = create_csv(&path, Source::Demo, &plan).unwrap();
+        recording.audit =
+            BufWriter::new(File::open(path.with_extension("readings.jsonl")).unwrap());
+        let sample = Sample {
+            timing: Default::default(),
+            captured_at: None,
+            elapsed: 0.0,
+            target: plan.targets().unwrap()[0],
+            signal: Signal::demo(0.0, 0.0, 0.0),
+            position: Position::default(),
+        };
+        let mut rows = 0;
+        assert!(
+            recording
+                .write_sample(&plan, &sample, std::time::Instant::now(), 1, &mut rows)
+                .is_err()
+        );
+        assert_eq!(rows, 1);
+        let mut reader = csv::Reader::from_path(path).unwrap();
+        let record = reader.records().next().unwrap().unwrap();
+        assert_eq!(
+            &record[0], "",
+            "unknown acquisition time must not become export time"
+        );
+    }
+
+    #[test]
     fn metadata_includes_precision_and_audit_schemas() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("run.csv");
@@ -455,7 +531,7 @@ mod tests {
             "shortest_roundtrip_scientific"
         );
         assert_eq!(metadata["precision_policy"], "no_accuracy_claim");
-        assert_eq!(metadata["readings_schema_version"], 1);
+        assert_eq!(metadata["readings_schema_version"], 2);
         assert_eq!(metadata["readings_file"], "run.readings.jsonl");
         assert!(metadata.get("plan").is_some());
         assert!(metadata.get("source").is_some());
@@ -550,6 +626,7 @@ mod tests {
     fn row_rejects_nonfinite_raw_lockin_voltage() {
         let plan = Plan::default();
         let mut sample = Sample {
+            timing: Default::default(),
             captured_at: None,
             elapsed: 0.0,
             target: plan.targets().unwrap()[0],
@@ -566,6 +643,7 @@ mod tests {
     fn monitor_retains_components_without_inventing_positions() {
         let p = Plan::default();
         let sample = Sample {
+            timing: Default::default(),
             captured_at: None,
             elapsed: 1.,
             target: p.targets().unwrap()[0],
@@ -585,6 +663,7 @@ mod tests {
             ..Default::default()
         };
         let sample = Sample {
+            timing: Default::default(),
             captured_at: None,
             elapsed: 0.,
             target: p.targets().unwrap()[0],
@@ -604,6 +683,7 @@ mod tests {
     }
     fn test_sample(plan: &Plan, physical: [Option<f64>; 3]) -> Sample {
         Sample {
+            timing: Default::default(),
             captured_at: None,
             elapsed: 0.0,
             target: plan.targets().unwrap()[0],

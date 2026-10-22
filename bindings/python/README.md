@@ -10,7 +10,7 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 `.readings.jsonl`をCSVと一緒に保管してください。装置応答の文字列を保持し、
 不明な分解能・不確かさを推測しません。桁数は物理的な精度の保証ではありません。
 `PROFILE_COMPATIBILITY_REVISION`と`JSON_LINES_API_REVISION`は`1`、
-`RECORDING_COMPATIBILITY_REVISION`は`3`です。既存設定と旧CSVは引き続き読み取れます。
+`RECORDING_COMPATIBILITY_REVISION`は`4`です。既存設定と旧CSVは引き続き読み取れます。
 旧CSVで丸められた桁は復元できません。
 0.3.6から固定軸の読取も保存し、U/Vの指令値と実読取を区別します。[座標の保存](../../docs/reference/measurement-integrity.md)を参照してください。
 
@@ -106,7 +106,7 @@ text round-trips the acquired f64 value. Keep `.run.json` and `.readings.jsonl`
 with the CSV: raw instrument response text is retained; unknown resolution and
 uncertainty remain unknown. Digit count does not certify physical accuracy.
 `PROFILE_COMPATIBILITY_REVISION` and `JSON_LINES_API_REVISION` remain `1`;
-`RECORDING_COMPATIBILITY_REVISION` is `3`. Existing profiles and old CSV files
+`RECORDING_COMPATIBILITY_REVISION` is `4`. Existing profiles and old CSV files
 remain readable. Digits already rounded out of old CSV files cannot be recovered.
 From 0.3.6, available fixed-axis readings are saved and commanded U/V is separated from measured U/V. See [coordinate recording](../../docs/reference/measurement-integrity.md).
 

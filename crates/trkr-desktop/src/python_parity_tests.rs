@@ -130,6 +130,7 @@ fn sample(case: &serde_json::Map<String, Value>) -> Sample {
     });
     let target_physical = fallback_physical.map(Option::unwrap_or_default);
     Sample {
+        timing: Default::default(),
         captured_at: None,
         elapsed: number(sample, "elapsed_s"),
         target: Target {

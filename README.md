@@ -28,7 +28,7 @@ Synthetic TRKR data; no instruments connected. The same interface is used on Win
 
 | Channel / 配布区分 | Version / バージョン | Platforms / 対応環境 |
 | --- | --- | --- |
-| Stable / 安定版 | [0.3.6](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.3.6) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
+| Stable / 安定版 | [0.3.7](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.3.7) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
 
 Rust and Python are not required to run the packaged application. Current Windows
 artifacts are unsigned; download packages and checksums together from Releases.

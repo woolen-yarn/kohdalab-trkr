@@ -1206,6 +1206,7 @@ impl App {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(i, target)| Sample {
+                                    timing: Default::default(),
                                     captured_at: None,
                                     elapsed: i as f64 * 0.01,
                                     signal: trkr_core::Signal::demo(

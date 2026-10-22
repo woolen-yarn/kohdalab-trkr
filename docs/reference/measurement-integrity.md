@@ -35,6 +35,34 @@ existing CSVs are not rewritten. CSV column names stay unchanged.
 
 U/Vスキャンでは`target_u_cor_um`・`target_v_cor_um`が指令値です。回転移動はX/Y両軸を指令するため、走査しない回転軸の目標も明示的に0とします。`u_cor_um`・`v_cor_um`には実際の補正済みX/Y読取を上式で逆回転した値を保存します。両方の読取が必要で、欠けた読取を指令値で埋めません。X/Y走査ではU/V指令値を捏造しませんが、両軸を読めれば実測U/Vを記録します。角度は`spatial_theta_deg`、原点は`.run.json`の`plan.zero`で確認できます。U/V再生は指令値で行を区別し、実際のX/Y読取も保持します。0.3.5以前の`u_cor_um`・`v_cor_um`は指令値由来でした。既存CSVの書換えと列名の変更は行いません。
 
+## Replay grids and acquisition times (0.3.7, revision 4) / 再生グリッドと取得時刻
+
+All 2D workflows prefer explicit commanded targets for both scan axes, including
+T/X/Y and U/V. Equal targets form one scan line even when actual positions drift;
+distinct targets are retained even below 1e-9. Actual physical readbacks remain
+available separately. Older CSVs without targets use the previous best-effort
+readback grouping, so their intended grid cannot always be recovered.
+
+全2D測定はT/X/Y・U/Vとも両走査軸の指令値を優先してグリッドを復元します。実読取が揺れても同じ指令値は同じ行となり、1e-9未満の異なる指令値も区別します。実際の機器読取は別に保持します。指令値のない旧CSVは従来の読取による推定に戻るため、意図したグリッドを必ず復元できるわけではありません。
+
+CSV `timestamp` now labels signal-read completion on the host, captured before
+provenance serialization and storage. `acquisition_elapsed_s` uses the matching
+monotonic completion observation. UTC and monotonic clocks are read adjacently
+before formatting; these are host observations, not simultaneous device clocks.
+Earlier releases labeled CSV formatting time.
+Unknown acquisition timestamps stay empty. Audit schema 2 adds `timing.position`
+and `timing.signal` windows to reading events and a separate `csv_write` event
+per attempted row. Each window has `host_started_at_utc`, `host_completed_at_utc`,
+`host_started_elapsed_s`, `host_completed_elapsed_s` and null
+`device_timestamp_utc`. Position timing covers the existing aggregate read
+before signal acquisition; it does not imply simultaneous position/signal
+sampling. Signal timing covers the logical lock-in read, which can contain
+multiple commands. CSV-write completion follows a successful buffer flush,
+not a per-row disk sync. Missing position windows mean no position read occurred.
+Simulation timings are host timings for synthetic signals, never device clocks.
+
+CSVの`timestamp`は監査の整形・保存前に取得したホスト側の信号読取完了時刻です。`acquisition_elapsed_s`も同じ完了点の単調時計を使います。従来版はCSV整形時刻でした。取得時刻が不明なら空欄です。監査schema 2では読取イベントに`timing.position`・`timing.signal`、各行の書込試行に`csv_write`を追加し、上記のUTC開始・完了と単調経過秒を記録します。`device_timestamp_utc`は不明を表すnullです。位置の時間窓は信号前の既存の一括読取を表し、信号との同時取得を意味しません。信号の時間窓は複数コマンドを含み得るロックイン読取全体です。CSV完了はバッファー排出後で、各行のディスク同期ではありません。位置窓がない場合は位置照会をしていません。シミュレーションも合成信号のホスト時刻として扱います。
+
 ## Keep three files / 3ファイルを保管
 
 Keep `name.csv`, `name.run.json`, and `name.readings.jsonl` together. The JSONL
