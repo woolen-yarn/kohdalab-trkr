@@ -30,10 +30,11 @@ flushed; finalization syncs both streams. This does not guarantee survival of
 an abrupt power loss. Retain partial files after an error: a raw successful
 reading may exist even if writing its CSV row failed. Save Now copies only
 complete CSV lines and matching audit points into a new snapshot, with sidecars.
+Copies of finalized failed runs also retain raw attempts whose CSV write failed.
 No extra device query or change to scaling, motion, waits or limits is introduced.
 Audit I/O adds storage work and is included in measured elapsed time.
 
-既存ファイルは上書きしません。各点で書込バッファーを排出し、終了時に両ファイルを同期しますが、突然の停電に対する完全な保証ではありません。エラー時は部分ファイルを保持してください。CSV行の書込が失敗しても、その前の正常な生読取が残る場合があります。Save Nowは完全なCSV行と対応する監査点を付属ファイルごと新たなスナップショットへコピーします。機器への追加照会、換算、移動、待機、制限の変更はありません。監査用の保存処理は実測経過時間に含まれます。
+既存ファイルは上書きしません。各点で書込バッファーを排出し、終了時に両ファイルを同期しますが、突然の停電に対する完全な保証ではありません。エラー時は部分ファイルを保持してください。CSV行の書込が失敗しても、その前の正常な生読取が残る場合があります。Save Nowは完全なCSV行と対応する監査点を付属ファイルごと新たなスナップショットへコピーします。終了済みの失敗runでは、CSV書込が失敗した読取の生記録も保持します。機器への追加照会、換算、移動、待機、制限の変更はありません。監査用の保存処理は実測経過時間に含まれます。
 
 Existing profiles, Notebook commands and old CSV playback remain supported.
 Old fixed-seven-digit CSV exports cannot recover discarded digits. Calibration,

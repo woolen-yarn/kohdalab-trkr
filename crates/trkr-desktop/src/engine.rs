@@ -1147,7 +1147,14 @@ impl Session {
                         .map(String::as_str)
                         .unwrap_or("Cancelled")
                 ));
-            } else if cancel.load(Ordering::Acquire) {
+            } else if cancel.load(Ordering::Acquire)
+                && result
+                    .as_ref()
+                    .err()
+                    .is_none_or(|error| error == "motion cancelled")
+            {
+                // A Stop request only clears the expected motion cancellation;
+                // it must not hide a concurrent instrument or recording failure.
                 result = Ok(());
             }
         }

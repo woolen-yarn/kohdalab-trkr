@@ -3470,7 +3470,17 @@ fn copy_complete_csv(
     let (csv, rows) = stage_complete_csv(source, parent)?;
     let audit = source_audit_path
         .as_deref()
-        .map(|path| stage_complete_audit(path, parent, rows))
+        .map(|path| {
+            stage_complete_audit(
+                path,
+                parent,
+                rows,
+                !run_active
+                    && metadata
+                        .as_ref()
+                        .is_some_and(|value| value["status"] == "error"),
+            )
+        })
         .transpose()?;
     let metadata = metadata
         .as_mut()
@@ -3562,6 +3572,7 @@ fn stage_complete_audit(
     source: &std::path::Path,
     parent: &std::path::Path,
     csv_rows: usize,
+    preserve_failed_attempts: bool,
 ) -> Result<tempfile::NamedTempFile, String> {
     use std::io::{BufRead, Read, Write};
     let input = std::fs::File::open(source).map_err(|e| e.to_string())?;
@@ -3584,7 +3595,9 @@ fn stage_complete_audit(
         }
         let record: Value = serde_json::from_slice(&line)
             .map_err(|error| format!("Save snapshot audit: {error}"))?;
-        if audit_record_is_in_snapshot(&record, csv_rows) {
+        // A finalized failed run may have a valid raw reading whose CSV write
+        // failed. Preserve that evidence even though there is no matching row.
+        if preserve_failed_attempts || audit_record_is_in_snapshot(&record, csv_rows) {
             temporary.write_all(&line).map_err(|e| e.to_string())?;
         }
     }

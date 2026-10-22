@@ -781,3 +781,19 @@ fn save_now_omits_terminal_event_from_later_source_completion() {
         10
     ));
 }
+
+#[test]
+fn save_now_keeps_unsaved_raw_reading_from_a_finalized_failed_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("failed.csv");
+    let destination = dir.path().join("copy.csv");
+    std::fs::write(&source, "X_V\n1e-6\n").unwrap();
+    std::fs::write(source.with_extension("run.json"), serde_json::to_vec(&json!({"schema_version":2,"status":"error","rows":1,"readings_file":"failed.readings.jsonl"})).unwrap()).unwrap();
+    let evidence = "{\"event\":\"reading\",\"point_index\":2,\"status\":\"ok\",\"raw\":\"1.23000000000001e-6\"}\n";
+    std::fs::write(source.with_extension("readings.jsonl"), evidence).unwrap();
+    copy_complete_csv(&source, &destination, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap(),
+        evidence
+    );
+}
