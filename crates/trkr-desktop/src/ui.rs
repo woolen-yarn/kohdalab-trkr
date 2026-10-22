@@ -3596,6 +3596,16 @@ fn stage_complete_audit(
 }
 
 fn audit_record_is_in_snapshot(record: &Value, csv_rows: usize) -> bool {
+    // The source can finish after the CSV length was captured. Do not attach
+    // a later terminal count to an earlier snapshot of complete CSV rows.
+    if record.get("event").and_then(Value::as_str) == Some("finished")
+        && record
+            .get("rows")
+            .and_then(Value::as_u64)
+            .is_some_and(|rows| rows > csv_rows as u64)
+    {
+        return false;
+    }
     let Some(point_index) = record.get("point_index").and_then(Value::as_u64) else {
         // Context, schema/header, and other non-point provenance describe the
         // complete snapshot regardless of the current acquisition row.

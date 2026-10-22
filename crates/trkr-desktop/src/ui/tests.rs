@@ -769,3 +769,15 @@ fn private_eta_clock_does_not_change_sample_json_contract() {
     let restored: Sample = serde_json::from_value(original).unwrap();
     assert!(restored.captured_at.is_none());
 }
+
+#[test]
+fn save_now_omits_terminal_event_from_later_source_completion() {
+    assert!(!audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":20, "status":"complete"}),
+        10
+    ));
+    assert!(audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":10, "status":"complete"}),
+        10
+    ));
+}
