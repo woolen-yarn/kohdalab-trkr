@@ -467,6 +467,7 @@ struct Session {
     gpib: Option<Gpib>,
     rig: Option<MotionRig>,
     config: Option<HardwareConfig>,
+    lockin_context: Option<Value>,
     state: Snapshot,
 }
 impl Session {
@@ -478,6 +479,7 @@ impl Session {
             self.state.signal_origin = None;
             self.state.transport.clear();
             self.state.lockin = Value::Null;
+            self.lockin_context = None;
             return true;
         }
         false
@@ -490,6 +492,7 @@ impl Session {
                 .as_ref()
                 .is_none_or(|c| c.model != config.model || c.address != config.address);
             if changed {
+                self.lockin_context = None;
                 self.gpib = None;
                 self.state.devices[0] = false;
             }
@@ -588,6 +591,7 @@ impl Session {
                     self.state.signal = None;
                     self.state.signal_origin = None;
                     self.state.lockin = Value::Null;
+                    self.lockin_context = None;
                 }
                 if mask[1..] != self.state.devices[1..] {
                     self.rig = None;
@@ -685,11 +689,18 @@ impl Session {
                 return Ok(output);
             }
             Command::LockinSettings => {
+                self.lockin_context = None;
                 let model = self.config.as_ref().ok_or("Connect a lock-in first")?.model;
                 self.state.lockin =
                     lockin::settings(self.gpib.as_mut().ok_or("Connect a lock-in first")?, model)?;
+                self.lockin_context = Some(serde_json::json!({
+                    "value": self.state.lockin,
+                    "observed_at": recording::utc_now().ok(),
+                    "qualification": "previous_settings_query_not_requeried_at_acquisition",
+                }));
             }
             Command::SetLockin { setting, value } => {
+                self.lockin_context = None;
                 let setting = match setting.as_str() {
                     "sensitivity" => "Sensitivity",
                     "time_constant" => "Time Constant",
@@ -707,6 +718,7 @@ impl Session {
                 )?;
             }
             Command::AutoLockin { action } => {
+                self.lockin_context = None;
                 let model = self.config.as_ref().ok_or("Connect a lock-in first")?.model;
                 lockin::auto(
                     self.gpib.as_mut().ok_or("Connect a lock-in first")?,
@@ -805,6 +817,46 @@ impl Session {
         // Status must never delay motion, settling, or the acquisition itself.
         let _ = send.try_send(Event::Phase(self.state.phase.clone()));
     }
+
+    fn recording_context(&self, source: Source, configured: &HardwareConfig) -> Value {
+        let mut context = serde_json::Map::new();
+        context.insert("source".into(), serde_json::json!(source));
+        context.insert("configured_hardware".into(), serde_json::json!(configured));
+        context.insert(
+            "transport".into(),
+            if self.state.transport.is_empty() {
+                Value::Null
+            } else {
+                serde_json::json!(self.state.transport)
+            },
+        );
+        context.insert("resolution".into(), Value::Null);
+        context.insert("uncertainty".into(), Value::Null);
+        if let Source::Gpib { model, address } = source {
+            context.insert(
+                "lockin".into(),
+                serde_json::json!({
+                    "configured_model": model.name(),
+                    "configured_address": address,
+                    "model_qualification": "configured_not_verified_by_idn",
+                }),
+            );
+        }
+        if matches!(source, Source::Gpib { .. })
+            && let Some(settings) = &self.lockin_context
+        {
+            context.insert("cached_lockin_settings".into(), settings.clone());
+        }
+        Value::Object(context)
+    }
+
+    fn append_recording_error(result: &mut Result<(), String>, label: &str, error: String) {
+        *result = match result {
+            Ok(()) => Err(format!("{label}: {error}")),
+            Err(original) => Err(format!("{original}; {label}: {error}")),
+        };
+    }
+
     fn acquire(
         &mut self,
         source: Source,
@@ -814,6 +866,7 @@ impl Session {
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
+        let requested_config = config.clone();
         let targets = plan.targets()?;
         if matches!(source, Source::Gpib { .. })
             && plan.workflow == Workflow::SignalMonitor
@@ -888,6 +941,12 @@ impl Session {
             }
         }
         let mut csv = output.map(|p| create_csv(p, source, plan)).transpose()?;
+        let context_config = self.config.as_ref().unwrap_or(&requested_config);
+        let context_result = csv
+            .as_mut()
+            .map(|recording| recording.set_context(&self.recording_context(source, context_config)))
+            .transpose()
+            .map(|_| ());
         self.state.total = targets.len();
         self.state.rows = 0;
         self.state.phase = Phase::Measuring.into();
@@ -897,132 +956,182 @@ impl Session {
             self.state.position = Position::default();
             self.live.started = start;
         }
-        let mut result = (|| {
-            for (index, target) in targets.iter().enumerate() {
-                if cancel.load(Ordering::Acquire) {
-                    return Ok(());
-                }
-                if plan.workflow != Workflow::SignalMonitor {
-                    let phase = if plan.workflow.is_2d()
-                        && (index == 0 || target.line != targets[index - 1].line)
-                    {
-                        Phase::moving([plan.fast, plan.slow])
-                    } else {
-                        Phase::moving([plan.fast])
-                    };
-                    self.set_phase(phase, send);
-                }
-                if matches!(source, Source::Gpib { .. }) && plan.workflow != Workflow::SignalMonitor
-                {
-                    if index > 0
-                        && target.line != targets[index - 1].line
-                        && reset_fast_before_slow(plan)
-                    {
-                        let reset = line_reset(plan, &targets[index - 1]);
-                        let rig = self
-                            .rig
-                            .as_ref()
-                            .ok_or(OperationError::MotionDisconnected)?;
-                        let reset =
-                            rig.to_physical(reset, coordinate_name(plan.coordinate), plan.zero)?;
-                        rig.validate_targets(&[reset])?;
-                        self.move_live(reset, [false; 3], cancel, send)?;
+        let acquisition_started = context_result.is_ok();
+        let mut result = context_result.and_then(|()| {
+            (|| {
+                for (index, target) in targets.iter().enumerate() {
+                    if cancel.load(Ordering::Acquire) {
+                        return Ok(());
                     }
-                    let first = index == 0 || target.line != targets[index - 1].line;
-                    for movement in scan_moves(plan, physical[index], first, index == 0) {
-                        self.set_phase(Phase::moving([movement.axis]), send);
-                        self.move_live(movement.target, movement.approach, cancel, send)?;
-                    }
-                } else if plan.workflow != Workflow::SignalMonitor {
-                    self.state.position.physical = physical[index];
-                }
-                if matches!(source, Source::Demo) {
-                    self.live.demo_coordinates = if plan.workflow == Workflow::SignalMonitor {
-                        [None; 3]
-                    } else {
-                        target.corrected.map(Some)
-                    };
-                }
-                let due = if plan.workflow == Workflow::SignalMonitor {
-                    start + Duration::from_secs_f64(index as f64 * plan.interval_s)
-                } else {
-                    Instant::now() + Duration::from_secs_f64(plan.interval_s)
-                };
-                self.set_phase(Phase::Waiting, send);
-                if !self.wait_live(due, source, cancel, send)? {
-                    return Ok(());
-                }
-                self.set_phase(Phase::Reading, send);
-                let signal = match source {
-                    Source::Gpib { model, .. } => {
-                        if let Some(rig) = &mut self.rig {
-                            self.state.position = rig.position()?;
-                        }
-                        lockin::read(
-                            model,
-                            self.gpib
-                                .as_mut()
-                                .ok_or(OperationError::LockinDisconnected)?,
-                        )?
-                    }
-                    Source::Demo => Signal::demo(
-                        if plan.workflow == Workflow::SignalMonitor {
-                            start.elapsed().as_secs_f64() * 10.
+                    if plan.workflow != Workflow::SignalMonitor {
+                        let phase = if plan.workflow.is_2d()
+                            && (index == 0 || target.line != targets[index - 1].line)
+                        {
+                            Phase::moving([plan.fast, plan.slow])
                         } else {
-                            target.corrected[0]
-                        },
-                        target.corrected[1],
-                        target.corrected[2],
-                    ),
-                };
-                let sample = Sample {
-                    captured_at: Some(Instant::now()),
-                    elapsed: start.elapsed().as_secs_f64(),
-                    target: *target,
-                    signal,
-                    position: if matches!(source, Source::Demo)
-                        && plan.workflow == Workflow::SignalMonitor
+                            Phase::moving([plan.fast])
+                        };
+                        self.set_phase(phase, send);
+                    }
+                    if matches!(source, Source::Gpib { .. })
+                        && plan.workflow != Workflow::SignalMonitor
                     {
-                        Position::default()
+                        if index > 0
+                            && target.line != targets[index - 1].line
+                            && reset_fast_before_slow(plan)
+                        {
+                            let reset = line_reset(plan, &targets[index - 1]);
+                            let rig = self
+                                .rig
+                                .as_ref()
+                                .ok_or(OperationError::MotionDisconnected)?;
+                            let reset = rig.to_physical(
+                                reset,
+                                coordinate_name(plan.coordinate),
+                                plan.zero,
+                            )?;
+                            rig.validate_targets(&[reset])?;
+                            self.move_live(reset, [false; 3], cancel, send)?;
+                        }
+                        let first = index == 0 || target.line != targets[index - 1].line;
+                        for movement in scan_moves(plan, physical[index], first, index == 0) {
+                            self.set_phase(Phase::moving([movement.axis]), send);
+                            self.move_live(movement.target, movement.approach, cancel, send)?;
+                        }
+                    } else if plan.workflow != Workflow::SignalMonitor {
+                        self.state.position.physical = physical[index];
+                    }
+                    if matches!(source, Source::Demo) {
+                        self.live.demo_coordinates = if plan.workflow == Workflow::SignalMonitor {
+                            [None; 3]
+                        } else {
+                            target.corrected.map(Some)
+                        };
+                    }
+                    let due = if plan.workflow == Workflow::SignalMonitor {
+                        start + Duration::from_secs_f64(index as f64 * plan.interval_s)
                     } else {
-                        self.state.position.clone()
-                    },
-                };
-                if let Some(csv) = &mut csv {
-                    csv.write_record(row(plan, &sample)?)
-                        .map_err(|e| e.to_string())?;
-                    csv.flush().map_err(|e| e.to_string())?;
-                }
-                self.live.publish_if_due(
-                    signal,
-                    match source {
+                        Instant::now() + Duration::from_secs_f64(plan.interval_s)
+                    };
+                    self.set_phase(Phase::Waiting, send);
+                    if !self.wait_live(due, source, cancel, send)? {
+                        return Ok(());
+                    }
+                    self.set_phase(Phase::Reading, send);
+                    let (signal, exchanges) = match source {
+                        Source::Gpib { model, .. } => {
+                            if let Some(rig) = &mut self.rig {
+                                self.state.position = rig.position()?;
+                            }
+                            let recorded = lockin::read_recorded(
+                                model,
+                                self.gpib
+                                    .as_mut()
+                                    .ok_or(OperationError::LockinDisconnected)?,
+                            );
+                            let exchanges = serde_json::to_value(&recorded.exchanges)
+                                .map_err(|error| error.to_string())?;
+                            match recorded.result {
+                                Ok(signal) => (signal, Some(exchanges)),
+                                Err(error) => {
+                                    if let Some(recording) = &mut csv {
+                                        let audit = serde_json::json!({
+                                            "event": "reading",
+                                            "point_index": index + 1,
+                                            "status": "error",
+                                            "simulation": false,
+                                            "elapsed_s": start.elapsed().as_secs_f64(),
+                                            "target": target,
+                                            "position": self.state.position.clone(),
+                                            "exchanges": exchanges,
+                                            "error": error,
+                                        });
+                                        if let Err(audit_error) = recording.append_audit(&audit) {
+                                            return Err(format!(
+                                                "{error}; record reading audit: {audit_error}"
+                                            ));
+                                        }
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                        Source::Demo => (
+                            Signal::demo(
+                                if plan.workflow == Workflow::SignalMonitor {
+                                    start.elapsed().as_secs_f64() * 10.
+                                } else {
+                                    target.corrected[0]
+                                },
+                                target.corrected[1],
+                                target.corrected[2],
+                            ),
+                            None,
+                        ),
+                    };
+                    let sample = Sample {
+                        captured_at: Some(Instant::now()),
+                        elapsed: start.elapsed().as_secs_f64(),
+                        target: *target,
+                        signal,
+                        position: if matches!(source, Source::Demo)
+                            && plan.workflow == Workflow::SignalMonitor
+                        {
+                            Position::default()
+                        } else {
+                            self.state.position.clone()
+                        },
+                    };
+                    if let Some(csv) = &mut csv {
+                        let mut audit = serde_json::json!({
+                            "event": "reading",
+                            "point_index": index + 1,
+                            "status": "ok",
+                            "simulation": matches!(source, Source::Demo),
+                            "elapsed_s": sample.elapsed,
+                            "signal": sample.signal,
+                            "target": sample.target,
+                            "position": sample.position.clone(),
+                        });
+                        if let Some(exchanges) = exchanges {
+                            audit["exchanges"] = exchanges;
+                        }
+                        csv.append_audit(&audit)?;
+                        csv.write_record(row(plan, &sample)?)
+                            .map_err(|e| e.to_string())?;
+                        csv.flush().map_err(|e| e.to_string())?;
+                    }
+                    self.live.publish_if_due(
+                        signal,
+                        match source {
+                            Source::Demo => ReadingOrigin::Demo,
+                            _ => ReadingOrigin::Hardware,
+                        },
+                        &self.state.position,
+                        send,
+                    );
+                    self.state.signal = Some(signal);
+                    self.state.signal_origin = Some(match source {
                         Source::Demo => ReadingOrigin::Demo,
                         _ => ReadingOrigin::Hardware,
-                    },
-                    &self.state.position,
-                    send,
-                );
-                self.state.signal = Some(signal);
-                self.state.signal_origin = Some(match source {
-                    Source::Demo => ReadingOrigin::Demo,
-                    _ => ReadingOrigin::Hardware,
-                });
-                self.state.rows += 1;
-                let _ = send.try_send(Event::Sample(sample));
-            }
-            if !cancel.load(Ordering::Acquire)
-                && matches!(source, Source::Gpib { .. })
-                && let Some(r) = returns
-            {
-                for target in return_moves(plan, r) {
-                    self.state.phase = Phase::motion(MotionAction::Returning, target).into();
-                    let _ = send.send(Event::State(Box::new(self.state.clone())));
-                    self.motion_live(target, [false; 3], true, cancel, send)?;
+                    });
+                    self.state.rows += 1;
+                    let _ = send.try_send(Event::Sample(sample));
                 }
-            }
-            Ok(())
-        })();
-        if result.is_err() || cancel.load(Ordering::Acquire) {
+                if !cancel.load(Ordering::Acquire)
+                    && matches!(source, Source::Gpib { .. })
+                    && let Some(r) = returns
+                {
+                    for target in return_moves(plan, r) {
+                        self.state.phase = Phase::motion(MotionAction::Returning, target).into();
+                        let _ = send.send(Event::State(Box::new(self.state.clone())));
+                        self.motion_live(target, [false; 3], true, cancel, send)?;
+                    }
+                }
+                Ok(())
+            })()
+        });
+        if acquisition_started && (result.is_err() || cancel.load(Ordering::Acquire)) {
             let stopped = self.rig.as_mut().map(|rig| rig.stop()).transpose();
             if let Err(error) = stopped {
                 result = Err(format!(
@@ -1037,22 +1146,45 @@ impl Session {
                 result = Ok(());
             }
         }
-        if let Some(csv) = &mut csv {
-            csv.flush().map_err(|e| e.to_string())?;
+        let terminal_status = if result.is_err() {
+            "error"
+        } else if cancel.load(Ordering::Acquire) {
+            "cancelled"
+        } else {
+            "complete"
+        };
+        if let Some(recording) = &mut csv {
+            let terminal = serde_json::json!({
+                "event": "finished",
+                "status": terminal_status,
+                "rows": self.state.rows,
+                "simulation": matches!(source, Source::Demo),
+                "error": result.as_ref().err(),
+            });
+            if let Err(error) = recording.append_audit(&terminal) {
+                Self::append_recording_error(&mut result, "record finished audit", error);
+            }
+            if let Err(error) = recording.finish() {
+                Self::append_recording_error(&mut result, "finish recording", error);
+                let _ = recording.append_audit(&serde_json::json!({"event":"finalization_error", "status":"error", "error":result.as_ref().err()}));
+            }
         }
         if let Some(path) = output {
-            finish_metadata(
-                path,
-                self.state.rows,
-                if result.is_err() {
-                    "error"
-                } else if cancel.load(Ordering::Acquire) {
-                    "cancelled"
-                } else {
-                    "complete"
-                },
-                result.as_ref().err(),
-            )?;
+            let status = if result.is_err() {
+                "error"
+            } else if cancel.load(Ordering::Acquire) {
+                "cancelled"
+            } else {
+                "complete"
+            };
+            let metadata_result =
+                finish_metadata(path, self.state.rows, status, result.as_ref().err());
+            if let Err(error) = metadata_result {
+                Self::append_recording_error(&mut result, "finish run metadata", error);
+                if let Some(recording) = &mut csv {
+                    let _ = recording.append_audit(&serde_json::json!({"event":"finalization_error", "status":"error", "error":result.as_ref().err()}));
+                }
+            }
         }
         result
     }
@@ -1193,27 +1325,111 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
     plan.interval_s = 0.0;
     let targets = plan.targets()?;
     let mut writer = create_csv(output, Source::Demo, &plan)?;
-    for target in &targets {
-        let p = target.corrected;
-        let sample = Sample {
-            captured_at: None,
-            elapsed: 0.0,
-            target: *target,
-            signal: Signal::demo(p[0] + target.fast, p[1], p[2]),
-            position: Position {
-                physical: target.physical.map(Some),
-                ..Default::default()
-            },
-        };
-        writer
-            .write_record(row(&plan, &sample)?)
-            .map_err(|e| e.to_string())?;
+    let mut rows = 0usize;
+    let mut result = writer
+        .set_context(&serde_json::json!({
+            "source": Source::Demo,
+            "transport": Value::Null,
+            "resolution": Value::Null,
+            "uncertainty": Value::Null,
+        }))
+        .and_then(|()| {
+            for (index, target) in targets.iter().enumerate() {
+                let p = target.corrected;
+                let sample = Sample {
+                    captured_at: None,
+                    elapsed: 0.0,
+                    target: *target,
+                    signal: Signal::demo(p[0] + target.fast, p[1], p[2]),
+                    position: Position {
+                        physical: target.physical.map(Some),
+                        ..Default::default()
+                    },
+                };
+                writer.append_audit(&serde_json::json!({
+                    "event": "reading",
+                    "point_index": index + 1,
+                    "status": "ok",
+                    "simulation": true,
+                    "elapsed_s": sample.elapsed,
+                    "signal": sample.signal,
+                    "target": sample.target,
+                    "position": sample.position.clone(),
+                }))?;
+                writer
+                    .write_record(row(&plan, &sample)?)
+                    .map_err(|e| e.to_string())?;
+                rows += 1;
+            }
+            Ok(())
+        });
+    let terminal_status = if result.is_err() { "error" } else { "complete" };
+    if let Err(error) = writer.append_audit(&serde_json::json!({
+        "event": "finished",
+        "status": terminal_status,
+        "rows": rows,
+        "simulation": true,
+        "error": result.as_ref().err(),
+    })) {
+        Session::append_recording_error(&mut result, "record finished audit", error);
     }
-    writer.flush().map_err(|e| e.to_string())?;
-    finish_metadata(output, targets.len(), "complete", None)?;
-    Ok(targets.len())
+    if let Err(error) = writer.finish() {
+        Session::append_recording_error(&mut result, "finish recording", error);
+        let _ = writer.append_audit(&serde_json::json!({"event":"finalization_error", "status":"error", "error":result.as_ref().err()}));
+    }
+    let status = if result.is_err() { "error" } else { "complete" };
+    if let Err(error) = finish_metadata(output, rows, status, result.as_ref().err()) {
+        Session::append_recording_error(&mut result, "finish run metadata", error);
+        let _ = writer.append_audit(&serde_json::json!({"event":"finalization_error", "status":"error", "error":result.as_ref().err()}));
+    }
+    result?;
+    Ok(rows)
 }
 
 #[cfg(test)]
 #[path = "engine/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod recording_integration_tests {
+    use super::*;
+
+    #[test]
+    fn demo_csv_records_context_readings_and_a_terminal_event_without_raw_exchanges() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("demo.csv");
+        let plan = Plan {
+            workflow: Workflow::Trkr,
+            fast_range: trkr_core::Range {
+                min: 0.0,
+                max: 0.0,
+                step: 1.0,
+            },
+            ..Default::default()
+        };
+        assert_eq!(demo_csv(plan, &output).unwrap(), 1);
+
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(output.with_extension("run.json")).unwrap())
+                .unwrap();
+        assert_eq!(metadata["status"], "complete");
+        assert_eq!(metadata["rows"], 1);
+        assert_eq!(metadata["context"]["source"]["type"], "demo");
+        assert_eq!(metadata["context"]["resolution"], Value::Null);
+        assert_eq!(metadata["context"]["uncertainty"], Value::Null);
+
+        let events: Vec<Value> = std::fs::read_to_string(output.with_extension("readings.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(events[0]["event"], "context");
+        assert_eq!(events[1]["event"], "reading");
+        assert_eq!(events[1]["point_index"], 1);
+        assert_eq!(events[1]["status"], "ok");
+        assert_eq!(events[1]["simulation"], true);
+        assert!(events[1].get("exchanges").is_none());
+        assert_eq!(events[2]["event"], "finished");
+        assert_eq!(events[2]["status"], "complete");
+    }
+}

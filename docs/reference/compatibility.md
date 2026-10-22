@@ -346,3 +346,14 @@ Scope: all 50 files under `src/kohdalab` at `v0.2.0` (48 Python and 2 TOML), six
 - Physical movement, homing, sensors, travel limits, and actual model replies were not tested in this re-audit. Source comparisons and fake-device success do not guarantee apparatus behavior.
 
 The old `next/` paths in the JSON identify the historical audit layout. See [current-path mapping](../validation/compatibility-audit-layout.md).
+
+
+## Recording revision 2 / 記録revision 2 (0.3.5)
+
+The historical audit above describes the releases examined at that time.
+Version 0.3.5 intentionally removes Python-compatible seven-significant-digit
+X/Y/R rounding while retaining CSV columns, profile/API revision 1 and legacy
+CSV loading. New records include raw-response evidence. See
+[measurement integrity](measurement-integrity.md). Old CSV digits cannot be restored.
+
+上記は当時のリリースを対象とした監査です。0.3.5ではCSV列、設定・API revision 1と旧CSV読込を維持しつつ、Python由来のX/Y/Rの有効7桁丸めを意図的に廃止します。新しい記録には生応答を添付します。[測定記録の精度](measurement-integrity.md)を参照してください。旧CSVで失われた桁は復元できません。

@@ -18,12 +18,11 @@ from typing import Any, Iterator
 
 _PLATFORM = sys.platform
 
-# Revision 1 denotes the existing unversioned contracts. These constants are
-# informational: commands, events, profiles, CSV, and metadata keep their
-# established shapes until an explicitly selected future revision is added.
+# Profiles and JSON-lines remain revision 1. Recording revision 2 preserves
+# f64 values and adds raw-reading sidecars without changing CSV columns.
 PROFILE_COMPATIBILITY_REVISION = 1
 JSON_LINES_API_REVISION = 1
-RECORDING_COMPATIBILITY_REVISION = 1
+RECORDING_COMPATIBILITY_REVISION = 2
 
 
 def _roots(search_from: str | Path | None = None) -> list[Path]:

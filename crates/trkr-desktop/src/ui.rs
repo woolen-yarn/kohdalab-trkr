@@ -2134,7 +2134,9 @@ impl App {
                             .source
                             .as_ref()
                             .ok_or_else(|| "No recorded CSV available".to_string())
-                            .and_then(|source| copy_complete_csv(source, &path));
+                            .and_then(|source| {
+                                copy_complete_csv(source, &path, self.snapshot.running)
+                            });
                         match result {
                             Ok(()) => self.note(format!("Saved snapshot: {}", path.display())),
                             Err(error) => self.note(error),
@@ -3428,18 +3430,110 @@ fn device_phase(
 fn copy_complete_csv(
     source: &std::path::Path,
     destination: &std::path::Path,
+    run_active: bool,
 ) -> Result<(), String> {
-    use std::io::{BufRead, Read, Write};
-    let input = std::fs::File::open(source).map_err(|e| e.to_string())?;
-    let length = input.metadata().map_err(|e| e.to_string())?.len();
     let parent = destination
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
+    let source_metadata_path = source.with_extension("run.json");
+    let mut metadata = if source_metadata_path.exists() {
+        Some(
+            serde_json::from_slice::<Value>(
+                &std::fs::read(&source_metadata_path).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| format!("Save snapshot metadata: {e}"))?,
+        )
+    } else {
+        None
+    };
+    let source_audit_path = source_audit_path(source, metadata.as_ref())?;
+    if let Some(path) = &source_audit_path
+        && !path.exists()
+    {
+        return Err(format!(
+            "Save snapshot: declared readings audit is missing: {}",
+            path.display()
+        ));
+    }
+
+    let destination_metadata = destination.with_extension("run.json");
+    let destination_audit = destination.with_extension("readings.jsonl");
+    // Check every related destination before staging.  This also avoids
+    // combining a legacy CSV snapshot with sidecars from another run.
+    for path in [destination, &destination_metadata, &destination_audit] {
+        if path.exists() {
+            return Err(format!("Save snapshot: {} already exists", path.display()));
+        }
+    }
+
+    let (csv, rows) = stage_complete_csv(source, parent)?;
+    let audit = source_audit_path
+        .as_deref()
+        .map(|path| stage_complete_audit(path, parent, rows))
+        .transpose()?;
+    let metadata = metadata
+        .as_mut()
+        .map(|metadata| {
+            stage_snapshot_metadata(
+                metadata,
+                parent,
+                rows,
+                run_active,
+                audit.is_some().then_some(&destination_audit),
+            )
+        })
+        .transpose()?;
+
+    let mut staged = vec![(destination.to_path_buf(), csv)];
+    if let Some(metadata) = metadata {
+        staged.push((destination_metadata, metadata));
+    }
+    if let Some(audit) = audit {
+        staged.push((destination_audit, audit));
+    }
+    persist_snapshot_noclobber(staged)
+}
+
+fn source_audit_path(
+    source: &std::path::Path,
+    metadata: Option<&Value>,
+) -> Result<Option<PathBuf>, String> {
+    let default_path = source.with_extension("readings.jsonl");
+    let Some(metadata) = metadata else {
+        return Ok(default_path.exists().then_some(default_path));
+    };
+    let declared = metadata.get("readings_file").and_then(Value::as_str);
+    let Some(declared) = declared else {
+        return Ok(default_path.exists().then_some(default_path));
+    };
+    let declared_path = std::path::Path::new(declared);
+    if declared_path.is_absolute()
+        || declared_path.file_name().is_none()
+        || declared_path != declared_path.file_name().unwrap()
+    {
+        return Err("Save snapshot: readings_file must be a basename".into());
+    }
+    let path = source
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(declared_path);
+    // Any explicit declaration must remain valid in the saved copy.
+    Ok(Some(path))
+}
+
+fn stage_complete_csv(
+    source: &std::path::Path,
+    parent: &std::path::Path,
+) -> Result<(tempfile::NamedTempFile, usize), String> {
+    use std::io::{BufRead, Read, Write};
+    let input = std::fs::File::open(source).map_err(|e| e.to_string())?;
+    let length = input.metadata().map_err(|e| e.to_string())?.len();
     let mut temporary =
         tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Save snapshot: {e}"))?;
     let mut reader = std::io::BufReader::new(input.take(length));
     let mut line = Vec::new();
+    let mut complete_lines = 0usize;
     // Native fields are single-line. Capture the starting file length and omit
     // an in-progress final row while preserving original acquisition timestamps.
     loop {
@@ -3455,14 +3549,126 @@ fn copy_complete_csv(
             break;
         }
         temporary.write_all(&line).map_err(|e| e.to_string())?;
+        complete_lines += 1;
     }
     temporary
         .flush()
         .and_then(|_| temporary.as_file().sync_all())
         .map_err(|e| e.to_string())?;
+    Ok((temporary, complete_lines.saturating_sub(1)))
+}
+
+fn stage_complete_audit(
+    source: &std::path::Path,
+    parent: &std::path::Path,
+    csv_rows: usize,
+) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::{BufRead, Read, Write};
+    let input = std::fs::File::open(source).map_err(|e| e.to_string())?;
+    let length = input.metadata().map_err(|e| e.to_string())?.len();
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Save snapshot: {e}"))?;
+    let mut reader = std::io::BufReader::new(input.take(length));
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader
+            .read_until(b'\n', &mut line)
+            .map_err(|e| e.to_string())?
+            == 0
+        {
+            break;
+        }
+        if !line.ends_with(b"\n") {
+            break;
+        }
+        let record: Value = serde_json::from_slice(&line)
+            .map_err(|error| format!("Save snapshot audit: {error}"))?;
+        if audit_record_is_in_snapshot(&record, csv_rows) {
+            temporary.write_all(&line).map_err(|e| e.to_string())?;
+        }
+    }
     temporary
-        .persist_noclobber(destination)
-        .map_err(|e| format!("Save snapshot: {e}"))?;
+        .flush()
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(temporary)
+}
+
+fn audit_record_is_in_snapshot(record: &Value, csv_rows: usize) -> bool {
+    let Some(point_index) = record.get("point_index").and_then(Value::as_u64) else {
+        // Context, schema/header, and other non-point provenance describe the
+        // complete snapshot regardless of the current acquisition row.
+        return true;
+    };
+    let status = record.get("status").and_then(Value::as_str);
+    if status == Some("error") {
+        point_index <= csv_rows.saturating_add(1) as u64
+    } else {
+        point_index <= csv_rows as u64
+    }
+}
+
+fn stage_snapshot_metadata(
+    metadata: &mut Value,
+    parent: &std::path::Path,
+    rows: usize,
+    run_active: bool,
+    destination_audit: Option<&PathBuf>,
+) -> Result<tempfile::NamedTempFile, String> {
+    use std::io::Write;
+    let object = metadata
+        .as_object_mut()
+        .ok_or_else(|| "Save snapshot metadata must be a JSON object".to_string())?;
+    let source_status = object
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let status = if run_active
+        || !matches!(
+            source_status.as_deref(),
+            Some("complete" | "cancelled" | "error")
+        ) {
+        "snapshot".to_owned()
+    } else {
+        source_status.expect("matched status")
+    };
+    object.insert("rows".into(), json!(rows));
+    object.insert("status".into(), json!(status));
+    if let Some(path) = destination_audit {
+        let filename = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Save snapshot readings filename must be UTF-8".to_string())?;
+        object.insert("readings_file".into(), json!(filename));
+    }
+    let bytes = serde_json::to_vec_pretty(metadata).map_err(|e| e.to_string())?;
+    let mut temporary =
+        tempfile::NamedTempFile::new_in(parent).map_err(|e| format!("Save snapshot: {e}"))?;
+    temporary.write_all(&bytes).map_err(|e| e.to_string())?;
+    temporary
+        .flush()
+        .and_then(|_| temporary.as_file().sync_all())
+        .map_err(|e| e.to_string())?;
+    Ok(temporary)
+}
+
+fn persist_snapshot_noclobber(
+    staged: Vec<(PathBuf, tempfile::NamedTempFile)>,
+) -> Result<(), String> {
+    let mut created = Vec::new();
+    for (destination, temporary) in staged {
+        match temporary.persist_noclobber(&destination) {
+            Ok(_) => created.push(destination),
+            Err(error) => {
+                // Do not delete paths by name: another process may have
+                // replaced them after activation. Preserve partial evidence.
+                return Err(format!(
+                    "Save snapshot: {error}; partial snapshot files retained: {created:?}"
+                ));
+            }
+        }
+    }
     Ok(())
 }
 

@@ -12,12 +12,12 @@ See the root README for source-built releases and Notebook access.
 
 ## Compatibility contracts
 
-Profiles, `--stdio` JSON-lines commands/events, measurement CSV, and adjacent
-`.run.json` metadata are the established unversioned **revision 1** contracts.
-The application does not add a schema field to existing user JSON: arbitrary
-metadata remains user data. Recognised Python-era profile aliases are
-normalised in memory while unknown keys are preserved. A future revision must
-be opt-in at its input/output boundary and keep revision-1 input readable.
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 2
+retains CSV columns and accepts old files while preserving full acquired f64
+values in X/Y/R and adding versioned metadata/raw-response sidecars. The numeric
+text change intentionally corrects revision-1 rounding; frozen Python fixtures
+are retained to audit the historical behavior separately. Unknown profile keys
+are preserved. See [measurement integrity](../reference/measurement-integrity.md).
 
 
 ## Extending devices and measurements
@@ -46,8 +46,8 @@ be opt-in at its input/output boundary and keep revision-1 input readable.
 Before adding a device, run the fake-bus command-order, cancellation, limits and
 readback tests. Before adding a workflow, exercise every axis pair, line entry,
 compensation, completion/Stop return and retained plot. Preserve the frozen
-Python references and compare all existing CSV/profile outputs, excluding only
-generation timestamps. Rust workspace tests, strict Clippy, Notebook client
+Python references and compare all existing CSV/profile outputs, with revision-2 lossless voltages checked against the original acquired bits
+and historical revision-1 rounding separately; exclude generation timestamps. Rust workspace tests, strict Clippy, Notebook client
 checks and device-free GUI smoke tests cover these existing contracts.
 
 ## 日本語
@@ -56,7 +56,8 @@ checks and device-free GUI smoke tests cover these existing contracts.
 
 ### 互換性の契約
 
-設定、`--stdio`のJSON-lines命令・イベント、測定CSV、隣接する`.run.json`は既存の、バージョンフィールドを持たない**revision 1**の契約です。既存ユーザーJSONにschemaフィールドを追加しません。任意メタデータはユーザーデータとして扱います。既知のPython時代の別名はメモリー内で正規化し、未知項目は保持します。将来のrevisionは入出力境界で明示選択式にし、revision 1の入力を読み続けられる必要があります。
+設定と`--stdio`の命令・イベントはrevision 1を維持します。記録revision 2はCSV列と旧ファイル読込を保ち、X/Y/Rの取得f64値を保持して、バージョン付きメタデータと生応答の付属ファイルを追加します。数値表記の変更はrevision 1の丸めの修正です。固定Python参照を変更せず、旧動作を別に検証します。未知の設定項目は保持します。[測定記録の精度](../reference/measurement-integrity.md)を参照してください。
+
 
 ### 機器と測定の拡張
 
@@ -66,7 +67,7 @@ checks and device-free GUI smoke tests cover these existing contracts.
 - スキャン順序は`engine/execution.rs`、補償計画は`MotionRig::plan_move`へ保持します。事前検証と実行は同じ計画を使い、単一の機器所有workerがキャンセル、STOP、読取期限、シリアル通信を保って実行します。
 - 状態とエラーは型を定義する箇所に追加し、明示的なプロトコル改訂までは既存文字列の境界を保ちます。設定移行は`config/compatibility.rs`に置き、未知メタデータを再解釈しません。
 
-機器追加前に疑似通信の命令順序、キャンセル、制限、読取位置をテストします。測定追加前に全軸ペア、行開始、補償、完了・Stop時の復帰、プロット保持を確認します。固定Python参照を維持し、生成時刻だけを除外して既存CSVと設定出力を比較します。Rustテスト、厳格なClippy、Notebook連携検証、実機を使わないGUIスモークテストが既存の契約を確認します。
+機器追加前に疑似通信の命令順序、キャンセル、制限、読取位置をテストします。測定追加前に全軸ペア、行開始、補償、完了・Stop時の復帰、プロット保持を確認します。固定Python参照を維持し、取得値のビット一致と旧revision 1の丸めを別々に検証し、生成時刻を除外して既存CSVと設定出力を比較します。Rustテスト、厳格なClippy、Notebook連携検証、実機を使わないGUIスモークテストが既存の契約を確認します。
 
 ## Acquisition ETA / 取得時間の見積り
 
