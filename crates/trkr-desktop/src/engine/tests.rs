@@ -682,9 +682,11 @@ fn read_only_controller_allows_only_stop_and_shutdown() {
 
 #[test]
 fn recording_context_invalidates_settings_when_identity_or_settings_change() {
-    let mut session = Session::default();
-    session.config = Some(config());
-    session.lockin_context = Some(serde_json::json!({"value":{"Sensitivity":"old"}}));
+    let mut session = Session {
+        config: Some(config()),
+        lockin_context: Some(serde_json::json!({"value":{"Sensitivity":"old"}})),
+        ..Default::default()
+    };
     let mut changed = config();
     changed.address = 13;
     session.connect(changed, vec![]).unwrap();
