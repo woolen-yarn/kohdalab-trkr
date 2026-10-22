@@ -63,6 +63,9 @@ impl Device {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sample {
+    /// In-process GUI timing only; never part of JSON or CSV contracts.
+    #[serde(skip)]
+    pub(crate) captured_at: Option<Instant>,
     pub elapsed: f64,
     pub target: Target,
     pub signal: Signal,
@@ -973,6 +976,7 @@ impl Session {
                     ),
                 };
                 let sample = Sample {
+                    captured_at: Some(Instant::now()),
                     elapsed: start.elapsed().as_secs_f64(),
                     target: *target,
                     signal,
@@ -1115,6 +1119,7 @@ impl Session {
             self.state.position = position.clone();
             self.state.rows += 1;
             let _ = send.try_send(Event::Sample(Sample {
+                captured_at: None,
                 elapsed: get("elapsed_s")
                     .or_else(|| get("acquisition_elapsed_s"))
                     .unwrap_or(0.),
@@ -1191,6 +1196,7 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
     for target in &targets {
         let p = target.corrected;
         let sample = Sample {
+            captured_at: None,
             elapsed: 0.0,
             target: *target,
             signal: Signal::demo(p[0] + target.fast, p[1], p[2]),

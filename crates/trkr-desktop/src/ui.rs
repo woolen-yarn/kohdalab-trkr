@@ -1,4 +1,5 @@
 mod demo;
+mod eta;
 use crate::{axis_choices, precision};
 use crate::{
     config::Settings,
@@ -184,6 +185,7 @@ pub struct App {
     saved_traces: [Vec<Sample>; 5],
     trace_plans: [Option<Plan>; 5],
     scan_progress: [(usize, usize); 5],
+    eta: eta::Estimate,
     output_paths: [Option<PathBuf>; 5],
     active_workflow: Workflow,
     last_settings: Instant,
@@ -275,6 +277,7 @@ impl App {
             saved_traces: std::array::from_fn(|_| Vec::new()),
             trace_plans: std::array::from_fn(|_| None),
             scan_progress: [(0, 0); 5],
+            eta: eta::Estimate::default(),
             output_paths: std::array::from_fn(|_| None),
             active_workflow: Workflow::SignalMonitor,
             last_settings: Instant::now(),
@@ -935,6 +938,7 @@ impl App {
                 // Disable axis edits immediately, including before the worker's first state.
                 self.snapshot.running = true;
                 self.scan_progress[index] = (0, 0);
+                self.eta.start();
                 self.note("Measurement started")
             }
             Err(e) => self.note(e),
@@ -993,6 +997,11 @@ impl App {
                     self.snapshot.position = s.position.clone();
                     self.snapshot.rows = self.snapshot.rows.saturating_add(1);
                     self.scan_progress[Self::ix(self.active_workflow)].0 = self.snapshot.rows;
+                    self.eta.observe(
+                        self.snapshot.rows,
+                        s.elapsed,
+                        s.captured_at.unwrap_or_else(Instant::now),
+                    );
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
                         self.live.push(s.signal, self.active_live_origin);
                     }
@@ -1197,6 +1206,7 @@ impl App {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(i, target)| Sample {
+                                    captured_at: None,
                                     elapsed: i as f64 * 0.01,
                                     signal: trkr_core::Signal::demo(
                                         target.corrected[0] + target.fast,
@@ -2883,11 +2893,34 @@ impl App {
             .as_ref()
             .unwrap_or(&self.plans[index])
     }
+    fn eta_label(&self, now: Instant) -> String {
+        if !self.snapshot.running
+            || self.active_workflow != self.workflow
+            || self.snapshot.total == 0
+        {
+            return "-".into();
+        }
+        let total = self.scan_progress[Self::ix(self.workflow)].1;
+        if total == 0 {
+            return "Estimating…".into();
+        }
+        if self.snapshot.rows >= total {
+            return if self.demo_viewer {
+                "Looping…"
+            } else if self.snapshot.phase.starts_with("Returning") {
+                "Returning…"
+            } else {
+                "Finishing…"
+            }
+            .into();
+        }
+        self.eta
+            .remaining(total, now)
+            .map(|seconds| format!("~{:.0} s", seconds.ceil()))
+            .unwrap_or_else(|| "Estimating…".into())
+    }
     fn plot_toolbar(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
-        let interval_s = self.trace_plans[Self::ix(self.workflow)]
-            .as_ref()
-            .unwrap_or_else(|| self.plan())
-            .interval_s;
+        let eta = self.eta_label(Instant::now());
         let mut f = precision::Form::new(ui, &mut self.geometry, area.min);
         f.label("plot_label", precision::rect(0., 0., 28., 20.), "Plot");
         f.label("step_label", precision::rect(48., 0., 28., 20.), "Step");
@@ -2908,15 +2941,6 @@ impl App {
             precision::rect(154. + (width - 44.).max(0.), 0., 28., 20.),
             "ETA",
         );
-        let eta = if self.snapshot.running && self.active_workflow == self.workflow {
-            let count = self.snapshot.total;
-            format!(
-                "{:.0} s",
-                count.saturating_sub(completed) as f64 * interval_s
-            )
-        } else {
-            "-".into()
-        };
         f.label(
             "eta_label",
             precision::rect(192. + (width - 44.).max(0.), 0., 100., 20.),
@@ -2945,6 +2969,12 @@ impl App {
                 Color32::from_rgb(255, 115, 115),
             );
         }
+        ui.interact(
+            precision::rect(154. + (width - 44.).max(0.), 0., 138., 20.)
+                .translate(area.min.to_vec2()),
+            egui::Id::new("eta-help"),
+            egui::Sense::hover(),
+        ).on_hover_text("Approximate time to finish acquiring points, based on the observed run pace, including motion, compensation, reads and CSV writes. Startup and line changes can shift the estimate. Return-to-zero is not timed; it is shown separately. Replay estimates refer to the current loop, not the CSV's original timestamps.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),

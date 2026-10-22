@@ -171,6 +171,7 @@ impl App {
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         self.demo.player = Player::default();
         self.demo.clock = Some(Instant::now());
+        self.eta.start();
         self.trace.clear();
         self.map_cache = [None, None];
         self.live.clear();
@@ -259,6 +260,7 @@ impl App {
             data.samples.len(),
         );
         if batch.clear {
+            self.eta.start();
             self.trace.clear();
             self.map_cache = [None, None];
             self.snapshot.rows = 0;
@@ -297,6 +299,13 @@ impl App {
             self.snapshot.rows += 1;
         }
         self.scan_progress[i] = (self.snapshot.rows, self.snapshot.total);
+        if self.snapshot.rows > 0 {
+            self.eta.observe(
+                self.snapshot.rows,
+                clock.elapsed().as_secs_f64(),
+                Instant::now(),
+            );
+        }
     }
 }
 

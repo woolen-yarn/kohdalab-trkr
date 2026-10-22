@@ -67,3 +67,22 @@ checks and device-free GUI smoke tests cover these existing contracts.
 - 状態とエラーは型を定義する箇所に追加し、明示的なプロトコル改訂までは既存文字列の境界を保ちます。設定移行は`config/compatibility.rs`に置き、未知メタデータを再解釈しません。
 
 機器追加前に疑似通信の命令順序、キャンセル、制限、読取位置をテストします。測定追加前に全軸ペア、行開始、補償、完了・Stop時の復帰、プロット保持を確認します。固定Python参照を維持し、生成時刻だけを除外して既存CSVと設定出力を比較します。Rustテスト、厳格なClippy、Notebook連携検証、実機を使わないGUIスモークテストが既存の契約を確認します。
+
+## Acquisition ETA / 取得時間の見積り
+
+The plot ETA is an approximate acquisition countdown derived from elapsed run
+time and observed completed points after the first acquisition, including the motion, compensation, reads,
+and CSV writes seen so far. The one-off initial approach is not extrapolated onto every remaining point. It is unknown before two observations or when
+an estimate becomes overdue. Startup and 2D line changes can shift the pace.
+Return-to-zero is shown as Returning rather than a false zero-second estimate.
+Replay uses the current playback clock and resets the estimate each loop;
+original CSV timestamps do not determine replay duration. No acquisition timing
+or saved data is changed by this display calculation.
+
+PlotのETAは、経過時間と実際に取得した点数から求める取得終了までの目安です。
+最初の取得後の移動・補償・読取・CSV保存時間を含み、初回の接近時間を全点へ外挿しません。
+2回の取得を観測する前や推定期限を
+超えたときは未確定とし、初期移動や2Dの行切替で推定は変化し得ます。
+原点復帰中は0秒とせずReturningを表示します。Demoは現在の再生時間を使い、
+ループごとにリセットします。元CSVの時刻は再生所要時間に使いません。
+この表示計算は、測定のタイミングや保存データを変更しません。

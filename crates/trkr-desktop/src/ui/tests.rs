@@ -567,3 +567,50 @@ fn synthetic_layout_capture_keeps_explicit_rotated_axes() {
         assert!(app.smoke.as_ref().unwrap().layout_only);
     }
 }
+
+#[test]
+fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.workflow = Workflow::Trkr;
+    app.active_workflow = Workflow::Trkr;
+    let index = App::ix(Workflow::Trkr);
+    let start = Instant::now();
+    app.eta.start();
+    app.snapshot.running = true;
+    app.snapshot.total = 10;
+    app.scan_progress[index] = (0, 10);
+    assert_eq!(app.eta_label(start), "Estimating…");
+    app.snapshot.rows = 2;
+    app.scan_progress[index].0 = 2;
+    app.eta.observe(1, 3.0, start + Duration::from_secs(3));
+    app.eta.observe(2, 6.0, start + Duration::from_secs(6));
+    assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
+    app.snapshot.rows = 10;
+    app.snapshot.phase = "Returning x".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Returning…");
+    app.snapshot.phase = "Reading".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Finishing…");
+    app.demo_viewer = true;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Looping…");
+    app.snapshot.running = false;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+    app.snapshot.running = true;
+    app.snapshot.total = 0; // standalone Move must not reuse the last run's ETA
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+}
+
+#[test]
+fn private_eta_clock_does_not_change_sample_json_contract() {
+    let mut sample = Sample {
+        captured_at: None,
+        elapsed: 3.0,
+        target: Plan::default().targets().unwrap()[0],
+        signal: trkr_core::Signal::default(),
+        position: trkr_motion::Position::default(),
+    };
+    let original = serde_json::to_value(&sample).unwrap();
+    sample.captured_at = Some(Instant::now());
+    assert_eq!(serde_json::to_value(&sample).unwrap(), original);
+    let restored: Sample = serde_json::from_value(original).unwrap();
+    assert!(restored.captured_at.is_none());
+}

@@ -287,6 +287,7 @@ mod tests {
     fn monitor_retains_components_without_inventing_positions() {
         let p = Plan::default();
         let sample = Sample {
+            captured_at: None,
             elapsed: 1.,
             target: p.targets().unwrap()[0],
             signal: Signal::new(1., 2., 3., 4.).unwrap(),
@@ -305,6 +306,7 @@ mod tests {
             ..Default::default()
         };
         let sample = Sample {
+            captured_at: None,
             elapsed: 0.,
             target: p.targets().unwrap()[0],
             signal: Signal::default(),
