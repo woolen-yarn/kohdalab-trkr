@@ -96,6 +96,97 @@ pub trait Io {
     fn write(&mut self, command: &str) -> Result<(), String>;
 }
 
+/// One command exchanged while acquiring a lock-in sample.
+///
+/// Query replies are recorded exactly as supplied by the transport, before any
+/// trimming or numeric parsing.  This makes the saved acquisition provenance
+/// independent of the display precision used by the application.
+#[derive(Debug, Serialize)]
+pub struct Exchange {
+    pub operation: &'static str,
+    pub command: String,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+}
+
+/// A lock-in read and the transport exchanges that produced it.
+///
+/// `result` retains the exact behavior of [`read`].  Exchanges remain
+/// available when a transport or parsing error prevents a signal from being
+/// produced.
+pub struct RecordedRead {
+    pub result: Result<Signal, String>,
+    pub exchanges: Vec<Exchange>,
+}
+
+/// Run [`read`] while retaining the exact commands, replies, and errors used
+/// by that read.  The recording adapter only observes the existing `Io`
+/// calls, so it never performs additional instrument I/O.
+pub fn read_recorded(model: Model, io: &mut impl Io) -> RecordedRead {
+    struct Recording<'a, T> {
+        io: &'a mut T,
+        exchanges: Vec<Exchange>,
+    }
+
+    impl<T: Io> Io for Recording<'_, T> {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            match self.io.query(command) {
+                Ok(reply) => {
+                    self.exchanges.push(Exchange {
+                        operation: "query",
+                        command: command.into(),
+                        reply: Some(reply.clone()),
+                        error: None,
+                    });
+                    Ok(reply)
+                }
+                Err(error) => {
+                    self.exchanges.push(Exchange {
+                        operation: "query",
+                        command: command.into(),
+                        reply: None,
+                        error: Some(error.clone()),
+                    });
+                    Err(error)
+                }
+            }
+        }
+
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            match self.io.write(command) {
+                Ok(()) => {
+                    self.exchanges.push(Exchange {
+                        operation: "write",
+                        command: command.into(),
+                        reply: None,
+                        error: None,
+                    });
+                    Ok(())
+                }
+                Err(error) => {
+                    self.exchanges.push(Exchange {
+                        operation: "write",
+                        command: command.into(),
+                        reply: None,
+                        error: Some(error.clone()),
+                    });
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    let mut recording = Recording {
+        io,
+        exchanges: Vec::new(),
+    };
+    let result = read(model, &mut recording);
+    RecordedRead {
+        result,
+        exchanges: recording.exchanges,
+    }
+}
+
 impl Io for trkr_transport::Gpib {
     fn query(&mut self, command: &str) -> Result<String, String> {
         trkr_transport::Gpib::query(self, command)
@@ -989,6 +1080,135 @@ mod tests {
         let error = read(Model::Li5640, &mut io).unwrap_err();
         assert!(error.contains("write failed"));
         assert_eq!(io.commands.last(), Some(&"DDEF 2,6\n".to_string()));
+    }
+
+    #[test]
+    fn recorded_reads_match_direct_reads_without_extra_io_for_every_model() {
+        let cases: [(Model, &[&str]); 4] = [
+            (Model::Sr830, &["1,2,3,4"]),
+            (Model::Sr7265, &["1,2", "3,4"]),
+            (Model::Sr5210, &["8", "10000,-5000", "2500,12345"]),
+            (Model::Li5640, &["9,8", "7", "6", "1,2", "3,4"]),
+        ];
+        for (model, replies) in cases {
+            let mut direct_io = Fake::new(replies);
+            let direct = read(model, &mut direct_io);
+            let mut recorded_io = Fake::new(replies);
+            let recorded = read_recorded(model, &mut recorded_io);
+
+            assert_eq!(recorded.result, direct, "{model:?}");
+            assert_eq!(recorded_io.commands, direct_io.commands, "{model:?}");
+            assert_eq!(
+                recorded
+                    .exchanges
+                    .iter()
+                    .map(|exchange| exchange.command.as_str())
+                    .collect::<Vec<_>>(),
+                direct_io
+                    .commands
+                    .iter()
+                    .map(String::as_str)
+                    .collect::<Vec<_>>(),
+                "{model:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_read_preserves_raw_reply_precision_before_parsing() {
+        let reply = "1.230000000000e-9,-2.5000000000000E+03,3.140000000000000,4.0000000000000\r\n";
+        let mut io = Fake::new(&[reply]);
+        let recorded = read_recorded(Model::Sr830, &mut io);
+
+        assert!(recorded.result.is_ok());
+        assert_eq!(recorded.exchanges.len(), 1);
+        assert_eq!(recorded.exchanges[0].operation, "query");
+        assert_eq!(recorded.exchanges[0].command, "SNAP?1,2,3,4\n");
+        assert_eq!(recorded.exchanges[0].reply.as_deref(), Some(reply));
+        assert_eq!(recorded.exchanges[0].error, None);
+    }
+
+    #[test]
+    fn recorded_read_keeps_parse_and_transport_failures() {
+        let parse_reply = "1.000000000000e-9,not-a-number,3,4\n";
+        let mut parse_io = Fake::new(&[parse_reply]);
+        let parsed = read_recorded(Model::Sr830, &mut parse_io);
+        assert!(
+            parsed
+                .result
+                .unwrap_err()
+                .contains("Unexpected numeric value")
+        );
+        assert_eq!(parsed.exchanges.len(), 1);
+        assert_eq!(parsed.exchanges[0].reply.as_deref(), Some(parse_reply));
+        assert_eq!(parsed.exchanges[0].error, None);
+
+        let mut transport_io = Fake::new(&[]);
+        transport_io
+            .replies
+            .push_back(Err("helper disconnected".into()));
+        let transported = read_recorded(Model::Sr7265, &mut transport_io);
+        assert_eq!(
+            transported.result.unwrap_err(),
+            "transport: helper disconnected"
+        );
+        assert_eq!(transported.exchanges.len(), 1);
+        assert_eq!(transported.exchanges[0].operation, "query");
+        assert_eq!(transported.exchanges[0].command, "XY.\r");
+        assert_eq!(transported.exchanges[0].reply, None);
+        assert_eq!(
+            transported.exchanges[0].error.as_deref(),
+            Some("helper disconnected")
+        );
+    }
+
+    #[test]
+    fn recorded_read_keeps_the_sr7265_parse_fallback_order() {
+        let replies = ["incomplete", "also incomplete", "1", "2", "3", "4"];
+        let mut direct_io = Fake::new(&replies);
+        let direct = read(Model::Sr7265, &mut direct_io);
+        let mut recorded_io = Fake::new(&replies);
+        let recorded = read_recorded(Model::Sr7265, &mut recorded_io);
+
+        assert_eq!(recorded.result, direct);
+        assert_eq!(recorded_io.commands, direct_io.commands);
+        assert_eq!(
+            recorded_io.commands,
+            ["XY.\r", "MP.\r", "X.\r", "Y.\r", "MAG.\r", "PHA.\r"]
+        );
+        assert_eq!(
+            recorded
+                .exchanges
+                .iter()
+                .filter_map(|exchange| exchange.reply.as_deref())
+                .collect::<Vec<_>>(),
+            replies
+        );
+    }
+
+    #[test]
+    fn recorded_li5640_read_captures_all_restoration_writes() {
+        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
+        io.fail_write = Some("DDEF 1,7\n");
+        let recorded = read_recorded(Model::Li5640, &mut io);
+
+        assert!(recorded.result.unwrap_err().contains("write failed"));
+        let restores = &recorded.exchanges[11..];
+        assert_eq!(
+            restores
+                .iter()
+                .map(|exchange| exchange.command.as_str())
+                .collect::<Vec<_>>(),
+            ["OTYP 9,8\n", "DDEF 1,7\n", "DDEF 2,6\n"]
+        );
+        assert!(
+            restores
+                .iter()
+                .all(|exchange| exchange.operation == "write")
+        );
+        assert_eq!(restores[0].error, None);
+        assert_eq!(restores[1].error.as_deref(), Some("write failed"));
+        assert_eq!(restores[2].error, None);
     }
 
     #[test]

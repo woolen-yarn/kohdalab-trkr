@@ -4,12 +4,14 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 
 ## 互換性
 
-設定JSON、`--stdio` のJSON-lines命令・イベント、測定CSV、隣接する
-`.run.json` は、既存のフィールドを追加しない unversioned revision 1 として
-管理されています。任意のユーザーメタデータはschema versionとして解釈しません。
-Python側では `PROFILE_COMPATIBILITY_REVISION`、`JSON_LINES_API_REVISION`、
-`RECORDING_COMPATIBILITY_REVISION` がいずれも `1` です。将来のrevisionは明示的に
-選択する形式で追加し、既存の設定・Notebook・CSVを引き続き読み取ります。
+設定JSONと`--stdio`の命令・イベントはrevision 1を維持します。
+記録はrevision 2です。CSVの列は同じですが、X/Y/Rの固定7桁丸めを廃止し、
+取得したf64値を復元できる指数表記に変更しました。`.run.json`と
+`.readings.jsonl`をCSVと一緒に保管してください。装置応答の文字列を保持し、
+不明な分解能・不確かさを推測しません。桁数は物理的な精度の保証ではありません。
+`PROFILE_COMPATIBILITY_REVISION`と`JSON_LINES_API_REVISION`は`1`、
+`RECORDING_COMPATIBILITY_REVISION`は`2`です。既存設定と旧CSVは引き続き読み取れます。
+旧CSVで丸められた桁は復元できません。
 
 ## 最初の準備
 
@@ -97,7 +99,14 @@ The GUI, acquisition, and device control run in Rust. This client passes command
 
 ### Compatibility
 
-Profiles, `--stdio` JSON-lines commands/events, measurement CSVs, and adjacent `.run.json` files retain the unversioned revision-1 contract without adding fields to existing data. Arbitrary user metadata is not interpreted as a schema version. Python constants `PROFILE_COMPATIBILITY_REVISION`, `JSON_LINES_API_REVISION`, and `RECORDING_COMPATIBILITY_REVISION` are all `1`. Future revisions will be explicit opt-ins while existing profiles, notebooks, and CSVs remain readable.
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 2
+keeps the CSV columns but removes fixed seven-digit X/Y/R rounding. Scientific
+text round-trips the acquired f64 value. Keep `.run.json` and `.readings.jsonl`
+with the CSV: raw instrument response text is retained; unknown resolution and
+uncertainty remain unknown. Digit count does not certify physical accuracy.
+`PROFILE_COMPATIBILITY_REVISION` and `JSON_LINES_API_REVISION` remain `1`;
+`RECORDING_COMPATIBILITY_REVISION` is `2`. Existing profiles and old CSV files
+remain readable. Digits already rounded out of old CSV files cannot be recovered.
 
 ### Setup
 

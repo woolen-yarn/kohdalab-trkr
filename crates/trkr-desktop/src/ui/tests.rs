@@ -163,16 +163,171 @@ fn save_now_preserves_complete_rows_and_refuses_overwrite() {
     let source = dir.path().join("source.csv");
     let destination = dir.path().join("snapshot.csv");
     std::fs::write(&source, "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial").unwrap();
-    copy_complete_csv(&source, &destination).unwrap();
+    copy_complete_csv(&source, &destination, true).unwrap();
     assert_eq!(
         std::fs::read_to_string(&destination).unwrap(),
         "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\n"
     );
-    assert!(copy_complete_csv(&source, &destination).is_err());
+    assert!(copy_complete_csv(&source, &destination, true).is_err());
     assert_eq!(
         std::fs::read_to_string(source).unwrap(),
         "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial"
     );
+}
+
+#[test]
+fn save_now_copies_schema_two_sidecars_with_a_consistent_active_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    let destination = dir.path().join("snapshot.csv");
+    std::fs::write(
+        &source,
+        "timestamp,X_V\n2026-10-19T00:00:00Z,1e-9\n2026-10-19T00:00:01Z,2e-9",
+    )
+    .unwrap();
+    std::fs::write(
+        source.with_extension("run.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "precision_policy": "no_accuracy_claim",
+            "readings_file": "source.readings.jsonl",
+            "source": "Gpib",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        source.with_extension("readings.jsonl"),
+        concat!(
+            "{\"event\":\"context\",\"reply\":\"1.230000000000e-9\\r\\n\"}\n",
+            "{\"point_index\":1,\"status\":\"ok\",\"reply\":\"1.230000000000e-9\\r\\n\"}\n",
+            "{\"point_index\":2,\"status\":\"ok\",\"reply\":\"later\"}\n",
+            "{\"point_index\":2,\"status\":\"error\",\"error\":\"read failed\"}\n",
+            "{\"point_index\":3,\"status\":\"ok\",\"reply\":\"later still\"}\n",
+            "{\"point_index\":4,\"status\":\"error\",\"error\":\"later error\"}\n"
+        ),
+    )
+    .unwrap();
+
+    copy_complete_csv(&source, &destination, true).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,1e-9\n"
+    );
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(destination.with_extension("run.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["rows"], 1);
+    assert_eq!(metadata["status"], "snapshot");
+    assert_eq!(metadata["precision_policy"], "no_accuracy_claim");
+    assert_eq!(metadata["readings_file"], "snapshot.readings.jsonl");
+    let audit = std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap();
+    assert!(audit.contains("1.230000000000e-9\\r\\n"));
+    assert!(audit.contains("\"point_index\":1"));
+    assert!(audit.contains("\"point_index\":2,\"status\":\"error\""));
+    assert!(!audit.contains("\"point_index\":2,\"status\":\"ok\""));
+    assert!(!audit.contains("later still"));
+    assert!(!audit.contains("later error"));
+}
+
+#[test]
+fn save_now_all_destination_sidecars_refuse_overwrite() {
+    for collision in [
+        "snapshot.csv",
+        "snapshot.run.json",
+        "snapshot.readings.jsonl",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.csv");
+        let destination = dir.path().join("snapshot.csv");
+        std::fs::write(&source, "timestamp\nrow\n").unwrap();
+        std::fs::write(
+            source.with_extension("run.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 2,
+                "readings_file": "source.readings.jsonl"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            source.with_extension("readings.jsonl"),
+            "{\"event\":\"context\"}\n",
+        )
+        .unwrap();
+        let collided = dir.path().join(collision);
+        std::fs::write(&collided, "existing").unwrap();
+
+        assert!(copy_complete_csv(&source, &destination, false).is_err());
+        assert_eq!(std::fs::read_to_string(&collided).unwrap(), "existing");
+        for output in [
+            destination.clone(),
+            destination.with_extension("run.json"),
+            destination.with_extension("readings.jsonl"),
+        ] {
+            if output != collided {
+                assert!(!output.exists(), "{}", output.display());
+            }
+        }
+    }
+}
+
+#[test]
+fn save_now_preserves_partial_evidence_on_activation_collision() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let first_destination = dir.path().join("first.csv");
+    let blocked_destination = dir.path().join("blocked.run.json");
+    let last_destination = dir.path().join("last.readings.jsonl");
+    std::fs::write(&blocked_destination, "existing").unwrap();
+    let mut first = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut blocked = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut last = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    first.write_all(b"first").unwrap();
+    blocked.write_all(b"blocked").unwrap();
+    last.write_all(b"last").unwrap();
+
+    assert!(
+        persist_snapshot_noclobber(vec![
+            (first_destination.clone(), first),
+            (blocked_destination.clone(), blocked),
+            (last_destination.clone(), last),
+        ])
+        .is_err()
+    );
+    assert_eq!(std::fs::read(first_destination).unwrap(), b"first");
+    assert_eq!(
+        std::fs::read_to_string(blocked_destination).unwrap(),
+        "existing"
+    );
+    assert!(!last_destination.exists());
+}
+
+#[test]
+fn save_now_allows_legacy_csv_without_sidecars_and_rejects_missing_declared_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy.csv");
+    let legacy_destination = dir.path().join("legacy_snapshot.csv");
+    std::fs::write(&legacy, "timestamp\nrow\n").unwrap();
+    copy_complete_csv(&legacy, &legacy_destination, false).unwrap();
+    assert!(legacy_destination.exists());
+    assert!(!legacy_destination.with_extension("run.json").exists());
+    assert!(!legacy_destination.with_extension("readings.jsonl").exists());
+
+    let source = dir.path().join("schema-two.csv");
+    let destination = dir.path().join("rejected.csv");
+    std::fs::write(&source, "timestamp\nrow\n").unwrap();
+    std::fs::write(
+        source.with_extension("run.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "readings_file": "missing.readings.jsonl"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(copy_complete_csv(&source, &destination, false).is_err());
+    assert!(!destination.exists());
 }
 #[test]
 fn step_uses_acquired_count_and_total_even_if_plot_history_is_shorter() {
@@ -566,4 +721,79 @@ fn synthetic_layout_capture_keeps_explicit_rotated_axes() {
         assert_eq!(app.plans[Workflow::Srkr2d.index()].slow, slow);
         assert!(app.smoke.as_ref().unwrap().layout_only);
     }
+}
+
+#[test]
+fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.workflow = Workflow::Trkr;
+    app.active_workflow = Workflow::Trkr;
+    let index = App::ix(Workflow::Trkr);
+    let start = Instant::now();
+    app.eta.start();
+    app.snapshot.running = true;
+    app.snapshot.total = 10;
+    app.scan_progress[index] = (0, 10);
+    assert_eq!(app.eta_label(start), "Estimating…");
+    app.snapshot.rows = 2;
+    app.scan_progress[index].0 = 2;
+    app.eta.observe(1, 3.0, start + Duration::from_secs(3));
+    app.eta.observe(2, 6.0, start + Duration::from_secs(6));
+    assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
+    app.snapshot.rows = 10;
+    app.snapshot.phase = "Returning x".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Returning…");
+    app.snapshot.phase = "Reading".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Finishing…");
+    app.demo_viewer = true;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Looping…");
+    app.snapshot.running = false;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+    app.snapshot.running = true;
+    app.snapshot.total = 0; // standalone Move must not reuse the last run's ETA
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+}
+
+#[test]
+fn private_eta_clock_does_not_change_sample_json_contract() {
+    let mut sample = Sample {
+        captured_at: None,
+        elapsed: 3.0,
+        target: Plan::default().targets().unwrap()[0],
+        signal: trkr_core::Signal::default(),
+        position: trkr_motion::Position::default(),
+    };
+    let original = serde_json::to_value(&sample).unwrap();
+    sample.captured_at = Some(Instant::now());
+    assert_eq!(serde_json::to_value(&sample).unwrap(), original);
+    let restored: Sample = serde_json::from_value(original).unwrap();
+    assert!(restored.captured_at.is_none());
+}
+
+#[test]
+fn save_now_omits_terminal_event_from_later_source_completion() {
+    assert!(!audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":20, "status":"complete"}),
+        10
+    ));
+    assert!(audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":10, "status":"complete"}),
+        10
+    ));
+}
+
+#[test]
+fn save_now_keeps_unsaved_raw_reading_from_a_finalized_failed_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("failed.csv");
+    let destination = dir.path().join("copy.csv");
+    std::fs::write(&source, "X_V\n1e-6\n").unwrap();
+    std::fs::write(source.with_extension("run.json"), serde_json::to_vec(&json!({"schema_version":2,"status":"error","rows":1,"readings_file":"failed.readings.jsonl"})).unwrap()).unwrap();
+    let evidence = "{\"event\":\"reading\",\"point_index\":2,\"status\":\"ok\",\"raw\":\"1.23000000000001e-6\"}\n";
+    std::fs::write(source.with_extension("readings.jsonl"), evidence).unwrap();
+    copy_complete_csv(&source, &destination, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap(),
+        evidence
+    );
 }

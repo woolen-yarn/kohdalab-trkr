@@ -800,6 +800,7 @@ mod tests {
                     .unwrap()
                     .into_iter()
                     .map(|target| Sample {
+                        captured_at: None,
                         elapsed: 0.,
                         signal: Signal::new(1e-6, 2e-6, 3e-6, 75.).unwrap(),
                         position: Position {
@@ -872,6 +873,7 @@ mod tests {
         let samples: Vec<_> = [-50., 100., 250.]
             .into_iter()
             .map(|t| Sample {
+                captured_at: None,
                 elapsed: 0.,
                 target: Target {
                     fast: t,
@@ -956,6 +958,7 @@ mod tests {
             ..Plan::default()
         };
         let sample = Sample {
+            captured_at: None,
             elapsed: 0.,
             target: Target {
                 fast: 999.,
@@ -1031,6 +1034,7 @@ mod tests {
     #[test]
     fn heatmap_preparation_preserves_sorted_grid_and_python_extent() {
         let sample = |fast, slow, x| Sample {
+            captured_at: None,
             elapsed: 0.,
             target: Target {
                 fast,

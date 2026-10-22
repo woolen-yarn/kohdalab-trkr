@@ -679,3 +679,38 @@ fn read_only_controller_allows_only_stop_and_shutdown() {
     assert!(controller.send(Command::Stop).is_ok());
     assert!(controller.send(Command::Shutdown).is_ok());
 }
+
+#[test]
+fn recording_context_invalidates_settings_when_identity_or_settings_change() {
+    let mut session = Session {
+        config: Some(config()),
+        lockin_context: Some(serde_json::json!({"value":{"Sensitivity":"old"}})),
+        ..Default::default()
+    };
+    let mut changed = config();
+    changed.address = 13;
+    session.connect(changed, vec![]).unwrap();
+    assert!(session.lockin_context.is_none());
+    session.lockin_context = Some(serde_json::json!({"value":{"Sensitivity":"old"}}));
+    let (send, _events) = mpsc::sync_channel(8);
+    assert!(
+        session
+            .execute(
+                Command::SetLockin {
+                    setting: "sensitivity".into(),
+                    value: "unknown".into()
+                },
+                &AtomicBool::new(false),
+                &send
+            )
+            .is_err()
+    );
+    assert!(session.lockin_context.is_none());
+    session.lockin_context = Some(serde_json::json!({"value":{}}));
+    assert!(
+        session
+            .recording_context(Source::Demo, &config())
+            .get("cached_lockin_settings")
+            .is_none()
+    );
+}

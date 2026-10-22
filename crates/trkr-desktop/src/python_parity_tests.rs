@@ -130,6 +130,7 @@ fn sample(case: &serde_json::Map<String, Value>) -> Sample {
     });
     let target_physical = fallback_physical.map(Option::unwrap_or_default);
     Sample {
+        captured_at: None,
         elapsed: number(sample, "elapsed_s"),
         target: Target {
             fast: number(sample, "target_fast"),
@@ -218,7 +219,8 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
     for case in fixture["row_cases"].as_array().expect("row cases") {
         let case = case.as_object().expect("row case object");
         let case_id = case["id"].as_str().expect("fixture row id");
-        let row = engine::row(&plan(case), &sample(case)).expect("fixture row renders");
+        let sample = sample(case);
+        let row = engine::row(&plan(case), &sample).expect("fixture row renders");
         let expected = case["expected_csv"]
             .as_object()
             .expect("expected Python CSV row");
@@ -233,7 +235,32 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
                 .iter()
                 .position(|field| *field == column)
                 .unwrap_or_else(|| panic!("{case_id}: missing legacy column {column}"));
-            assert_eq!(row[index], csv_value(expected), "{case_id}: {column}");
+            if let Some(value) = match column.as_str() {
+                "X_V" => Some(sample.signal.x_v),
+                "Y_V" => Some(sample.signal.y_v),
+                "R_V" => Some(sample.signal.r_v),
+                _ => None,
+            } {
+                // Revision 2 must preserve the acquired f64 exactly. Separately
+                // retain the historical revision-1 formatting assertion against
+                // the unchanged Python fixture, without accepting its rounding
+                // in newly saved data.
+                assert_eq!(
+                    row[index].parse::<f64>().unwrap().to_bits(),
+                    value.to_bits(),
+                    "{case_id}: lossless {column}"
+                );
+                let rounded = format!("{value:.6e}");
+                let (mantissa, exponent) = rounded.split_once('e').unwrap();
+                let exponent: i32 = exponent.parse().unwrap();
+                assert_eq!(
+                    format!("{mantissa}e{exponent:+03}"),
+                    csv_value(expected),
+                    "{case_id}: frozen revision-1 {column}"
+                );
+            } else {
+                assert_eq!(row[index], csv_value(expected), "{case_id}: {column}");
+            }
         }
     }
 }

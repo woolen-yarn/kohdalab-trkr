@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.5 — 2026-10-22
+
+- Preserve acquired f64 values in X/Y/R CSV fields instead of fixed seven-digit rounding; keep CSV columns and settings compatible. / X/Y/Rの固定7桁丸めを廃止し、取得したf64値を保持。CSV列と設定は維持。
+- Add raw-response JSONL provenance, explicit unknown resolution/uncertainty, failure records and consistent Save snapshots. / 生応答JSONL、分解能・不確かさの不明表記、失敗記録、整合する保存コピーを追加。
+- Estimate acquisition ETA from observed point timing including motion and reads; retain unknown/returning states. / 移動・読取を含む実測点間時間からETAを算出し、未確定・復帰中を区別。
+
 ## 0.3.4 — 2026-10-21
 
 - Make the fake-device homing progress test tolerate an additional time-driven position read on slow CI runners, and cover a delayed-ready response without changing production motion code.

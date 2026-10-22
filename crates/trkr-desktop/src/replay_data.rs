@@ -155,6 +155,7 @@ impl Row {
         }
         let physical = std::array::from_fn(|i| corrected[i] + plan.zero[i]);
         Ok(Sample {
+            captured_at: None,
             elapsed: self.elapsed,
             target: Target {
                 fast: self.fast,
