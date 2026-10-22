@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.7 — 2026-10-22
+
+- Reconstruct every 2D replay grid from commanded targets when available, retaining actual readbacks and distinct fine steps. / 全2D再生を取得済みの指令値で復元し、実読取と微細なステップを保持。
+- Timestamp CSV rows at host-observed signal-read completion; separate position, signal and flushed CSV-write windows in the audit. Recording revision 4, audit schema 2; CSV columns and profiles stay compatible. / CSV時刻をホストで観測した信号読取完了に修正し、位置・信号・CSV排出完了の時間窓を監査に分離。記録revision 4・監査schema 2。CSV列と設定は維持。
+
 ## 0.3.6 — 2026-10-22
 
 - Save every available axis readback, including fixed delay/orthogonal axes in SRKR, with raw controller units. / SRKRの固定遅延・直交軸など、取得できる全軸の読取とコントローラー単位を保存。

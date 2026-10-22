@@ -82,17 +82,26 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
         plan.n_points = rows.len();
         plan.interval_s = median_step(rows.iter().map(|r| r.elapsed).collect()).unwrap_or(0.0);
     } else {
-        plan.fast_range = replay_range(rows.iter().map(|r| r.fast).collect(), "fast")?;
+        plan.fast_range = replay_range(
+            rows.iter().map(|r| r.fast).collect(),
+            "fast",
+            rows.iter().all(|r| r.commanded[0]),
+        )?;
         if axes.1.is_some() {
-            plan.slow_range = replay_range(rows.iter().filter_map(|r| r.slow).collect(), "slow")?;
+            plan.slow_range = replay_range(
+                rows.iter().filter_map(|r| r.slow).collect(),
+                "slow",
+                rows.iter().all(|r| r.commanded[1]),
+            )?;
         }
     }
+    let exact_slow = rows.iter().all(|r| r.commanded[1]);
     let mut slow_values = Vec::new();
     for row in &rows {
         if let Some(value) = row.slow
             && !slow_values
                 .iter()
-                .any(|known: &f64| (known - value).abs() < 1e-9)
+                .any(|known: &f64| same_coordinate(*known, value, exact_slow))
         {
             slow_values.push(value);
         }
@@ -105,7 +114,7 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
                 .and_then(|value| {
                     slow_values
                         .iter()
-                        .position(|known| (*known - value).abs() < 1e-9)
+                        .position(|known| same_coordinate(*known, value, exact_slow))
                 })
                 .unwrap_or(0);
             row.into_sample(&plan, line)
@@ -122,6 +131,7 @@ struct Row {
     elapsed: f64,
     fast: f64,
     slow: Option<f64>,
+    commanded: [bool; 2],
     corrected: [Option<f64>; 3],
     physical: [Option<f64>; 3],
     spatial_theta_deg: Option<f64>,
@@ -155,6 +165,7 @@ impl Row {
         }
         let physical = std::array::from_fn(|i| corrected[i] + plan.zero[i]);
         Ok(Sample {
+            timing: Default::default(),
             captured_at: None,
             elapsed: self.elapsed,
             target: Target {
@@ -215,11 +226,27 @@ fn parse_row(
         coordinate(&record, h, row_number, Axis::X)?,
         coordinate(&record, h, row_number, Axis::Y)?,
     ];
+    let scan_coordinate = |axis| {
+        let keys = coordinate_keys(axis);
+        let target = keys.iter().find(|key| key.starts_with("target_"));
+        if slow_axis.is_some()
+            && let Some(key) = target
+            && let Some(value) = number(key)?
+        {
+            return Ok((Some(value), true));
+        }
+        coordinate(&record, h, row_number, axis).map(|value| (value, false))
+    };
+    let (fast_coordinate, fast_commanded) = scan_coordinate(fast_axis)?;
+    let (slow_coordinate, slow_commanded) = match slow_axis {
+        Some(axis) => scan_coordinate(axis)?,
+        None => (None, false),
+    };
     let fast = if workflow == Workflow::SignalMonitor {
         number("target_elapsed_s")?
             .unwrap_or_else(|| number("elapsed_s").ok().flatten().unwrap_or(0.0))
     } else {
-        coordinate(&record, h, row_number, fast_axis)?.ok_or_else(|| {
+        fast_coordinate.ok_or_else(|| {
             format!(
                 "Row {row_number}: missing replay position for fast axis {}",
                 fast_axis.name()
@@ -227,7 +254,7 @@ fn parse_row(
         })?
     };
     let slow = match slow_axis {
-        Some(axis) => Some(coordinate(&record, h, row_number, axis)?.ok_or_else(|| {
+        Some(axis) => Some(slow_coordinate.ok_or_else(|| {
             format!(
                 "Row {row_number}: missing replay position for slow axis {}",
                 axis.name()
@@ -245,6 +272,7 @@ fn parse_row(
             .unwrap_or(0.0),
         fast,
         slow,
+        commanded: [fast_commanded, slow_commanded],
         corrected,
         physical,
         spatial_theta_deg: number("spatial_theta_deg")?,
@@ -432,9 +460,13 @@ fn set_axis(corrected: &mut [f64; 3], axis: Axis, value: f64) {
 fn axis_value(axis: Axis, value: f64, wanted: Axis) -> Option<f64> {
     (axis == wanted).then_some(value)
 }
-fn replay_range(mut values: Vec<f64>, name: &str) -> Result<Range, String> {
+fn same_coordinate(a: f64, b: f64, exact: bool) -> bool {
+    if exact { a == b } else { (a - b).abs() < 1e-9 }
+}
+
+fn replay_range(mut values: Vec<f64>, name: &str, exact: bool) -> Result<Range, String> {
     values.sort_by(f64::total_cmp);
-    values.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+    values.dedup_by(|a, b| same_coordinate(*a, *b, exact));
     if values.is_empty() {
         return Err(format!("No {name} coordinates"));
     }
@@ -498,6 +530,76 @@ mod tests {
     fn text(v: Vec<String>) -> String {
         format!("{}{}\n", header(), v.join(","))
     }
+    #[test]
+    fn two_dimensional_targets_preserve_grid_despite_readback_jitter() {
+        for (measurement, fast, slow) in [
+            ("srkr_2d", "x", "y"),
+            ("srkr_2d", "y", "x"),
+            ("srkr_2d", "u", "v"),
+            ("srkr_2d", "v", "u"),
+            ("strkr", "t", "x"),
+            ("strkr", "x", "t"),
+            ("strkr", "t", "y"),
+            ("strkr", "y", "t"),
+            ("strkr", "t", "u"),
+            ("strkr", "u", "t"),
+            ("strkr", "t", "v"),
+            ("strkr", "v", "t"),
+        ] {
+            for step in [1.0, 1e-10] {
+                let index = |axis| match axis {
+                    "t" => 4,
+                    "x" => 5,
+                    "y" => 6,
+                    "u" => 7,
+                    "v" => 8,
+                    _ => unreachable!(),
+                };
+                let mut body = header().to_owned();
+                for i in 0..4 {
+                    let mut r = row(measurement, fast, slow);
+                    r[index(fast)] = ((i % 2) as f64 * step).to_string();
+                    r[index(slow)] = ((i / 2) as f64 * step).to_string();
+                    for (j, field) in r.iter_mut().enumerate().take(15).skip(9) {
+                        *field = (100.0 + i as f64 * 0.001 + j as f64).to_string();
+                    }
+                    r[19] = "0".into();
+                    body.push_str(&format!("{}\n", r.join(",")));
+                }
+                let f = csv(&body);
+                let data = load(f.path()).unwrap();
+                assert_eq!(
+                    data.samples
+                        .iter()
+                        .map(|s| s.target.line)
+                        .collect::<Vec<_>>(),
+                    [0, 0, 1, 1],
+                    "{measurement} {fast}/{slow} {step}"
+                );
+                assert_eq!(data.plan.fast_range.step, step);
+                assert_eq!(data.plan.slow_range.step, step);
+                assert_eq!(data.samples[1].target.fast, step);
+                assert_eq!(data.samples[2].target.slow, Some(step));
+                assert_eq!(data.samples[1].position.physical[1], Some(113.001));
+            }
+        }
+    }
+
+    #[test]
+    fn legacy_two_dimensional_csv_without_targets_keeps_readback_fallback() {
+        let f = csv(
+            "measurement,fast_axis,slow_axis,x_cor_um,y_cor_um,X_V,Y_V\nsrkr_2d,x,y,0,0,1,2\nsrkr_2d,x,y,1,0,1,2\nsrkr_2d,x,y,0,1,1,2\n",
+        );
+        let data = load(f.path()).unwrap();
+        assert_eq!(
+            data.samples
+                .iter()
+                .map(|s| s.target.line)
+                .collect::<Vec<_>>(),
+            [0, 0, 1]
+        );
+    }
+
     #[test]
     fn reads_all_workflows() {
         for (measurement, fast, slow) in [

@@ -757,6 +757,7 @@ fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() 
 #[test]
 fn private_eta_clock_does_not_change_sample_json_contract() {
     let mut sample = Sample {
+        timing: Default::default(),
         captured_at: None,
         elapsed: 3.0,
         target: Plan::default().targets().unwrap()[0],

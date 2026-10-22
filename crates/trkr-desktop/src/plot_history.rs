@@ -117,6 +117,7 @@ mod tests {
         let target = plan.targets().unwrap()[0];
         Trace {
             samples: vec![Sample {
+                timing: Default::default(),
                 captured_at: None,
                 target,
                 signal: Signal::demo(value, 0., 0.),
