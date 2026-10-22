@@ -1,6 +1,6 @@
 //! CSV schema, Python-compatible number formatting and run metadata.
 //! Instrument ownership and acquisition scheduling remain in the parent engine.
-use super::{Sample, Source, axis_mask, coordinate_name};
+use super::{Sample, Source, coordinate_name};
 use serde_json::Value;
 use std::{
     fs::{File, OpenOptions},
@@ -9,7 +9,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use trkr_core::{Plan, Workflow};
+use trkr_core::{Axis, Plan, Workflow};
 
 pub const FIELDS: &[&str] = &[
     "timestamp",
@@ -128,6 +128,13 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
         "plan": plan, "timestamp": utc_now()?,
         "schema_version": 2,
+        "recording_revision": 3,
+        "coordinate_policy": {
+            "readback_fields": "all_available_axes; missing readings stay empty",
+            "rotated_origin": "measurement_zero_xy",
+            "rotated_readback": "u=x_cor*cos(theta)+y_cor*sin(theta); v=-x_cor*sin(theta)+y_cor*cos(theta)",
+            "rotated_targets": "commanded u/v; orthogonal axis explicitly zero",
+        },
         "csv_numeric_format": "shortest_roundtrip_scientific",
         "csv_scientific_fields": ["X_V", "Y_V", "R_V"],
         "other_numeric_fields": "shortest_roundtrip_python_compatible",
@@ -321,12 +328,6 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
     put("measurement", plan.workflow.key().into());
     put("acquisition_elapsed_s", csv_float(sample.elapsed));
     let monitor = plan.workflow == Workflow::SignalMonitor;
-    let exported_axes = match plan.workflow {
-        Workflow::SignalMonitor => [false; 3],
-        Workflow::Trkr => [true, false, false],
-        Workflow::Srkr => axis_mask(plan.fast),
-        Workflow::Strkr | Workflow::Srkr2d => [true; 3],
-    };
     if monitor {
         put("elapsed_s", csv_float(sample.elapsed));
         put("fast_axis", "elapsed_s".into());
@@ -355,41 +356,56 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
                 );
             }
         }
-        for (i, axis) in ["t", "x", "y"].iter().enumerate() {
-            let unit = if i == 0 { "ps" } else { "um" };
-            if exported_axes[i]
-                && let Some(value) = sample.position.physical[i]
-            {
-                put(&format!("{axis}_{unit}"), csv_float(value));
-                put(
-                    &format!("{axis}_cor_{unit}"),
-                    csv_float(value - plan.zero[i]),
-                );
+        if matches!(plan.fast, Axis::U | Axis::V)
+            || (plan.workflow.is_2d() && matches!(plan.slow, Axis::U | Axis::V))
+        {
+            // Rotated moves command both X and Y. The orthogonal U/V target
+            // is explicitly zero, not an unknown fixed Cartesian position.
+            for (axis, field) in [(Axis::U, "target_u_cor_um"), (Axis::V, "target_v_cor_um")] {
+                let value = if plan.fast == axis {
+                    sample.target.fast
+                } else if plan.workflow.is_2d() && plan.slow == axis {
+                    sample.target.slow.ok_or("Missing slow target")?
+                } else {
+                    0.0
+                };
+                put(field, csv_float(value));
             }
         }
+    }
+    // Position already contains fresh readbacks from the connected rig. Export
+    // every available axis, including fixed axes; never substitute scan targets.
+    let corrected: [Option<f64>; 3] =
+        std::array::from_fn(|i| sample.position.physical[i].map(|value| value - plan.zero[i]));
+    for (i, axis) in ["t", "x", "y"].iter().enumerate() {
+        let unit = if i == 0 { "ps" } else { "um" };
+        if let Some(value) = sample.position.physical[i] {
+            put(&format!("{axis}_{unit}"), csv_float(value));
+            put(
+                &format!("{axis}_cor_{unit}"),
+                csv_float(corrected[i].unwrap()),
+            );
+        }
+    }
+    if let (Some(x), Some(y)) = (corrected[1], corrected[2]) {
         let (s, c) = plan.theta_deg.to_radians().sin_cos();
-        let [_, x, y] = sample.target.corrected;
         put("u_cor_um", csv_float(x * c + y * s));
         put("v_cor_um", csv_float(-x * s + y * c));
-        put("spatial_theta_deg", csv_float(plan.theta_deg));
-        put("coordinate", coordinate_name(plan.coordinate).into());
     }
-    for (axis, key, value) in [
-        (0, "delay_stage_mm", sample.position.delay_stage_mm),
-        (1, "x_scanner_mm", sample.position.x_scanner_mm),
-        (1, "x_scanner_deg", sample.position.x_scanner_deg),
-        (2, "y_scanner_mm", sample.position.y_scanner_mm),
-        (2, "y_scanner_deg", sample.position.y_scanner_deg),
+    put("spatial_theta_deg", csv_float(plan.theta_deg));
+    put("coordinate", coordinate_name(plan.coordinate).into());
+    for (key, value) in [
+        ("delay_stage_mm", sample.position.delay_stage_mm),
+        ("x_scanner_mm", sample.position.x_scanner_mm),
+        ("x_scanner_deg", sample.position.x_scanner_deg),
+        ("y_scanner_mm", sample.position.y_scanner_mm),
+        ("y_scanner_deg", sample.position.y_scanner_deg),
     ] {
-        if exported_axes[axis]
-            && let Some(value) = value
-        {
+        if let Some(value) = value {
             put(key, csv_float(value));
         }
     }
-    if exported_axes[0]
-        && let Some(value) = sample.position.delay_stage_pulse
-    {
+    if let Some(value) = sample.position.delay_stage_pulse {
         put("delay_stage_pulse", value.to_string());
     }
     put("X_V", csv_voltage(sample.signal.x_v)?);
@@ -585,5 +601,147 @@ mod tests {
         assert_eq!(get("t_ps"), "-171.99");
         assert_eq!(get("delay_stage_pulse"), "1234");
         assert!(get("x_um").is_empty());
+    }
+    fn test_sample(plan: &Plan, physical: [Option<f64>; 3]) -> Sample {
+        Sample {
+            captured_at: None,
+            elapsed: 0.0,
+            target: plan.targets().unwrap()[0],
+            signal: Signal::default(),
+            position: Position {
+                physical,
+                delay_stage_mm: Some(12.5),
+                delay_stage_pulse: Some(1234),
+                x_scanner_mm: Some(0.02),
+                y_scanner_deg: Some(0.03),
+                ..Default::default()
+            },
+        }
+    }
+    fn cell<'a>(row: &'a [String], name: &str) -> &'a str {
+        &row[FIELDS.iter().position(|field| *field == name).unwrap()]
+    }
+    #[test]
+    fn every_workflow_exports_available_fixed_axis_readbacks_and_raw_units() {
+        for (workflow, fast, slow) in [
+            (Workflow::SignalMonitor, Axis::T, Axis::X),
+            (Workflow::Trkr, Axis::T, Axis::X),
+            (Workflow::Srkr, Axis::X, Axis::Y),
+            (Workflow::Srkr, Axis::Y, Axis::X),
+            (Workflow::Strkr, Axis::T, Axis::X),
+            (Workflow::Strkr, Axis::Y, Axis::T),
+            (Workflow::Srkr2d, Axis::X, Axis::Y),
+        ] {
+            let plan = Plan {
+                workflow,
+                fast,
+                slow,
+                zero: [-250., 10., 20.],
+                ..Default::default()
+            };
+            let sample = test_sample(&plan, [Some(-200.), Some(12.), Some(24.)]);
+            let r = row(&plan, &sample).unwrap();
+            for (field, value) in [
+                ("t_ps", -200.),
+                ("t_cor_ps", 50.),
+                ("x_um", 12.),
+                ("x_cor_um", 2.),
+                ("y_um", 24.),
+                ("y_cor_um", 4.),
+                ("delay_stage_mm", 12.5),
+                ("x_scanner_mm", 0.02),
+                ("y_scanner_deg", 0.03),
+            ] {
+                assert_eq!(
+                    cell(&r, field).parse::<f64>().unwrap(),
+                    value,
+                    "{workflow:?}: {field}"
+                );
+            }
+            assert_eq!(cell(&r, "delay_stage_pulse"), "1234");
+            if workflow == Workflow::Srkr {
+                assert!(cell(&r, "target_t_cor_ps").is_empty());
+            }
+        }
+    }
+    #[test]
+    fn rotated_scans_distinguish_commanded_uv_from_actual_readback() {
+        for (workflow, fast, slow) in [
+            (Workflow::Srkr, Axis::U, Axis::X),
+            (Workflow::Srkr, Axis::V, Axis::X),
+            (Workflow::Srkr2d, Axis::U, Axis::V),
+            (Workflow::Srkr2d, Axis::V, Axis::U),
+            (Workflow::Strkr, Axis::T, Axis::U),
+            (Workflow::Strkr, Axis::V, Axis::T),
+        ] {
+            let plan = Plan {
+                workflow,
+                fast,
+                slow,
+                theta_deg: 90.,
+                zero: [-250., 10., 20.],
+                fast_range: trkr_core::Range {
+                    min: 3.,
+                    max: 3.,
+                    step: 1.,
+                },
+                slow_range: trkr_core::Range {
+                    min: 5.,
+                    max: 5.,
+                    step: 1.,
+                },
+                ..Default::default()
+            };
+            let sample = test_sample(&plan, [Some(-200.), Some(12.), Some(24.)]);
+            let r = row(&plan, &sample).unwrap();
+            assert!((cell(&r, "u_cor_um").parse::<f64>().unwrap() - 4.).abs() < 1e-12);
+            assert!((cell(&r, "v_cor_um").parse::<f64>().unwrap() + 2.).abs() < 1e-12);
+            assert_eq!(cell(&r, "spatial_theta_deg"), "90.0");
+            for (axis, field) in [(Axis::U, "target_u_cor_um"), (Axis::V, "target_v_cor_um")] {
+                let target = if fast == axis {
+                    3.
+                } else if workflow.is_2d() && slow == axis {
+                    5.
+                } else {
+                    0.
+                };
+                assert_eq!(cell(&r, field).parse::<f64>().unwrap(), target);
+            }
+        }
+    }
+    #[test]
+    fn missing_positions_stay_empty_instead_of_becoming_targets_or_zero() {
+        let plan = Plan {
+            workflow: Workflow::Srkr,
+            fast: Axis::U,
+            theta_deg: 37.,
+            ..Default::default()
+        };
+        for physical in [
+            [None, None, None],
+            [None, Some(3.), None],
+            [None, None, Some(4.)],
+        ] {
+            let sample = Sample {
+                position: Position {
+                    physical,
+                    ..Default::default()
+                },
+                ..test_sample(&plan, physical)
+            };
+            let r = row(&plan, &sample).unwrap();
+            for field in [
+                "t_ps",
+                "t_cor_ps",
+                "u_cor_um",
+                "v_cor_um",
+                "delay_stage_mm",
+                "delay_stage_pulse",
+            ] {
+                assert!(cell(&r, field).is_empty(), "{field}");
+            }
+            assert!(!cell(&r, "target_u_cor_um").is_empty());
+            assert_eq!(cell(&r, "target_v_cor_um"), "0.0");
+        }
     }
 }

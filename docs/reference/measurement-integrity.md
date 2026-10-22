@@ -10,6 +10,31 @@ This is numeric preservation, not a claim that every digit is physically signifi
 
 0.3.5（記録revision 2）から、X_V/Y_V/R_Vは取得した有限f64値を正確に復元できる最短の指数表記で保存します。他の数値列はPython互換の最短往復表記を維持し、CSV列は変更しません。GUI表示は短くても、保存値は表示用に丸めません。これは数値の保持であり、全桁が物理的な有効数字だという保証ではありません。
 
+## Coordinate recording (0.3.6, revision 3) / 座標の保存
+
+Every available fresh connected-axis readback is saved, even when that axis is
+fixed during SRKR, TRKR or 2D acquisition. `t_ps`/`x_um`/`y_um` are instrument
+coordinates; `t_cor_ps`/`x_cor_um`/`y_cor_um` subtract `plan.zero`. Controller
+mm/degree/pulse readings are retained when available. Disconnected/unknown axes
+stay empty. No extra connections, motion or position queries are introduced.
+Signal Monitor follows the same availability rule.
+
+SRKR・TRKR・2D測定で固定されている軸も、接続済み機器から取得できた読取を保存します。`t_ps`・`x_um`・`y_um`は機器座標、`t_cor_ps`・`x_cor_um`・`y_cor_um`は`plan.zero`を差し引いた座標です。取得できるmm・degree・pulseも保存します。未接続・不明な軸は空欄で、追加の接続・移動・位置照会は行いません。Signal Monitorも同じ基準です。
+
+For rotated scans, `target_u_cor_um`/`target_v_cor_um` hold commanded U/V values;
+the unscanned rotated axis is explicitly zero because a rotated move commands
+both X and Y. `u_cor_um`/`v_cor_um` hold the inverse rotation of actual corrected
+X/Y readings: `u=x_cor*cos(theta)+y_cor*sin(theta)`,
+`v=-x_cor*sin(theta)+y_cor*cos(theta)`. Both X/Y readings are required; never
+replace a missing readback with a target. Cartesian scans do not invent U/V
+targets, but may record measured U/V when both X/Y readings exist.
+`spatial_theta_deg` records the angle; `plan.zero` remains in `.run.json`.
+U/V replay groups scan lines by explicit targets while retaining actual X/Y.
+In 0.3.5 and earlier, `u_cor_um`/`v_cor_um` were derived from targets, not readbacks;
+existing CSVs are not rewritten. CSV column names stay unchanged.
+
+U/Vスキャンでは`target_u_cor_um`・`target_v_cor_um`が指令値です。回転移動はX/Y両軸を指令するため、走査しない回転軸の目標も明示的に0とします。`u_cor_um`・`v_cor_um`には実際の補正済みX/Y読取を上式で逆回転した値を保存します。両方の読取が必要で、欠けた読取を指令値で埋めません。X/Y走査ではU/V指令値を捏造しませんが、両軸を読めれば実測U/Vを記録します。角度は`spatial_theta_deg`、原点は`.run.json`の`plan.zero`で確認できます。U/V再生は指令値で行を区別し、実際のX/Y読取も保持します。0.3.5以前の`u_cor_um`・`v_cor_um`は指令値由来でした。既存CSVの書換えと列名の変更は行いません。
+
 ## Keep three files / 3ファイルを保管
 
 Keep `name.csv`, `name.run.json`, and `name.readings.jsonl` together. The JSONL

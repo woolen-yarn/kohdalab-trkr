@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.6 — 2026-10-22
+
+- Save every available axis readback, including fixed delay/orthogonal axes in SRKR, with raw controller units. / SRKRの固定遅延・直交軸など、取得できる全軸の読取とコントローラー単位を保存。
+- Distinguish commanded U/V targets from U/V calculated from actual X/Y readbacks and the measurement origin/rotation; unknown readings stay empty. / U/V指令値と、実際のX/Y読取・測定原点・角度から求めるU/Vを分離し、未取得値は空欄を維持。
+- Preserve U/V replay line grouping using explicit targets even when readbacks drift. Recording revision 3 keeps CSV columns and profile/API revision 1. / 読取がずれても指令値でU/V再生の行構造を保持。記録revision 3でもCSV列、設定・API revision 1を維持。
+
 ## 0.3.5 — 2026-10-22
 
 - Preserve acquired f64 values in X/Y/R CSV fields instead of fixed seven-digit rounding; keep CSV columns and settings compatible. / X/Y/Rの固定7桁丸めを廃止し、取得したf64値を保持。CSV列と設定は維持。

@@ -5,13 +5,14 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 ## 互換性
 
 設定JSONと`--stdio`の命令・イベントはrevision 1を維持します。
-記録はrevision 2です。CSVの列は同じですが、X/Y/Rの固定7桁丸めを廃止し、
+記録はrevision 3です。CSVの列は同じですが、X/Y/Rの固定7桁丸めを廃止し、
 取得したf64値を復元できる指数表記に変更しました。`.run.json`と
 `.readings.jsonl`をCSVと一緒に保管してください。装置応答の文字列を保持し、
 不明な分解能・不確かさを推測しません。桁数は物理的な精度の保証ではありません。
 `PROFILE_COMPATIBILITY_REVISION`と`JSON_LINES_API_REVISION`は`1`、
-`RECORDING_COMPATIBILITY_REVISION`は`2`です。既存設定と旧CSVは引き続き読み取れます。
+`RECORDING_COMPATIBILITY_REVISION`は`3`です。既存設定と旧CSVは引き続き読み取れます。
 旧CSVで丸められた桁は復元できません。
+0.3.6から固定軸の読取も保存し、U/Vの指令値と実読取を区別します。[座標の保存](../../docs/reference/measurement-integrity.md)を参照してください。
 
 ## 最初の準備
 
@@ -99,14 +100,15 @@ The GUI, acquisition, and device control run in Rust. This client passes command
 
 ### Compatibility
 
-Profiles and `--stdio` commands/events remain revision 1. Recording revision 2
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 3
 keeps the CSV columns but removes fixed seven-digit X/Y/R rounding. Scientific
 text round-trips the acquired f64 value. Keep `.run.json` and `.readings.jsonl`
 with the CSV: raw instrument response text is retained; unknown resolution and
 uncertainty remain unknown. Digit count does not certify physical accuracy.
 `PROFILE_COMPATIBILITY_REVISION` and `JSON_LINES_API_REVISION` remain `1`;
-`RECORDING_COMPATIBILITY_REVISION` is `2`. Existing profiles and old CSV files
+`RECORDING_COMPATIBILITY_REVISION` is `3`. Existing profiles and old CSV files
 remain readable. Digits already rounded out of old CSV files cannot be recovered.
+From 0.3.6, available fixed-axis readings are saved and commanded U/V is separated from measured U/V. See [coordinate recording](../../docs/reference/measurement-integrity.md).
 
 ### Setup
 

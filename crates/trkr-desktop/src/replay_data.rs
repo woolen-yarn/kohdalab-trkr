@@ -293,8 +293,8 @@ fn coordinate_keys(axis: Axis) -> [&'static str; 3] {
         Axis::T => ["t_cor_ps", "target_t_cor_ps", "t_ps"],
         Axis::X => ["x_cor_um", "target_x_cor_um", "x_um"],
         Axis::Y => ["y_cor_um", "target_y_cor_um", "y_um"],
-        Axis::U => ["u_cor_um", "target_u_cor_um", "u_um"],
-        Axis::V => ["v_cor_um", "target_v_cor_um", "v_um"],
+        Axis::U => ["target_u_cor_um", "u_cor_um", "u_um"],
+        Axis::V => ["target_v_cor_um", "v_cor_um", "v_um"],
     }
 }
 fn parse_number(value: &str, row: usize, key: &str) -> Result<f64, String> {
@@ -619,5 +619,40 @@ mod tests {
         r[16] = "not-a-number".into();
         let f = csv(&text(r));
         assert!(load(f.path()).unwrap_err().contains("Y_V"));
+    }
+    #[test]
+    fn rotated_grid_uses_commanded_lines_while_retaining_readback_error() {
+        let mut body = header().to_owned();
+        for (u, v, du, dv) in [
+            (2., 3., 0.001, 0.001),
+            (4., 3., -0.002, 0.002),
+            (2., 4., 0.003, -0.003),
+        ] {
+            let mut r = row("srkr_2d", "u", "v");
+            r[7] = u.to_string();
+            r[8] = v.to_string();
+            r[19] = "90".into();
+            r[21] = (u + du).to_string();
+            r[22] = (v + dv).to_string();
+            r[10] = (-(v + dv)).to_string();
+            r[11] = (u + du).to_string();
+            r[13] = r[10].clone();
+            r[14] = r[11].clone();
+            body.push_str(&r.join(","));
+            body.push('\n');
+        }
+        let file = csv(&body);
+        let data = load(file.path()).unwrap();
+        assert_eq!(
+            data.samples
+                .iter()
+                .map(|s| s.target.line)
+                .collect::<Vec<_>>(),
+            vec![0, 0, 1]
+        );
+        assert_eq!(data.samples[0].target.fast, 2.);
+        assert_eq!(data.samples[0].target.slow, Some(3.));
+        assert_eq!(data.samples[0].position.physical[1], Some(-3.001));
+        assert_eq!(data.samples[0].position.physical[2], Some(2.001));
     }
 }

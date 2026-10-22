@@ -5,10 +5,8 @@ mod status;
 use crate::lockin::{self, Model};
 pub(crate) use execution::active_axes;
 #[cfg(test)]
-use execution::masked;
-use execution::{
-    axis_mask, line_reset, reset_fast_before_slow, return_moves, return_target, scan_moves,
-};
+use execution::{axis_mask, masked};
+use execution::{line_reset, reset_fast_before_slow, return_moves, return_target, scan_moves};
 pub use recording::FIELDS;
 pub(crate) use recording::row;
 use recording::{create_csv, finish_metadata};
