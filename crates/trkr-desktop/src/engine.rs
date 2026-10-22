@@ -486,6 +486,11 @@ impl Session {
     }
     fn connect(&mut self, config: HardwareConfig, devices: Vec<Device>) -> Result<(), String> {
         // Reopening serial handles never initiates motion or homing.
+        if self.config.as_ref().is_some_and(|previous| {
+            previous.model != config.model || previous.address != config.address
+        }) {
+            self.lockin_context = None;
+        }
         if devices.contains(&Device::Lockin) {
             let changed = self
                 .config
