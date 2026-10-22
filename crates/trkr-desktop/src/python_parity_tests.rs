@@ -220,7 +220,56 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
         let case = case.as_object().expect("row case object");
         let case_id = case["id"].as_str().expect("fixture row id");
         let sample = sample(case);
-        let row = engine::row(&plan(case), &sample).expect("fixture row renders");
+        let plan = plan(case);
+        let current = engine::row(&plan, &sample).expect("fixture row renders");
+        let mut row = current.clone();
+        // Recording revision 3 intentionally exports previously hidden fixed
+        // axes. Project only that visibility back to the historical contract;
+        // the immutable fixture still checks all legacy exported values.
+        let legacy_axes = match plan.workflow {
+            Workflow::SignalMonitor => [false; 3],
+            Workflow::Trkr => [true, false, false],
+            Workflow::Srkr => match plan.fast {
+                Axis::T => [true, false, false],
+                Axis::X => [false, true, false],
+                Axis::Y => [false, false, true],
+                Axis::U | Axis::V => [false, true, true],
+            },
+            Workflow::Strkr | Workflow::Srkr2d => [true; 3],
+        };
+        for (axis, columns) in [
+            (
+                0,
+                &["t_ps", "t_cor_ps", "delay_stage_mm", "delay_stage_pulse"][..],
+            ),
+            (
+                1,
+                &["x_um", "x_cor_um", "x_scanner_mm", "x_scanner_deg"][..],
+            ),
+            (
+                2,
+                &["y_um", "y_cor_um", "y_scanner_mm", "y_scanner_deg"][..],
+            ),
+        ] {
+            if !legacy_axes[axis] {
+                for column in columns {
+                    row[engine::FIELDS
+                        .iter()
+                        .position(|field| field == column)
+                        .unwrap()]
+                    .clear();
+                }
+            }
+        }
+        if plan.workflow == Workflow::SignalMonitor {
+            for column in ["coordinate", "spatial_theta_deg"] {
+                row[engine::FIELDS
+                    .iter()
+                    .position(|field| *field == column)
+                    .unwrap()]
+                .clear();
+            }
+        }
         let expected = case["expected_csv"]
             .as_object()
             .expect("expected Python CSV row");
