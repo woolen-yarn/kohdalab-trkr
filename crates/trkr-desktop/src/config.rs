@@ -194,6 +194,11 @@ impl Settings {
         };
         let theta_deg = number(&self.raw["coordinates"]["spatial"], "theta_deg", 0.)?;
         let plan = Plan {
+            experiment: match self.raw.get("experiment") {
+                None => Default::default(),
+                Some(Value::Object(value)) => value.clone(),
+                Some(_) => return Err("experiment must be an object".into()),
+            },
             workflow,
             fast,
             slow,
@@ -217,6 +222,7 @@ impl Settings {
     }
     pub fn set_plan(&mut self, p: &Plan) -> Result<(), String> {
         p.targets()?;
+        self.raw["experiment"] = json!(p.experiment);
         self.raw["coordinates"]["spatial"]["theta_deg"] = json!(p.theta_deg);
         for (i, key) in ["t_ps", "x_um", "y_um"].into_iter().enumerate() {
             self.raw["measurements"]["move_abs"]["zero"][key] = json!(p.zero[i]);

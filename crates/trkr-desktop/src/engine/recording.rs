@@ -1,58 +1,59 @@
 //! CSV schema, Python-compatible number formatting and run metadata.
 //! Instrument ownership and acquisition scheduling remain in the parent engine.
-use super::{Sample, Source, coordinate_name};
+use super::{Sample, Source};
+use crate::raw_csv::{RawWriter, file_sha256, new_run_id};
 use serde_json::Value;
 use std::{
     fs::{File, OpenOptions},
-    io::{self, BufWriter, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use trkr_core::{Axis, Plan, Workflow};
+use trkr_core::{Axis, Coordinate, Plan, Workflow};
 
 pub const FIELDS: &[&str] = &[
+    "run_id",
+    "point_index",
     "timestamp",
+    "elapsed_s",
+    "quality_flags",
     "measurement",
     "fast_axis",
     "slow_axis",
+    "line_index",
     "target_elapsed_s",
     "target_t_cor_ps",
     "target_x_cor_um",
     "target_y_cor_um",
     "target_u_cor_um",
     "target_v_cor_um",
-    "elapsed_s",
-    "acquisition_elapsed_s",
-    "t_cor_ps",
     "t_ps",
-    "x_cor_um",
     "x_um",
-    "y_cor_um",
     "y_um",
+    "t_cor_ps",
+    "x_cor_um",
+    "y_cor_um",
     "u_cor_um",
     "v_cor_um",
-    "X_V",
-    "Y_V",
-    "R_V",
-    "Theta_deg",
     "spatial_theta_deg",
-    "coordinate",
-    "delay_stage_mm",
-    "delay_stage_pulse",
-    "x_scanner_mm",
-    "x_scanner_deg",
-    "y_scanner_mm",
-    "y_scanner_deg",
+    "X",
+    "Y",
+    "R",
+    "Theta_deg",
+    "signal_unit",
 ];
 
 pub(super) struct Recording {
     csv: csv::Writer<File>,
-    audit: BufWriter<File>,
+    audit: RawWriter,
     metadata_path: PathBuf,
 }
 
 impl Recording {
+    pub(super) fn run_id(&self) -> &str {
+        self.audit.run_id()
+    }
     pub(super) fn write_record<I, T>(&mut self, record: I) -> csv::Result<()>
     where
         I: IntoIterator<Item = T>,
@@ -65,12 +66,10 @@ impl Recording {
         self.csv.flush()
     }
 
-    /// Append one flushed JSONL provenance record.  Each row is flushed so a
+    /// Append one flushed raw CSV provenance event.  Each row is flushed so a
     /// completed acquisition point never relies on a later buffer flush.
     pub(super) fn append_audit(&mut self, value: &Value) -> Result<(), String> {
-        serde_json::to_writer(&mut self.audit, value).map_err(|e| e.to_string())?;
-        self.audit.write_all(b"\n").map_err(|e| e.to_string())?;
-        self.audit.flush().map_err(|e| e.to_string())
+        self.audit.append(value)
     }
 
     /// Count a flushed CSV row before persisting its later completion event.
@@ -117,13 +116,27 @@ impl Recording {
         self.append_audit(&serde_json::json!({"event": "context", "context": context}))
     }
 
+    pub(super) fn set_final_position(
+        &mut self,
+        position: &trkr_motion::Position,
+        phase: &str,
+    ) -> Result<(), String> {
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&self.metadata_path).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        metadata["last_observed_position"] = serde_json::json!(position);
+        metadata["last_phase"] = serde_json::json!(phase);
+        metadata["position_qualification"] =
+            serde_json::json!("last_reported_position_no_extra_final_query");
+        replace_json_atomically(&self.metadata_path, &metadata)
+    }
+
     /// Durably finish both output streams once an acquisition is complete.
     /// Per-point audit writes intentionally flush but do not issue `sync_all`.
     pub(super) fn finish(&mut self) -> Result<(), String> {
         self.csv.flush().map_err(|e| e.to_string())?;
         self.csv.get_ref().sync_all().map_err(|e| e.to_string())?;
-        self.audit.flush().map_err(|e| e.to_string())?;
-        self.audit.get_ref().sync_all().map_err(|e| e.to_string())
+        self.audit.finish()
     }
 }
 
@@ -133,6 +146,7 @@ pub(super) fn finish_metadata(
     status: &str,
     error: Option<&String>,
 ) -> Result<(), String> {
+    let csv_path = path;
     let path = path.with_extension("run.json");
     let mut meta: Value = serde_json::from_slice(&std::fs::read(&path).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
@@ -140,26 +154,37 @@ pub(super) fn finish_metadata(
     meta["status"] = serde_json::json!(status);
     meta["error"] = serde_json::json!(error);
     meta["finished_at"] = serde_json::json!(utc_now()?);
+    meta["file_hashes"] = serde_json::json!({
+        "csv_sha256": file_sha256(csv_path)?,
+        "raw_csv_sha256": file_sha256(&csv_path.with_extension("raw.csv"))?,
+    });
     replace_json_atomically(&path, &meta)
 }
 pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Recording, String> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
+    if path.with_extension("readings.jsonl").exists() {
+        return Err("Legacy raw sidecar already exists; choose another filename".into());
+    }
     let metadata_path = path.with_extension("run.json");
     if metadata_path == path {
         return Err("CSV path must not have the .run.json extension".into());
     }
-    let readings_path = path.with_extension("readings.jsonl");
+    let readings_path = path.with_extension("raw.csv");
+    let run_id = new_run_id();
     if readings_path == path || readings_path == metadata_path {
         return Err("CSV path must permit distinct metadata and readings files".into());
     }
     let metadata = serde_json::json!({
         "application": "kohdalab-trkr", "version": env!("CARGO_PKG_VERSION"),
         "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
-        "plan": plan, "timestamp": utc_now()?,
-        "schema_version": 2,
-        "recording_revision": 4,
+        "plan": plan, "experiment":plan.experiment, "timestamp": utc_now()?,
+        "schema_version": 3,
+        "recording_revision": 5,
+        "csv_schema": "trkr_analysis_v1", "raw_schema": "raw_csv_v1",
+        "run_id":run_id, "status":"running", "rows":0,
+        "software": {"version":env!("CARGO_PKG_VERSION"), "git_commit":option_env!("KOHDALAB_BUILD_COMMIT")},
         "coordinate_policy": {
             "readback_fields": "all_available_axes; missing readings stay empty",
             "rotated_origin": "measurement_zero_xy",
@@ -167,18 +192,16 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
             "rotated_targets": "commanded u/v; orthogonal axis explicitly zero",
         },
         "csv_numeric_format": "shortest_roundtrip_scientific",
-        "csv_scientific_fields": ["X_V", "Y_V", "R_V"],
+        "csv_scientific_fields": ["X", "Y", "R"],
         "other_numeric_fields": "shortest_roundtrip_python_compatible",
         "precision_policy": "no_accuracy_claim",
-        "readings_schema_version": 2,
         "timing_policy": {
             "clock": "host UTC labels and monotonic elapsed seconds; device timestamp unknown",
             "csv_timestamp": "signal read completion; empty when unavailable",
             "position": "aggregate position read window before signal read",
             "csv_write": "separate audit event; completion after CSV flush, not per-row fsync",
         },
-        "readings_file": readings_path.file_name().and_then(|name| name.to_str())
-            .ok_or_else(|| "Readings filename must be valid UTF-8".to_string())?,
+        "raw_csv": {"schema":"raw_csv_v1", "filename":readings_path.file_name().and_then(|name|name.to_str()).ok_or("Raw filename must be UTF-8")?},
     });
     let bytes = serde_json::to_vec_pretty(&metadata).map_err(|e| e.to_string())?;
     let mut csv_created = false;
@@ -199,18 +222,14 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         metadata_created = true;
         meta.write_all(&bytes).map_err(|e| e.to_string())?;
         meta.sync_all().map_err(|e| e.to_string())?;
-        let audit_file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&readings_path)
-            .map_err(|e| format!("Create readings audit: {e}"))?;
+        let audit = RawWriter::create(&readings_path, &run_id)?;
         readings_created = true;
         let mut writer = csv::Writer::from_writer(file);
         writer.write_record(FIELDS).map_err(|e| e.to_string())?;
         writer.flush().map_err(|e| e.to_string())?;
         Ok(Recording {
             csv: writer,
-            audit: BufWriter::new(audit_file),
+            audit,
             metadata_path: metadata_path.clone(),
         })
     })();
@@ -281,7 +300,7 @@ pub(super) fn utc_now() -> Result<String, String> {
 
 /// Python str(float): shortest round-trip digits, .0 for integral fixed values,
 /// fixed notation for 1e-4 <= abs < 1e16, and signed two-digit exponents.
-fn csv_float(value: f64) -> String {
+pub(crate) fn csv_float(value: f64) -> String {
     let shortest = format!("{value:?}");
     if !value.is_finite() {
         return shortest;
@@ -370,8 +389,20 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
             .and_then(|window| window.finished_at.clone())
             .unwrap_or_default(),
     );
+    put("run_id", sample.recording.run_id.clone());
+    put("point_index", sample.recording.point_index.to_string());
+    put("elapsed_s", csv_float(sample.elapsed));
+    put("quality_flags", sample.recording.quality_flags.clone());
+    put(
+        "line_index",
+        if plan.workflow.is_2d() {
+            sample.target.line.to_string()
+        } else {
+            String::new()
+        },
+    );
+    put("signal_unit", sample.recording.signal_unit.clone());
     put("measurement", plan.workflow.key().into());
-    put("acquisition_elapsed_s", csv_float(sample.elapsed));
     let monitor = plan.workflow == Workflow::SignalMonitor;
     if monitor {
         put("elapsed_s", csv_float(sample.elapsed));
@@ -397,7 +428,23 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
                             "um"
                         }
                     ),
-                    csv_float(value),
+                    csv_float(match axis {
+                        Axis::T | Axis::X | Axis::Y => {
+                            let index = match axis {
+                                Axis::T => 0,
+                                Axis::X => 1,
+                                _ => 2,
+                            };
+                            sample.recording.canonical_target[index]
+                                .or_else(|| {
+                                    (plan.coordinate == Coordinate::Measurement).then_some(value)
+                                })
+                                .ok_or(
+                                    "Raw-coordinate export requires resolved canonical targets",
+                                )?
+                        }
+                        _ => value,
+                    }),
                 );
             }
         }
@@ -438,24 +485,9 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
         put("v_cor_um", csv_float(-x * s + y * c));
     }
     put("spatial_theta_deg", csv_float(plan.theta_deg));
-    put("coordinate", coordinate_name(plan.coordinate).into());
-    for (key, value) in [
-        ("delay_stage_mm", sample.position.delay_stage_mm),
-        ("x_scanner_mm", sample.position.x_scanner_mm),
-        ("x_scanner_deg", sample.position.x_scanner_deg),
-        ("y_scanner_mm", sample.position.y_scanner_mm),
-        ("y_scanner_deg", sample.position.y_scanner_deg),
-    ] {
-        if let Some(value) = value {
-            put(key, csv_float(value));
-        }
-    }
-    if let Some(value) = sample.position.delay_stage_pulse {
-        put("delay_stage_pulse", value.to_string());
-    }
-    put("X_V", csv_voltage(sample.signal.x_v)?);
-    put("Y_V", csv_voltage(sample.signal.y_v)?);
-    put("R_V", csv_voltage(sample.signal.r_v)?);
+    put("X", csv_voltage(sample.signal.x_v)?);
+    put("Y", csv_voltage(sample.signal.y_v)?);
+    put("R", csv_voltage(sample.signal.r_v)?);
     put("Theta_deg", csv_float(sample.signal.theta_deg));
     Ok(result)
 }
@@ -467,12 +499,39 @@ mod tests {
     use trkr_motion::Position;
 
     #[test]
+    fn raw_input_targets_require_and_use_resolved_measurement_units() {
+        for coordinate in [Coordinate::Interface, Coordinate::Instrument] {
+            let plan = Plan {
+                workflow: Workflow::Trkr,
+                coordinate,
+                zero: [-250., 0., 0.],
+                ..Plan::default()
+            };
+            let mut sample = test_sample(&plan, [Some(-200.), None, None]);
+            sample.target.fast = if coordinate == Coordinate::Interface {
+                275.
+            } else {
+                1234.
+            };
+            assert!(
+                row(&plan, &sample)
+                    .unwrap_err()
+                    .contains("resolved canonical targets")
+            );
+            sample.recording.canonical_target[0] = Some(50.);
+            let saved = row(&plan, &sample).unwrap();
+            assert_eq!(cell(&saved, "target_t_cor_ps"), "50.0");
+            assert_eq!(cell(&saved, "t_cor_ps"), "50.0");
+        }
+    }
+
+    #[test]
     fn output_collisions_preserve_existing_data_and_rollback_only_new_files() {
-        for collision in ["run.csv", "run.run.json", "run.readings.jsonl"] {
+        for collision in ["run.csv", "run.run.json", "run.raw.csv"] {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("run.csv");
             let metadata = path.with_extension("run.json");
-            let readings = path.with_extension("readings.jsonl");
+            let readings = path.with_extension("raw.csv");
             let collided = dir.path().join(collision);
             std::fs::write(&collided, "existing").unwrap();
 
@@ -492,9 +551,11 @@ mod tests {
         let path = dir.path().join("run.csv");
         let plan = Plan::default();
         let mut recording = create_csv(&path, Source::Demo, &plan).unwrap();
+        let run_id = recording.run_id().to_owned();
         recording.audit =
-            BufWriter::new(File::open(path.with_extension("readings.jsonl")).unwrap());
+            RawWriter::open_readonly_for_test(&path.with_extension("raw.csv"), &run_id).unwrap();
         let sample = Sample {
+            recording: Default::default(),
             timing: Default::default(),
             captured_at: None,
             elapsed: 0.0,
@@ -512,7 +573,7 @@ mod tests {
         let mut reader = csv::Reader::from_path(path).unwrap();
         let record = reader.records().next().unwrap().unwrap();
         assert_eq!(
-            &record[0], "",
+            &record[2], "",
             "unknown acquisition time must not become export time"
         );
     }
@@ -525,14 +586,14 @@ mod tests {
         let metadata: Value =
             serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap())
                 .unwrap();
-        assert_eq!(metadata["schema_version"], 2);
+        assert_eq!(metadata["schema_version"], 3);
         assert_eq!(
             metadata["csv_numeric_format"],
             "shortest_roundtrip_scientific"
         );
         assert_eq!(metadata["precision_policy"], "no_accuracy_claim");
-        assert_eq!(metadata["readings_schema_version"], 2);
-        assert_eq!(metadata["readings_file"], "run.readings.jsonl");
+        assert_eq!(metadata["raw_csv"]["schema"], "raw_csv_v1");
+        assert_eq!(metadata["raw_csv"]["filename"], "run.raw.csv");
         assert!(metadata.get("plan").is_some());
         assert!(metadata.get("source").is_some());
     }
@@ -548,11 +609,11 @@ mod tests {
                 "reply": "1.230000000000e-9\\r\\n"
             }))
             .unwrap();
-        let readings = path.with_extension("readings.jsonl");
+        let readings = path.with_extension("raw.csv");
         assert!(
             std::fs::read_to_string(&readings)
                 .unwrap()
-                .contains("1.230000000000e-9\\\\r\\\\n")
+                .contains("1.230000000000e-9")
         );
         recording.finish().unwrap();
         assert!(std::fs::metadata(readings).unwrap().len() > 0);
@@ -574,10 +635,12 @@ mod tests {
             std::fs::read_to_string(metadata).unwrap(),
             "initial bytes remain"
         );
-        assert!(
-            std::fs::read_to_string(path.with_extension("readings.jsonl"))
+        assert_eq!(
+            csv::Reader::from_path(path.with_extension("raw.csv"))
                 .unwrap()
-                .is_empty()
+                .records()
+                .count(),
+            0
         );
     }
     #[test]
@@ -626,6 +689,7 @@ mod tests {
     fn row_rejects_nonfinite_raw_lockin_voltage() {
         let plan = Plan::default();
         let mut sample = Sample {
+            recording: Default::default(),
             timing: Default::default(),
             captured_at: None,
             elapsed: 0.0,
@@ -643,6 +707,7 @@ mod tests {
     fn monitor_retains_components_without_inventing_positions() {
         let p = Plan::default();
         let sample = Sample {
+            recording: Default::default(),
             timing: Default::default(),
             captured_at: None,
             elapsed: 1.,
@@ -663,6 +728,7 @@ mod tests {
             ..Default::default()
         };
         let sample = Sample {
+            recording: Default::default(),
             timing: Default::default(),
             captured_at: None,
             elapsed: 0.,
@@ -678,11 +744,12 @@ mod tests {
         let r = row(&p, &sample).unwrap();
         let get = |k| &r[FIELDS.iter().position(|&v| v == k).unwrap()];
         assert_eq!(get("t_ps"), "-171.99");
-        assert_eq!(get("delay_stage_pulse"), "1234");
+        assert_eq!(saved_raw_position(&sample)["delay_stage_pulse"], 1234);
         assert!(get("x_um").is_empty());
     }
     fn test_sample(plan: &Plan, physical: [Option<f64>; 3]) -> Sample {
         Sample {
+            recording: Default::default(),
             timing: Default::default(),
             captured_at: None,
             elapsed: 0.0,
@@ -697,6 +764,15 @@ mod tests {
                 ..Default::default()
             },
         }
+    }
+    fn saved_raw_position(sample: &Sample) -> Value {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raw.csv");
+        let mut writer = RawWriter::create(&path, "test").unwrap();
+        writer
+            .append(&serde_json::json!({"event":"reading","position":sample.position}))
+            .unwrap();
+        crate::raw_csv::test_events(&path)[0]["position"].clone()
     }
     fn cell<'a>(row: &'a [String], name: &str) -> &'a str {
         &row[FIELDS.iter().position(|field| *field == name).unwrap()]
@@ -728,9 +804,6 @@ mod tests {
                 ("x_cor_um", 2.),
                 ("y_um", 24.),
                 ("y_cor_um", 4.),
-                ("delay_stage_mm", 12.5),
-                ("x_scanner_mm", 0.02),
-                ("y_scanner_deg", 0.03),
             ] {
                 assert_eq!(
                     cell(&r, field).parse::<f64>().unwrap(),
@@ -738,7 +811,15 @@ mod tests {
                     "{workflow:?}: {field}"
                 );
             }
-            assert_eq!(cell(&r, "delay_stage_pulse"), "1234");
+            let raw = saved_raw_position(&sample);
+            assert_eq!(raw["delay_stage_pulse"], 1234);
+            for (field, value) in [
+                ("delay_stage_mm", 12.5),
+                ("x_scanner_mm", 0.02),
+                ("y_scanner_deg", 0.03),
+            ] {
+                assert_eq!(raw[field].as_f64(), Some(value));
+            }
             if workflow == Workflow::Srkr {
                 assert!(cell(&r, "target_t_cor_ps").is_empty());
             }
@@ -810,14 +891,7 @@ mod tests {
                 ..test_sample(&plan, physical)
             };
             let r = row(&plan, &sample).unwrap();
-            for field in [
-                "t_ps",
-                "t_cor_ps",
-                "u_cor_um",
-                "v_cor_um",
-                "delay_stage_mm",
-                "delay_stage_pulse",
-            ] {
+            for field in ["t_ps", "t_cor_ps", "u_cor_um", "v_cor_um"] {
                 assert!(cell(&r, field).is_empty(), "{field}");
             }
             assert!(!cell(&r, "target_u_cor_um").is_empty());

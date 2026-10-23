@@ -9,6 +9,8 @@ pub(crate) use execution::active_axes;
 use execution::{axis_mask, masked};
 use execution::{line_reset, reset_fast_before_slow, return_moves, return_target, scan_moves};
 pub use recording::FIELDS;
+#[cfg(test)]
+pub(crate) use recording::csv_float;
 pub(crate) use recording::row;
 use recording::{create_csv, finish_metadata};
 use serde::{Deserialize, Serialize};
@@ -60,8 +62,19 @@ impl Device {
         }
     }
 }
+#[derive(Clone, Debug, Default)]
+pub(crate) struct SampleRecording {
+    pub run_id: String,
+    pub point_index: usize,
+    pub signal_unit: String,
+    pub quality_flags: String,
+    pub canonical_target: [Option<f64>; 3],
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sample {
+    #[serde(skip)]
+    pub(crate) recording: Box<SampleRecording>,
     /// Host read intervals are recorded separately from protocol samples.
     #[serde(skip)]
     pub(crate) timing: Box<timing::AcquisitionTiming>,
@@ -837,6 +850,21 @@ impl Session {
                 serde_json::json!(self.state.transport)
             },
         );
+        context.insert(
+            "effective_delay_calibration".into(),
+            serde_json::json!(self.state.delay_calibration),
+        );
+        context.insert(
+            "effective_motion".into(),
+            self.rig
+                .as_ref()
+                .map(|rig| serde_json::json!(rig.recording_configuration()))
+                .unwrap_or(Value::Null),
+        );
+        context.insert(
+            "connected_devices".into(),
+            serde_json::json!(self.state.devices),
+        );
         context.insert("resolution".into(), Value::Null);
         context.insert("uncertainty".into(), Value::Null);
         if let Source::Gpib { model, address } = source {
@@ -852,7 +880,7 @@ impl Session {
         if matches!(source, Source::Gpib { .. })
             && let Some(settings) = &self.lockin_context
         {
-            context.insert("cached_lockin_settings".into(), settings.clone());
+            context.insert("lockin_settings".into(), settings.clone());
         }
         Value::Object(context)
     }
@@ -873,6 +901,9 @@ impl Session {
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
+        if matches!(source, Source::Demo) && plan.coordinate != Coordinate::Measurement {
+            return Err("Demo scans require measurement coordinates; raw inputs need actual controller calibration".into());
+        }
         let requested_config = config.clone();
         let targets = plan.targets()?;
         if matches!(source, Source::Gpib { .. })
@@ -948,6 +979,37 @@ impl Session {
             }
         }
         let mut csv = output.map(|p| create_csv(p, source, plan)).transpose()?;
+        // Snapshot read-only settings before acquisition. Failure stays explicit;
+        // do not guess units/status or change the instrument configuration.
+        if let Source::Gpib { model, .. } = source {
+            let gpib = self
+                .gpib
+                .as_mut()
+                .ok_or(OperationError::LockinDisconnected)?;
+            let mut snapshot = lockin::settings_recorded(model, gpib);
+            if let Ok(value) = &mut snapshot.result
+                && let Some(object) = value.as_object_mut()
+            {
+                object.remove("available");
+            }
+            let observed_at = recording::utc_now().ok();
+            if let Some(recording) = &mut csv {
+                recording.append_audit(&serde_json::json!({"event":"settings_snapshot", "device_role":"lockin", "observed_at":observed_at,
+                    "result":if snapshot.result.is_ok() { "ok" } else { "error" }, "exchanges":snapshot.exchanges,
+                    "settings":snapshot.result.as_ref().ok(), "error":snapshot.result.as_ref().err()}))?;
+            }
+            self.lockin_context = Some(match snapshot.result {
+                Ok(mut value) => {
+                    if let Some(object) = value.as_object_mut() {
+                        object.remove("available");
+                    }
+                    serde_json::json!({"value":value,"observed_at":observed_at,"qualification":"queried_at_run_start","unqueried_controls":"unknown"})
+                }
+                Err(error) => {
+                    serde_json::json!({"value":null,"observed_at":observed_at,"qualification":"query_failed","error":error})
+                }
+            });
+        }
         let context_config = self.config.as_ref().unwrap_or(&requested_config);
         let context_result = csv
             .as_mut()
@@ -998,12 +1060,23 @@ impl Session {
                                 plan.zero,
                             )?;
                             rig.validate_targets(&[reset])?;
-                            self.move_live(reset, [false; 3], cancel, send)?;
+                            let (result,window,_) = timing::observe(start, || self.move_live(reset,[false;3],cancel,send));
+                            if let Some(recording)=&mut csv {
+                                let event=serde_json::json!({"event":"line_reset","point_index":index+1,"device_role":"motion","target":reset,"timing":window,"last_observed_position":self.state.position,"error":result.as_ref().err()});
+                                if let Err(error)=recording.append_audit(&event) { return Err(match result {Err(original)=>format!("{original}; raw line reset: {error}"),Ok(())=>error}); }
+                            }
+                            result?;
                         }
                         let first = index == 0 || target.line != targets[index - 1].line;
                         for movement in scan_moves(plan, physical[index], first, index == 0) {
                             self.set_phase(Phase::moving([movement.axis]), send);
-                            self.move_live(movement.target, movement.approach, cancel, send)?;
+                            let (movement_result,window,_) = timing::observe(start, || self.move_live(movement.target, movement.approach, cancel, send));
+                            if let Some(recording)=&mut csv {
+                                let event=serde_json::json!({"event":"move","point_index":index+1,"device_role":"motion", "target":movement.target,
+                                    "approach":movement.approach,"timing":window,"final_position":self.state.position,"error":movement_result.as_ref().err()});
+                                if let Err(error)=recording.append_audit(&event) { return Err(match movement_result { Err(original)=>format!("{original}; raw movement audit: {error}"),Ok(())=>error }); }
+                            }
+                            movement_result?;
                         }
                     } else if plan.workflow != Workflow::SignalMonitor {
                         self.state.position.physical = physical[index];
@@ -1029,8 +1102,13 @@ impl Session {
                     let (signal, exchanges, captured) = match source {
                         Source::Gpib { model, .. } => {
                             if let Some(rig) = &mut self.rig {
-                                let (position, window, _) = timing::observe(start, || rig.position());
+                                let ((position, position_exchanges), window, _) = timing::observe(start, || rig.position_recorded());
                                 point_timing.position = Some(window);
+                                if let Some(recording) = &mut csv {
+                                    recording.append_audit(&serde_json::json!({"event":"position_read", "point_index":index+1,
+                                        "device_role":"motion", "position":position.as_ref().ok(), "exchanges":position_exchanges,
+                                        "timing":point_timing, "error":position.as_ref().err()}))?;
+                                }
                                 match position {
                                     Ok(position) => self.state.position = position,
                                     Err(error) => {
@@ -1082,7 +1160,31 @@ impl Session {
                             (signal, None, captured)
                         }
                     };
+                    let mut signal_unit = "V".to_owned();
+                    let mut quality_flags = "simulated".to_owned();
+                    let mut status_event = None;
+                    if let Source::Gpib { model, .. } = source {
+                        let gpib=self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
+                        let (status,window,_) = timing::observe(start, || lockin::status_recorded(model,gpib));
+                        signal_unit = if model==Model::Sr7265 && status.result.as_ref().ok().and_then(|v|v["input_mode"].as_f64())==Some(0.) { "V" } else { "unknown" }.into();
+                        let mut flags=Vec::new();
+                        match &status.result {
+                            Ok(value) => { if value["overload"]==true { flags.push("overload"); }
+                                if value["reference_unlock"]==true { flags.push("reference_unlock"); }
+                                if value.get("reference_unlock").is_none() { flags.push("reference_status_unknown"); } },
+                            Err(_) => flags.push("status_unknown"),
+                        }
+                        if signal_unit=="unknown" { flags.push("unit_unknown"); }
+                        quality_flags=if flags.is_empty() { "ok".into() } else { flags.join("|") };
+                        status_event=Some(serde_json::json!({"event":"status_check","point_index":index+1,"device_role":"lockin",
+                            "timing":window, "settings":status.result.as_ref().ok(), "error":status.result.as_ref().err(),"exchanges":status.exchanges}));
+                    }
                     let sample = Sample {
+                        recording: Box::new(SampleRecording {
+                            run_id: csv.as_ref().map(|r| r.run_id().to_owned()).unwrap_or_default(), point_index:index+1,
+                            signal_unit, quality_flags,
+                            canonical_target:std::array::from_fn(|i| physical[index][i].map(|v| v-plan.zero[i])),
+                        }),
                         timing: Box::new(point_timing),
                         captured_at: Some(captured),
                         elapsed: captured.duration_since(start).as_secs_f64(),
@@ -1103,7 +1205,8 @@ impl Session {
                             "status": "ok",
                             "simulation": matches!(source, Source::Demo),
                             "elapsed_s": sample.elapsed,
-                            "signal": sample.signal,
+                            "signal": sample.signal, "signal_unit":sample.recording.signal_unit,
+                            "input_coordinate":coordinate_name(plan.coordinate),
                             "target": sample.target,
                             "position": sample.position.clone(),
                             "timing": sample.timing,
@@ -1112,6 +1215,7 @@ impl Session {
                             audit["exchanges"] = exchanges;
                         }
                         csv.append_audit(&audit)?;
+                        if let Some(status_event) = status_event { csv.append_audit(&status_event)?; }
                         csv.write_sample(plan, &sample, start, index + 1, &mut self.state.rows)?;
                     } else { self.state.rows += 1; }
                     self.live.publish_if_due(
@@ -1137,7 +1241,12 @@ impl Session {
                     for target in return_moves(plan, r) {
                         self.state.phase = Phase::motion(MotionAction::Returning, target).into();
                         let _ = send.send(Event::State(Box::new(self.state.clone())));
-                        self.motion_live(target, [false; 3], true, cancel, send)?;
+                        let (result,window,_) = timing::observe(start, || self.motion_live(target,[false;3],true,cancel,send));
+                        if let Some(recording)=&mut csv {
+                            let event=serde_json::json!({"event":"return_move","device_role":"motion","target":target,"timing":window,"last_observed_position":self.state.position,"error":result.as_ref().err()});
+                            if let Err(error)=recording.append_audit(&event) { return Err(match result {Err(original)=>format!("{original}; raw return: {error}"),Ok(())=>error}); }
+                        }
+                        result?;
                     }
                 }
                 Ok(())
@@ -1173,9 +1282,15 @@ impl Session {
             "complete"
         };
         if let Some(recording) = &mut csv {
+            if let Err(error) =
+                recording.set_final_position(&self.state.position, &self.state.phase)
+            {
+                Self::append_recording_error(&mut result, "save final position", error);
+            }
             let terminal = serde_json::json!({
                 "event": "finished",
                 "status": terminal_status,
+                "last_observed_position":self.state.position, "last_phase":self.state.phase,
                 "rows": self.state.rows,
                 "simulation": matches!(source, Source::Demo),
                 "error": result.as_ref().err(),
@@ -1219,7 +1334,12 @@ impl Session {
         }
         let mut reader = csv::Reader::from_path(path).map_err(|e| e.to_string())?;
         let headers = reader.headers().map_err(|e| e.to_string())?.clone();
-        for key in ["X_V", "Y_V", "R_V", "Theta_deg"] {
+        let modern = headers.iter().any(|value| value == "X");
+        for key in if modern {
+            ["X", "Y", "R", "Theta_deg"]
+        } else {
+            ["X_V", "Y_V", "R_V", "Theta_deg"]
+        } {
             if !headers.iter().any(|v| v == key) {
                 return Err(format!("Replay missing {key}"));
             }
@@ -1238,9 +1358,9 @@ impl Session {
             };
             let required = |key| get(key).ok_or_else(|| format!("Replay invalid {key}"));
             let signal = Signal::new(
-                required("X_V")?,
-                required("Y_V")?,
-                required("R_V")?,
+                required(if modern { "X" } else { "X_V" })?,
+                required(if modern { "Y" } else { "Y_V" })?,
+                required(if modern { "R" } else { "R_V" })?,
                 required("Theta_deg")?,
             )?;
             let target = Target {
@@ -1270,6 +1390,7 @@ impl Session {
             self.state.position = position.clone();
             self.state.rows += 1;
             let _ = send.try_send(Event::Sample(Sample {
+                recording: Default::default(),
                 timing: Default::default(),
                 captured_at: None,
                 elapsed: get("elapsed_s")
@@ -1305,7 +1426,7 @@ fn devices_for_targets(targets: [Option<f64>; 3]) -> Vec<Device> {
         .filter_map(|(i, v)| v.map(|_| [Device::T, Device::X, Device::Y][i]))
         .collect()
 }
-fn coordinate_name(c: Coordinate) -> &'static str {
+pub(crate) fn coordinate_name(c: Coordinate) -> &'static str {
     match c {
         Coordinate::Measurement => "measurement",
         Coordinate::Interface => "interface",
@@ -1341,6 +1462,9 @@ fn wait_until(deadline: Instant, cancel: &AtomicBool) -> bool {
     false
 }
 pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
+    if plan.coordinate != Coordinate::Measurement {
+        return Err("Demo scans require measurement coordinates; raw inputs need actual controller calibration".into());
+    }
     let mut plan = plan;
     plan.interval_s = 0.0;
     let targets = plan.targets()?;
@@ -1360,6 +1484,13 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
                 let (signal, window, captured) =
                     timing::observe(start, || Signal::demo(p[0] + target.fast, p[1], p[2]));
                 let sample = Sample {
+                    recording: Box::new(SampleRecording {
+                        run_id: writer.run_id().to_owned(),
+                        point_index: index + 1,
+                        signal_unit: "V".into(),
+                        quality_flags: "simulated".into(),
+                        canonical_target: target.corrected.map(Some),
+                    }),
                     timing: Box::new(timing::AcquisitionTiming {
                         position: None,
                         signal: Some(window),
@@ -1379,7 +1510,8 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
                     "status": "ok",
                     "simulation": true,
                     "elapsed_s": sample.elapsed,
-                    "signal": sample.signal,
+                    "signal": sample.signal, "signal_unit":sample.recording.signal_unit,
+                            "input_coordinate":coordinate_name(plan.coordinate),
                     "target": sample.target,
                     "position": sample.position.clone(),
                     "timing": sample.timing,
@@ -1443,11 +1575,7 @@ mod recording_integration_tests {
         assert_eq!(metadata["context"]["resolution"], Value::Null);
         assert_eq!(metadata["context"]["uncertainty"], Value::Null);
 
-        let events: Vec<Value> = std::fs::read_to_string(output.with_extension("readings.jsonl"))
-            .unwrap()
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect();
+        let events = crate::raw_csv::test_events(&output.with_extension("raw.csv"));
         assert_eq!(events[0]["event"], "context");
         assert_eq!(events[1]["event"], "reading");
         assert_eq!(events[1]["point_index"], 1);
@@ -1465,9 +1593,9 @@ mod recording_integration_tests {
         assert_eq!(events[1]["elapsed_s"], read["host_completed_elapsed_s"]);
         let mut csv = csv::Reader::from_path(&output).unwrap();
         let row = csv.records().next().unwrap().unwrap();
-        assert_eq!(&row[0], read["host_completed_at_utc"].as_str().unwrap());
+        assert_eq!(&row[2], read["host_completed_at_utc"].as_str().unwrap());
         assert_eq!(
-            row[11].parse::<f64>().unwrap(),
+            row[3].parse::<f64>().unwrap(),
             read["host_completed_elapsed_s"].as_f64().unwrap()
         );
         assert_eq!(events[3]["event"], "finished");

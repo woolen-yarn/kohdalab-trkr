@@ -1,6 +1,15 @@
 use std::{env, fs, path::PathBuf, process::Command};
 
 fn main() {
+    if let Ok(output) = Command::new("git").args(["rev-parse", "HEAD"]).output()
+        && output.status.success()
+    {
+        println!(
+            "cargo:rustc-env=KOHDALAB_BUILD_COMMIT={}",
+            String::from_utf8_lossy(&output.stdout).trim()
+        );
+    }
+
     println!("cargo:rerun-if-changed=assets/icon.ico");
     if env::var("CARGO_CFG_WINDOWS").is_err() {
         return;

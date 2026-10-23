@@ -322,6 +322,8 @@ impl Range {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub experiment: serde_json::Map<String, serde_json::Value>,
     pub workflow: Workflow,
     pub fast: Axis,
     pub slow: Axis,
@@ -348,6 +350,7 @@ fn yes() -> bool {
 impl Default for Plan {
     fn default() -> Self {
         Self {
+            experiment: Default::default(),
             workflow: Workflow::SignalMonitor,
             fast: Axis::T,
             slow: Axis::X,

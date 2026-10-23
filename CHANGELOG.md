@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0 — 2026-10-23
+
+- Split new recordings into 29-column analysis CSV, multiline-safe raw CSV and run JSON, with UUID and SHA-256 associations. / 新規保存を29列main CSV・raw CSV・run JSONへ分離し、UUIDとSHA-256で対応付け。
+- Keep controller units and exact valid text exchanges in raw; preserve fixed/rotated coordinates in main and correct raw-input target units. / コントローラー単位と有効な元応答をraw、固定・回転座標をmainに保存し、raw指定時の指令単位を修正。
+- Snapshot queried start settings and resolved motion calibration; log point status, motion and file-write windows without recording idle live samples. / 開始時に照会した設定と実効移動校正を保存し、点の状態・移動・保存時間窓を記録。待機ライブ表示は保存対象外。
+- Recording revision 5 / metadata 3 / trkr_analysis_v1 / raw_csv_v1. Old CSV/JSONL readers and safe Save copies remain supported. / 保存schema更新。旧形式の読込と安全なSaveコピーを維持。
+
 ## 0.3.7 — 2026-10-22
 
 - Reconstruct every 2D replay grid from commanded targets when available, retaining actual readbacks and distinct fine steps. / 全2D再生を取得済みの指令値で復元し、実読取と微細なステップを保持。

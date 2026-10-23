@@ -7,10 +7,10 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 設定JSONと`--stdio`の命令・イベントはrevision 1を維持します。
 記録はrevision 3です。CSVの列は同じですが、X/Y/Rの固定7桁丸めを廃止し、
 取得したf64値を復元できる指数表記に変更しました。`.run.json`と
-`.readings.jsonl`をCSVと一緒に保管してください。装置応答の文字列を保持し、
+`.raw.csv`をCSVと一緒に保管してください。装置応答の文字列を保持し、
 不明な分解能・不確かさを推測しません。桁数は物理的な精度の保証ではありません。
 `PROFILE_COMPATIBILITY_REVISION`と`JSON_LINES_API_REVISION`は`1`、
-`RECORDING_COMPATIBILITY_REVISION`は`4`です。既存設定と旧CSVは引き続き読み取れます。
+`RECORDING_COMPATIBILITY_REVISION`は`5`です。既存設定と旧CSVは引き続き読み取れます。
 旧CSVで丸められた桁は復元できません。
 0.3.6から固定軸の読取も保存し、U/Vの指令値と実読取を区別します。[座標の保存](../../docs/reference/measurement-integrity.md)を参照してください。
 
@@ -102,11 +102,11 @@ The GUI, acquisition, and device control run in Rust. This client passes command
 
 Profiles and `--stdio` commands/events remain revision 1. Recording revision 3
 keeps the CSV columns but removes fixed seven-digit X/Y/R rounding. Scientific
-text round-trips the acquired f64 value. Keep `.run.json` and `.readings.jsonl`
+text round-trips the acquired f64 value. Keep `.run.json` and `.raw.csv`
 with the CSV: raw instrument response text is retained; unknown resolution and
 uncertainty remain unknown. Digit count does not certify physical accuracy.
 `PROFILE_COMPATIBILITY_REVISION` and `JSON_LINES_API_REVISION` remain `1`;
-`RECORDING_COMPATIBILITY_REVISION` is `4`. Existing profiles and old CSV files
+`RECORDING_COMPATIBILITY_REVISION` is `5`. Existing profiles and old CSV files
 remain readable. Digits already rounded out of old CSV files cannot be recovered.
 From 0.3.6, available fixed-axis readings are saved and commanded U/V is separated from measured U/V. See [coordinate recording](../../docs/reference/measurement-integrity.md).
 
@@ -158,3 +158,9 @@ Select `signal_monitor`, `trkr`, `srkr`, `strkr`, or `srkr_2d` in `prepared["pla
 To save CSV, specify `run(..., output="new_run.csv")`. Existing files are not overwritten. Before hardware use, review the displayed profile and plan, then explicitly change `HARDWARE`. Homing is not automatic.
 
 `run()` is synchronous, and concurrent acquisition jobs within one client are serialized. After a raw `move(...)` command, use `wait_for_finished()` to wait for completion.
+
+## 0.4 CSV migration / CSV移行
+
+New runs use analysis main CSV + raw CSV + run JSON. Main signal names are `X`, `Y`, `R` with `signal_unit`; do not assume V when the unit is unknown. `elapsed_s` replaces duplicate `acquisition_elapsed_s`. Controller mm/degree/pulse readings move to raw CSV. Old CSV and old JSONL sidecars are still readable/copyable; existing files are never rewritten. The JSON-lines Notebook signal API is unchanged.
+
+新規測定はmain CSV・raw CSV・run JSONの3ファイルです。信号列は`X`・`Y`・`R`と`signal_unit`になり、単位不明時にVと仮定しません。経過秒は`elapsed_s`に統一し、コントローラー単位はrawに移動します。旧CSVの読込・旧JSONL付きデータのコピーと、NotebookのJSON-lines信号APIは維持します。既存ファイルは書き換えません。

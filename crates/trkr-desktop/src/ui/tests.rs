@@ -757,6 +757,7 @@ fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() 
 #[test]
 fn private_eta_clock_does_not_change_sample_json_contract() {
     let mut sample = Sample {
+        recording: Default::default(),
         timing: Default::default(),
         captured_at: None,
         elapsed: 3.0,
@@ -797,4 +798,65 @@ fn save_now_keeps_unsaved_raw_reading_from_a_finalized_failed_run() {
         std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap(),
         evidence
     );
+}
+
+#[test]
+fn new_raw_csv_save_preserves_uuid_multiline_evidence_and_recomputes_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    engine::demo_csv(
+        Plan {
+            workflow: Workflow::Trkr,
+            fast_range: Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            ..Plan::default()
+        },
+        &source,
+    )
+    .unwrap();
+    let destination = dir.path().join("copy.csv");
+    copy_complete_csv(&source, &destination, false).unwrap();
+    let original: Value =
+        serde_json::from_slice(&std::fs::read(source.with_extension("run.json")).unwrap()).unwrap();
+    let copied: Value =
+        serde_json::from_slice(&std::fs::read(destination.with_extension("run.json")).unwrap())
+            .unwrap();
+    assert_eq!(original["run_id"], copied["run_id"]);
+    assert_eq!(copied["raw_csv"]["filename"], "copy.raw.csv");
+    assert!(copied.get("readings_file").is_none());
+    assert!(!destination.with_extension("readings.jsonl").exists());
+    assert_eq!(
+        copied["file_hashes"]["csv_sha256"],
+        crate::raw_csv::file_sha256(&destination).unwrap()
+    );
+    assert_eq!(
+        copied["file_hashes"]["raw_csv_sha256"],
+        crate::raw_csv::file_sha256(&destination.with_extension("raw.csv")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(source.with_extension("raw.csv")).unwrap(),
+        std::fs::read(destination.with_extension("raw.csv")).unwrap()
+    );
+}
+
+#[test]
+fn raw_csv_snapshot_preserves_quoted_multiline_and_omits_future_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    std::fs::write(&source, "run_id,point_index\nrun,1\n").unwrap();
+    std::fs::write(source.with_extension("run.json"),serde_json::to_vec(&json!({"run_id":"run","status":"running","raw_csv":{"filename":"source.raw.csv","schema":"raw_csv_v1"}})).unwrap()).unwrap();
+    let mut raw =
+        crate::raw_csv::RawWriter::create(&source.with_extension("raw.csv"), "run").unwrap();
+    raw.append(&json!({"event":"transport_exchange","point_index":1,"raw_response":"  1.23000000,\"raw\"\r\n"})).unwrap();
+    raw.append(&json!({"event":"reading","point_index":2,"raw_response":"future\r\n"}))
+        .unwrap();
+    let destination = dir.path().join("snapshot.csv");
+    copy_complete_csv(&source, &destination, true).unwrap();
+    let mut reader = csv::Reader::from_path(destination.with_extension("raw.csv")).unwrap();
+    let rows = reader.records().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(&rows[0][8], "  1.23000000,\"raw\"\r\n");
 }

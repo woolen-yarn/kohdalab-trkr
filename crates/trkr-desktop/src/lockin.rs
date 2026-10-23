@@ -114,74 +114,100 @@ pub struct Exchange {
 /// `result` retains the exact behavior of [`read`].  Exchanges remain
 /// available when a transport or parsing error prevents a signal from being
 /// produced.
-pub struct RecordedRead {
-    pub result: Result<Signal, String>,
+pub struct RecordedOperation<T> {
+    pub result: Result<T, String>,
     pub exchanges: Vec<Exchange>,
 }
 
 /// Run [`read`] while retaining the exact commands, replies, and errors used
 /// by that read.  The recording adapter only observes the existing `Io`
 /// calls, so it never performs additional instrument I/O.
+pub type RecordedRead = RecordedOperation<Signal>;
 pub fn read_recorded(model: Model, io: &mut impl Io) -> RecordedRead {
-    struct Recording<'a, T> {
-        io: &'a mut T,
-        exchanges: Vec<Exchange>,
-    }
+    recorded(io, |io| read(model, io))
+}
+pub fn settings_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Value> {
+    recorded(io, |io| settings_impl(io, model, false))
+}
 
-    impl<T: Io> Io for Recording<'_, T> {
-        fn query(&mut self, command: &str) -> Result<String, String> {
-            match self.io.query(command) {
-                Ok(reply) => {
-                    self.exchanges.push(Exchange {
-                        operation: "query",
-                        command: command.into(),
-                        reply: Some(reply.clone()),
-                        error: None,
-                    });
-                    Ok(reply)
-                }
-                Err(error) => {
-                    self.exchanges.push(Exchange {
-                        operation: "query",
-                        command: command.into(),
-                        reply: None,
-                        error: Some(error.clone()),
-                    });
-                    Err(error)
-                }
-            }
+pub fn status_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Value> {
+    recorded(io, |io| {
+        let mut value = match model {
+            Model::Sr830 => overload_sr830(io)?,
+            Model::Sr7265 => overload_sr7265(io)?,
+            Model::Sr5210 => overload_sr5210(io)?,
+            Model::Li5640 => overload_li5640(io)?,
+        };
+        if model == Model::Sr7265 {
+            value["input_mode"] = json!(query_value(io, "IMODE\r")?);
         }
+        Ok(value)
+    })
+}
 
-        fn write(&mut self, command: &str) -> Result<(), String> {
-            match self.io.write(command) {
-                Ok(()) => {
-                    self.exchanges.push(Exchange {
-                        operation: "write",
-                        command: command.into(),
-                        reply: None,
-                        error: None,
-                    });
-                    Ok(())
-                }
-                Err(error) => {
-                    self.exchanges.push(Exchange {
-                        operation: "write",
-                        command: command.into(),
-                        reply: None,
-                        error: Some(error.clone()),
-                    });
-                    Err(error)
-                }
+struct Recording<'a, T> {
+    io: &'a mut T,
+    exchanges: Vec<Exchange>,
+}
+
+impl<T: Io> Io for Recording<'_, T> {
+    fn query(&mut self, command: &str) -> Result<String, String> {
+        match self.io.query(command) {
+            Ok(reply) => {
+                self.exchanges.push(Exchange {
+                    operation: "query",
+                    command: command.into(),
+                    reply: Some(reply.clone()),
+                    error: None,
+                });
+                Ok(reply)
+            }
+            Err(error) => {
+                self.exchanges.push(Exchange {
+                    operation: "query",
+                    command: command.into(),
+                    reply: None,
+                    error: Some(error.clone()),
+                });
+                Err(error)
             }
         }
     }
 
+    fn write(&mut self, command: &str) -> Result<(), String> {
+        match self.io.write(command) {
+            Ok(()) => {
+                self.exchanges.push(Exchange {
+                    operation: "write",
+                    command: command.into(),
+                    reply: None,
+                    error: None,
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.exchanges.push(Exchange {
+                    operation: "write",
+                    command: command.into(),
+                    reply: None,
+                    error: Some(error.clone()),
+                });
+                Err(error)
+            }
+        }
+    }
+}
+
+fn recorded<T: Io, R>(
+    io: &mut T,
+    operation: impl FnOnce(&mut Recording<'_, T>) -> Result<R, String>,
+) -> RecordedOperation<R> {
     let mut recording = Recording {
         io,
         exchanges: Vec::new(),
     };
-    let result = read(model, &mut recording);
-    RecordedRead {
+    let result = operation(&mut recording);
+    RecordedOperation {
         result,
         exchanges: recording.exchanges,
     }
@@ -306,12 +332,20 @@ const AC_GAIN: [f64; 10] = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0,
 /// by a model are represented by JSON null, while their available list is
 /// empty.  This lets the GUI share one settings panel across all models.
 pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
+    settings_impl(io, model, true)
+}
+fn settings_impl(
+    io: &mut impl Io,
+    model: Model,
+    allow_output_change: bool,
+) -> Result<Value, String> {
+    let mut input_mode = Value::Null;
     let (sensitivity, time_constant, ref_freq, coupling, slope, ac_gain, overload, available) =
         match model {
             Model::Sr830 => (
                 indexed(io, "SENS?\n", &SR_SENS)?,
                 indexed(io, "OFLT?\n", &SR_TC)?,
-                query_value(io, "FREQ?\n")?,
+                Some(query_value(io, "FREQ?\n")?),
                 coupling(io, "ICPL?\n")?,
                 slope4(io, "OFSL?\n")?,
                 Value::Null,
@@ -321,10 +355,11 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
             Model::Sr7265 => {
                 let imode = integer(query_value(io, "IMODE\r")?, "SR7265 IMODE")?;
                 let sensitivity_table = sr7265_sensitivity(imode)?;
+                input_mode = json!(imode);
                 (
                     query_value(io, "SEN.\r")?,
                     query_value(io, "TC.\r")?,
-                    query_value(io, "FRQ.\r")?,
+                    Some(query_value(io, "FRQ.\r")?),
                     coupling(io, "CP\r")?,
                     slope4(io, "SLOPE\r")?,
                     json!(query_value(io, "ACGAIN\r")? * 10.0),
@@ -335,7 +370,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
             Model::Sr5210 => (
                 indexed(io, "SEN\r", &S5210_SENS)?,
                 indexed(io, "TC\r", &S5210_TC)?,
-                query_value(io, "FRQ\r")? / 1000.0,
+                Some(query_value(io, "FRQ\r")? / 1000.0),
                 Value::String("AC".into()),
                 slope2(io, "XDB\r")?,
                 Value::Null,
@@ -345,7 +380,11 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
             Model::Li5640 => (
                 indexed(io, "VSEN?\n", &SR_SENS)?,
                 indexed(io, "TCON?\n", &SR_TC)?,
-                li5640_ref_freq(io)?,
+                if allow_output_change {
+                    Some(li5640_ref_freq(io)?)
+                } else {
+                    None
+                },
                 coupling(io, "ICPL?\n")?,
                 slope4(io, "SLOP?\n")?,
                 Value::Null,
@@ -354,7 +393,7 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
             ),
         };
     Ok(
-        json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "available": available}),
+        json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "input_mode":input_mode, "available": available}),
     )
 }
 
@@ -851,6 +890,37 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    #[test]
+    fn automatic_li5640_settings_snapshot_never_changes_output_type() {
+        let mut io = Fake::new(&["0", "0", "0", "0", "0"]);
+        io.fail_write = Some("OTYP 3\n");
+        let snapshot = settings_recorded(Model::Li5640, &mut io);
+        assert!(snapshot.result.as_ref().unwrap()["Ref. Freq"].is_null());
+        assert!(
+            snapshot
+                .exchanges
+                .iter()
+                .all(|event| event.operation == "query")
+        );
+        assert!(
+            !io.commands
+                .iter()
+                .any(|command| command.starts_with("OTYP"))
+        );
+        let mut failed = Fake::new(&[]);
+        assert!(
+            settings_recorded(Model::Li5640, &mut failed)
+                .result
+                .is_err()
+        );
+        assert!(
+            !failed
+                .commands
+                .iter()
+                .any(|command| command.starts_with("OTYP"))
+        );
     }
 
     #[test]

@@ -3,6 +3,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub trait Bus {
+    fn begin_recording(&mut self) {}
+    fn take_recording(&mut self) -> Vec<crate::MotionExchange> {
+        Vec::new()
+    }
     fn query(&mut self, command: &str) -> Result<String, String>;
     fn write(&mut self, command: &str) -> Result<(), String>;
     fn stop_query(&mut self, command: &str) -> Result<String, String> {
@@ -11,6 +15,12 @@ pub trait Bus {
 }
 
 impl<T: Bus + ?Sized> Bus for Box<T> {
+    fn begin_recording(&mut self) {
+        (**self).begin_recording();
+    }
+    fn take_recording(&mut self) -> Vec<crate::MotionExchange> {
+        (**self).take_recording()
+    }
     fn stop_query(&mut self, command: &str) -> Result<String, String> {
         (**self).stop_query(command)
     }

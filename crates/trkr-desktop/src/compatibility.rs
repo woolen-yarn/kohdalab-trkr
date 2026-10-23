@@ -14,4 +14,4 @@ pub(crate) const JSON_LINES_API_REVISION: u32 = 1;
 pub(crate) const PROFILE_REVISION: u32 = crate::config::compatibility::PROFILE_REVISION;
 
 /// CSV columns and adjacent `.run.json` metadata emitted by measurements.
-pub(crate) const RECORDING_REVISION: u32 = 4;
+pub(crate) const RECORDING_REVISION: u32 = 5;

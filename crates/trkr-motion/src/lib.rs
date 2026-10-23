@@ -652,7 +652,21 @@ impl MotionConfig {
         Ok(())
     }
 }
+#[derive(Clone, Debug, Serialize)]
+pub struct MotionExchange {
+    pub command: String,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+    pub port: String,
+    #[serde(skip)]
+    order: u64,
+}
+
+static QUERY_ORDER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 struct Port {
+    name: String,
+    recording: Option<Vec<MotionExchange>>,
     serial: Box<dyn SerialPort>,
     _lease: File,
     write_end: Vec<u8>,
@@ -697,6 +711,8 @@ impl Port {
             .write_request_to_send(true)
             .map_err(|e| format!("Set RTS on {name}: {e}"))?;
         Ok(Self {
+            name: name.into(),
+            recording: None,
             serial,
             _lease: lease,
             write_end: write_end.as_bytes().to_vec(),
@@ -717,6 +733,12 @@ impl Port {
     }
 }
 impl Bus for Port {
+    fn begin_recording(&mut self) {
+        self.recording = Some(Vec::new());
+    }
+    fn take_recording(&mut self) -> Vec<MotionExchange> {
+        self.recording.take().unwrap_or_default()
+    }
     fn stop_query(&mut self, command: &str) -> Result<String, String> {
         if self.poisoned {
             self.frame(command)?;
@@ -730,6 +752,7 @@ impl Bus for Port {
         if self.poisoned {
             return Err("Serial session failed; disconnect and reconnect".into());
         }
+        let mut original_response = None;
         let result = (|| {
             self.serial
                 .clear(serialport::ClearBuffer::Input)
@@ -746,6 +769,7 @@ impl Bus for Port {
                             return Err("Serial response exceeds 4096 bytes".into());
                         }
                         if bytes.ends_with(&self.read_end) {
+                            original_response = String::from_utf8(bytes.clone()).ok();
                             bytes.truncate(bytes.len() - self.read_end.len());
                             if !bytes.is_ascii() {
                                 return Err("Non-ASCII serial response".into());
@@ -766,6 +790,15 @@ impl Bus for Port {
             }
             Err(format!("Serial timeout for {command}"))
         })();
+        if let Some(events) = &mut self.recording {
+            events.push(MotionExchange {
+                command: format!("{command}{}", String::from_utf8_lossy(&self.write_end)),
+                reply: original_response,
+                error: result.as_ref().err().cloned(),
+                port: self.name.clone(),
+                order: QUERY_ORDER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            });
+        }
         if result.is_err() {
             self.poisoned = true;
         }
@@ -864,6 +897,23 @@ impl MotionRig {
         }
         rig.position()?;
         Ok(rig)
+    }
+    /// Normalized settings actually used by this connection, including defaults.
+    pub fn recording_configuration(&self) -> MotionConfig {
+        let scanner = |index: usize| {
+            self.scanners[index].as_ref().map(|s| {
+                let mut config = s.config.clone();
+                if config.software_hysteresis.enabled {
+                    config.software_hysteresis.distance_um.get_or_insert(100.);
+                }
+                config
+            })
+        };
+        MotionConfig {
+            delay: self.delay.as_ref().map(|d| d.config.clone()),
+            x: scanner(0),
+            y: scanner(1),
+        }
     }
     /// Returns the scale actually in use by the connected delay controller.
     pub fn delay_calibration(&self) -> Result<Option<DelayCalibration>, String> {
@@ -987,6 +1037,20 @@ impl MotionRig {
             }
         }
         Ok(MovePlan { target, approach })
+    }
+    /// Observe only the existing point position queries; idle/motion polling is not journalled.
+    pub fn position_recorded(&mut self) -> (Result<Position, String>, Vec<MotionExchange>) {
+        for port in &mut self.ports {
+            port.begin_recording();
+        }
+        let result = self.position();
+        let mut events: Vec<_> = self
+            .ports
+            .iter_mut()
+            .flat_map(|p| p.take_recording())
+            .collect();
+        events.sort_by_key(|event| event.order);
+        (result, events)
     }
     pub fn position(&mut self) -> Result<Position, String> {
         let mut out = Position::default();

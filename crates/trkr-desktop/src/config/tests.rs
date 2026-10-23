@@ -336,3 +336,21 @@ fn measurement_coordinate_profiles_do_not_require_scanners() {
         assert!(settings.plan(workflow).is_ok(), "{}", workflow.name());
     }
 }
+
+#[test]
+fn experiment_metadata_survives_profile_plan_roundtrip() {
+    let mut settings = Settings::default();
+    settings.raw["experiment"] =
+        json!({"sample_id":"Kim-01","temperature":{"value":300,"unit":"K"}});
+    let mut plan = settings.plan(Workflow::Trkr).unwrap();
+    assert_eq!(plan.experiment["sample_id"], "Kim-01");
+    plan.experiment
+        .insert("note".into(), json!("unchanged optical alignment"));
+    settings.set_plan(&plan).unwrap();
+    assert_eq!(
+        settings.plan(Workflow::Trkr).unwrap().experiment,
+        plan.experiment
+    );
+    settings.raw["experiment"] = json!("invalid");
+    assert!(settings.plan(Workflow::Trkr).is_err());
+}

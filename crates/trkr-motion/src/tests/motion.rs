@@ -865,3 +865,51 @@ fn delay_calibration_keeps_microstep_unknown_until_connected() {
         actual.effective_ps_per_pulse.unwrap() * 8.
     );
 }
+
+#[test]
+fn recorded_position_preserves_axis_order_without_recording_idle_polls() {
+    struct RecordingBus {
+        capture: Option<Vec<MotionExchange>>,
+    }
+    impl Bus for RecordingBus {
+        fn begin_recording(&mut self) {
+            self.capture = Some(Vec::new());
+        }
+        fn take_recording(&mut self) -> Vec<MotionExchange> {
+            self.capture.take().unwrap_or_default()
+        }
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            let response = if command.ends_with('U') {
+                "1TPU0.020000\r\n"
+            } else {
+                "1TPV0.030000\r\n"
+            };
+            if let Some(events) = &mut self.capture {
+                events.push(MotionExchange {
+                    command: format!("{command}\r\n"),
+                    reply: Some(response.into()),
+                    error: None,
+                    port: "fake".into(),
+                    order: QUERY_ORDER.fetch_add(1, Ordering::Relaxed),
+                });
+            }
+            Ok(response.trim().into())
+        }
+        fn write(&mut self, _: &str) -> Result<(), String> {
+            panic!("position read must not write motion commands")
+        }
+    }
+    let mut rig = two_scanner_rig(RecordingBus { capture: None });
+    rig.position().unwrap();
+    for _ in 0..2 {
+        let (position, events) = rig.position_recorded();
+        let position = position.unwrap();
+        assert_eq!(position.x_scanner_deg, Some(0.02));
+        assert_eq!(position.y_scanner_deg, Some(0.03));
+        assert_eq!(events.len(), 2);
+        assert!(events[0].command.contains('U'));
+        assert!(events[1].command.contains('V'));
+        assert_eq!(events[0].reply.as_deref(), Some("1TPU0.020000\r\n"));
+        rig.position().unwrap();
+    }
+}

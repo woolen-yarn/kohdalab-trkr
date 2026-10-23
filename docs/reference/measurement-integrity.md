@@ -1,5 +1,94 @@
 # Measurement integrity / 測定記録の精度
 
+## Three-file recording (0.4.0) / 3ファイル保存
+
+New runs use `<name>.csv` (analysis), `<name>.raw.csv` (raw evidence), and
+`<name>.run.json` (conditions and outcome). Recording revision 5 declares
+`trkr_analysis_v1`, `raw_csv_v1`, and metadata schema 3. This intentionally changes
+new CSV column names; old CSV and JSONL-backed runs remain readable/copyable.
+Historical descriptions below apply to their stated versions, not the new writer.
+
+新規測定はmain CSV・raw CSV・run JSONの3ファイルです。記録revision 5で
+`trkr_analysis_v1`・`raw_csv_v1`・metadata schema 3を宣言します。
+新規CSVの列名は変更しますが、旧CSVの読込と旧JSONL付き測定のコピーは維持します。
+以下の旧版の説明は、その版での保存形式を記述した履歴です。
+
+| Main columns / main列 | Meaning / 意味 |
+| --- | --- |
+| `run_id`, `point_index` | Run UUID and one-based saved point number / 測定UUIDと1始まりの点番号 |
+| `timestamp`, `elapsed_s` | Signal-read completion on host UTC and monotonic run seconds / ホスト側信号読取完了のUTC・単調経過秒 |
+| `quality_flags` | `simulated`, `ok`, `overload`, `reference_unlock`, `reference_status_unknown`, `status_unknown`, `unit_unknown`; combined with `\|` / 状態・不明・合成を区別 |
+| `measurement`, `fast_axis`, `slow_axis`, `line_index` | Workflow, axes and zero-based 2D line index; slow/line empty for 1D / 測定・走査軸と0始まり2D行番号。1Dはslow・line空欄 |
+| `target_elapsed_s` | Monitor scheduled seconds / モニター予定経過秒 |
+| `target_t_cor_ps`, `target_x_cor_um`, `target_y_cor_um` | Canonical commanded measurement coordinates, even when input uses mm/pulse / 入力がmm・pulseでも換算済みの測定座標指令 |
+| `target_u_cor_um`, `target_v_cor_um` | Rotated commands; orthogonal zero is explicit / 回転座標の指令。直交回転軸の0も明示 |
+| `t_ps`, `x_um`, `y_um` | Available actual instrument coordinates, including fixed axes / 固定軸を含む取得済み機器座標 |
+| `t_cor_ps`, `x_cor_um`, `y_cor_um`, `u_cor_um`, `v_cor_um` | Actual corrected and rotated readbacks / 実読取の原点補正・回転座標 |
+| `spatial_theta_deg` | Spatial rotation / 空間回転角 |
+| `X`, `Y`, `R`, `Theta_deg`, `signal_unit` | Original instrument components and qualified unit / 装置由来の各成分と確認できた単位 |
+
+Do not assume V if `signal_unit` is `unknown`. Currently SR7265 voltage input
+(IMODE 0) is qualified from the point status query; other unverified modes remain
+unknown. Simulation is synthetic V. A status read follows the signal read and is
+not simultaneous with it; supported overload/reference bits are saved, while
+unsupported information remains unknown. Status/IMODE reads add read-only I/O,
+so total point duration includes their cost. They do not configure the instrument.
+Start settings are freshly queried using the existing settings commands; controls
+not queried (including unimplemented phase/reference controls) remain unknown.
+
+`signal_unit=unknown`をVと仮定しません。現時点では点ごとの状態照会で確認した
+SR7265 IMODE 0をVとし、未検証のモードは不明を維持します。合成値は合成Vです。
+状態照会は信号読取後で同時ではありません。対応する過負荷・参照異常ビットを保存し、
+未対応情報は不明です。状態・IMODE照会による読取時間は点の所要時間に含まれますが、
+装置設定は変更しません。開始時の設定は既存の設定照会を使い再取得し、未照会の位相・
+参照制御などを確認済みとして扱いません。
+
+Raw CSV uses these shared columns: `run_id`, `event_index`, `point_index`,
+`reading_index`, `event_type`, `device_role`, `quantity`, `command`, `raw_response`,
+`value`, `unit`, `host_started_at_utc`, `host_completed_at_utc`,
+`started_elapsed_s`, `completed_elapsed_s`, `result`, `error`, `details_json`.
+Quoted cells preserve CR/LF, commas, quotes and trailing zeroes. `details_json`
+retains structured coordinates/settings/return outcomes not representable in one
+scalar. Main CSV rows are not copied as another string array. No new JSONL mirror
+is written. Lock-in and point-position transport responses are retained; idle live
+polling is excluded. Grouped queries inherit a logical-operation time window,
+explicitly not individual-command or device ADC timestamps. This is decoded valid
+text evidence, not a binary bus capture.
+
+rawの列は上記共通18列です。引用符付きセルに改行・カンマ・引用符・末尾ゼロを保持し、
+単一値に収まらない座標・設定・終了状態は`details_json`へ保存します。mainの行全体の
+文字列配列コピーや、新規JSONLへの二重保存はしません。ロックインと測定点位置の
+通信応答を保持し、待機ライブ表示は除外します。まとめて取得した照会の時刻は
+論理操作全体の時間窓であり、個別コマンドや装置ADC時刻ではありません。
+これは有効な文字列の記録で、バイナリバスの完全記録ではありません。
+
+Run JSON includes the plan/optional `experiment` object, configured hardware,
+normalized motion settings with effective compensation defaults, runtime delay
+microstep and scale, observed start lock-in settings, software version/build
+commit when available, completion state and main/raw SHA-256 hashes. Use an
+`experiment` object in a profile or Notebook plan for sample ID, conditions,
+units and notes; external conditions are user-supplied, never automatically
+invented. Save copies retain the run ID, update filenames and recompute hashes for
+the actual snapshot. Checksums detect mismatches, not malicious tampering.
+
+run JSONには計画・任意の`experiment`、設定上の機器、既定値を解決した移動設定・補償、
+実効マイクロステップ・換算係数、開始時ロックイン設定、ソフトウェア版・取得可能な
+ビルドコミット、終了結果、main/raw SHA-256を保存します。設定ファイルまたはNotebook
+計画の`experiment`へ試料ID・外部条件・単位・メモを指定できます。外部条件は入力値で、
+自動測定した値と捏造しません。Saveコピーは測定IDを維持し、コピー先名と実際の内容の
+チェックサムを更新します。チェックサムは取り違え検出用で、改ざんへの署名ではありません。
+
+Migration: `X_V/Y_V/R_V` become `X/Y/R` plus `signal_unit`;
+`acquisition_elapsed_s` is merged into `elapsed_s`; controller mm/degree/pulse
+fields move to raw position evidence. Coordinate type and immutable settings live
+in run JSON. Readers still accept the original old column names. Do not delete
+old sidecars or rewrite historical runs to make them resemble a new acquisition.
+
+移行では信号列を`X/Y/R`と`signal_unit`へ変更し、経過秒を`elapsed_s`へ統一します。
+コントローラー単位はraw、座標種別・固定設定はrun JSONへ移します。旧列名の読込は
+維持します。過去の測定を新規取得のように書き換えたり、旧付属ファイルを削除しません。
+
+
 ## Stored digits / 保存する桁
 
 Starting with 0.3.5 (recording revision 2), X_V/Y_V/R_V use shortest scientific
