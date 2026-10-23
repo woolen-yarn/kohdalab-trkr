@@ -425,39 +425,96 @@ fn return_rig(log: Arc<Mutex<Vec<String>>>, replies: &[&str]) -> MotionRig {
 }
 #[test]
 fn full_initialization_homes_then_moves_to_calibrated_instrument_zero() {
-    let log = Arc::new(Mutex::new(vec![]));
-    let mut rig = return_rig(
-        log.clone(),
-        &[
-            "1TS00000E", // pre-HOME: NOT REFERENCED
-            "1TS00001E",
-            "1TP0.0",
-            "1TS000032",
-            "1TP0.0",
-            "1TS000032", // prepare for calibrated-origin move
-            "1TS000032",
-            "1TP5.0",
-            "1TP5.0", // approach and verified readback
-            "1TS000032",
-            "1TP6.0",
-            "1TP6.0", // final target and readback
-        ],
-    );
-    let position = rig
-        .initialize_with_origin_progress(1, true, true, &AtomicBool::new(false), None)
-        .unwrap();
-    assert_eq!(position.physical[1], Some(0.));
-    let commands = log.lock().unwrap();
-    assert_eq!(commands[0], "1TS");
-    assert_eq!(commands[1], "1OR");
-    let positioning: Vec<_> = commands
-        .iter()
-        .filter(|c| c.starts_with("1PA"))
-        .map(String::as_str)
-        .collect();
-    assert_eq!(positioning, ["1PA5.0000", "1PA6.0000"]);
-    assert!(commands.iter().any(|c| c == "1PA6.0000"));
-    assert!(!commands.iter().any(|c| c == "1PA0.0000"));
+    #[derive(Clone, Copy)]
+    enum State {
+        Unreferenced,
+        Homing,
+        Ready,
+        Moving(f64),
+    }
+    struct InitializingBus {
+        log: Arc<Mutex<Vec<String>>>,
+        state: State,
+        position: f64,
+        busy_reported: bool,
+        ready_delay: Duration,
+    }
+    impl Bus for InitializingBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.log.lock().unwrap().push(command.into());
+            match command {
+                "1TP" => Ok(format!("1TP{}", self.position)),
+                "1TS" => match self.state {
+                    State::Unreferenced => Ok("1TS00000E".into()),
+                    State::Ready => Ok("1TS000032".into()),
+                    State::Homing | State::Moving(_) if !self.busy_reported => {
+                        self.busy_reported = true;
+                        Ok(if matches!(self.state, State::Homing) {
+                            "1TS00001E"
+                        } else {
+                            "1TS000028"
+                        }
+                        .into())
+                    }
+                    State::Homing | State::Moving(_) => {
+                        std::thread::sleep(self.ready_delay);
+                        self.position = match self.state {
+                            State::Moving(target) => target,
+                            _ => 0.,
+                        };
+                        self.state = State::Ready;
+                        Ok("1TS000032".into())
+                    }
+                },
+                _ => Err(format!("Unexpected query: {command}")),
+            }
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.into());
+            if command == "1OR" && matches!(self.state, State::Unreferenced) {
+                self.state = State::Homing;
+            } else if let Some(target) = command.strip_prefix("1PA") {
+                if !matches!(self.state, State::Ready) {
+                    return Err("Move requested before ready".into());
+                }
+                self.state = State::Moving(target.parse::<f64>().map_err(|e| e.to_string())?);
+            } else {
+                return Err(format!("Unexpected write: {command}"));
+            }
+            self.busy_reported = false;
+            Ok(())
+        }
+    }
+    for ready_delay in [Duration::ZERO, Duration::from_millis(150)] {
+        let log = Arc::new(Mutex::new(vec![]));
+        let mut rig = return_rig(log.clone(), &[]);
+        // Position polling depends on elapsed time. Model command-specific replies
+        // so a delayed READY response can safely trigger an extra live readback.
+        rig.ports[0] = Box::new(InitializingBus {
+            log: log.clone(),
+            state: State::Unreferenced,
+            position: 0.,
+            busy_reported: false,
+            ready_delay,
+        });
+        let position = rig
+            .initialize_with_origin_progress(1, true, true, &AtomicBool::new(false), None)
+            .unwrap();
+        assert_eq!(position.physical[1], Some(0.));
+        let commands = log.lock().unwrap();
+        assert_eq!(commands[0], "1TS");
+        assert_eq!(commands[1], "1OR");
+        let positioning: Vec<_> = commands
+            .iter()
+            .filter(|c| c.starts_with("1PA"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(positioning, ["1PA5.0000", "1PA6.0000"]);
+        assert!(!commands.iter().any(|c| c == "1PA0.0000"));
+        if !ready_delay.is_zero() {
+            assert!(commands.iter().filter(|c| c.as_str() == "1TP").count() >= 9);
+        }
+    }
 }
 #[test]
 fn initialization_checks_zero_approach_limits_before_homing() {
