@@ -805,6 +805,19 @@ impl Bus for Port {
         result
     }
     fn write(&mut self, command: &str) -> Result<(), String> {
+        if self.poisoned {
+            return Err("Serial session failed; disconnect and reconnect".into());
+        }
+        let result = self.frame(command);
+        if result.is_err() {
+            self.poisoned = true;
+        }
+        result
+    }
+    fn emergency_write(&mut self, command: &str) -> Result<(), String> {
+        // STOP is the sole write permitted after a failed ordinary exchange.
+        // Keep the port poisoned so no later move can reuse a desynchronised
+        // serial session.
         self.frame(command)
     }
 }
@@ -1169,6 +1182,104 @@ impl MotionRig {
             thread::sleep(Duration::from_millis(50));
         }
     }
+    /// HOME has its own state machine: a pre-existing move cannot count as a
+    /// successful reference operation, and a stale READY reply cannot finish
+    /// it.  Position callbacks remain active while the controller homes.
+    fn wait_home(
+        &mut self,
+        axis: usize,
+        cancel: &AtomicBool,
+        timeout: Duration,
+        progress: &mut Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<(), String> {
+        let started = Instant::now();
+        let start_deadline = started + timeout.min(Duration::from_secs(5));
+        let mut observed_home = false;
+        let mut last_position = None;
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err("motion cancelled".into());
+            }
+            let complete = if axis == 0 {
+                let d = self.delay.as_ref().ok_or("Delay stage not connected")?;
+                let ready = protocol::delay_ready(&mut self.ports[d.port])?;
+                observed_home |= !ready;
+                observed_home && ready
+            } else {
+                let s = self.scanners[axis - 1]
+                    .as_ref()
+                    .ok_or("Scanner not connected")?;
+                let state = s.config.protocol().state(&mut self.ports[s.port])?;
+                // Newport CONEX-CC documents 1E as HOMING and 32 as the
+                // READY state reached specifically from HOMING.
+                observed_home |= state == "1E";
+                if state == "32" && observed_home {
+                    true
+                } else if observed_home && state != "1E" {
+                    return Err(format!(
+                        "scanner HOME did not complete in READY from HOMING (state {state})"
+                    ));
+                } else if matches!(state.as_str(), "28" | "46" | "47") {
+                    return Err(format!("scanner HOME entered unsafe state {state}"));
+                } else {
+                    false
+                }
+            };
+            if progress.is_some()
+                && last_position
+                    .is_none_or(|last: Instant| last.elapsed() >= Duration::from_millis(100))
+            {
+                let position = self.position()?;
+                if let Some(emit) = progress.as_mut() {
+                    emit(position)?;
+                }
+                last_position = Some(Instant::now());
+            }
+            if cancel.load(Ordering::Acquire) {
+                return Err("motion cancelled".into());
+            }
+            if complete {
+                return Ok(());
+            }
+            if !observed_home && Instant::now() >= start_deadline {
+                return Err("HOME did not start (no post-command homing transition)".into());
+            }
+            if started.elapsed() >= timeout {
+                return Err("HOME did not complete".into());
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+    }
+    fn verify_targets(&self, actual: &Position, targets: [Option<f64>; 3]) -> Result<(), String> {
+        for (i, v) in targets.iter().enumerate() {
+            if let Some(v) = v {
+                if i == 0 {
+                    let d = self.delay.as_ref().ok_or("Delay not connected")?;
+                    if actual.delay_stage_pulse != Some(d.config.pulse(*v, d.micro)?) {
+                        return Err("Delay stage readback does not match target pulse".into());
+                    }
+                } else {
+                    let s = self.scanners[i - 1]
+                        .as_ref()
+                        .ok_or("Scanner not connected")?;
+                    let expected = s.config.raw_target(*v)?;
+                    let measured = s
+                        .config
+                        .raw_from_sample_um(actual.physical[i].ok_or("Missing position readback")?);
+                    if (expected - measured).abs()
+                        > s.config
+                            .resolution
+                            .or(s.config.min_step)
+                            .unwrap_or(0.0001)
+                            .max(0.0001)
+                    {
+                        return Err("Scanner readback does not match target".into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn move_to(
         &mut self,
         targets: [Option<f64>; 3],
@@ -1227,6 +1338,10 @@ impl MotionRig {
                     true,
                     &mut progress,
                 )?;
+                // READY alone is not evidence that the compensation move was
+                // executed.  Verify this leg before issuing the final target.
+                let approached = self.position()?;
+                self.verify_targets(&approached, plan.approach)?;
             }
             self.start(plan.target, cancel)?;
             self.wait(
@@ -1237,33 +1352,7 @@ impl MotionRig {
                 &mut progress,
             )?;
             let actual = self.position()?;
-            for (i, v) in plan.target.iter().enumerate() {
-                if let Some(v) = v {
-                    if i == 0 {
-                        let d = self.delay.as_ref().ok_or("Delay not connected")?;
-                        if actual.delay_stage_pulse != Some(d.config.pulse(*v, d.micro)?) {
-                            return Err("Delay stage readback does not match target pulse".into());
-                        }
-                    } else {
-                        let s = self.scanners[i - 1]
-                            .as_ref()
-                            .ok_or("Scanner not connected")?;
-                        let expected = s.config.raw_target(*v)?;
-                        let measured = s.config.raw_from_sample_um(
-                            actual.physical[i].ok_or("Missing position readback")?,
-                        );
-                        if (expected - measured).abs()
-                            > s.config
-                                .resolution
-                                .or(s.config.min_step)
-                                .unwrap_or(0.0001)
-                                .max(0.0001)
-                        {
-                            return Err("Scanner readback does not match target".into());
-                        }
-                    }
-                }
-            }
+            self.verify_targets(&actual, plan.target)?;
             Ok(actual)
         })();
         if let Err(error) = result {
@@ -1276,18 +1365,87 @@ impl MotionRig {
     }
     pub fn stop(&mut self) -> Result<(), String> {
         let mut errors = vec![];
-        if let Some(d) = &self.delay
-            && let Err(e) = protocol::delay_stop(
-                &mut self.ports[d.port],
-                d.config.model()?,
-                d.config.controller_axis,
-            )
-        {
-            errors.push(e)
+        if let Some(d) = &self.delay {
+            match d.config.model() {
+                Ok(model) => {
+                    if let Err(e) = protocol::delay_stop(
+                        &mut self.ports[d.port],
+                        model,
+                        d.config.controller_axis,
+                    ) {
+                        errors.push(format!("delay STOP: {e}"));
+                    }
+                }
+                Err(e) => errors.push(format!("delay STOP configuration: {e}")),
+            }
         }
-        for s in self.scanners.iter().flatten() {
+        for (axis, s) in self
+            .scanners
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|s| (i, s)))
+        {
             if let Err(e) = s.config.protocol().stop(&mut self.ports[s.port]) {
-                errors.push(e)
+                errors.push(format!("scanner {} STOP: {e}", axis + 1));
+            }
+        }
+        // Send STOP to every configured axis first.  Then require a bounded
+        // stationary-state confirmation from every axis, even if one STOP
+        // acknowledgement was lost.
+        if let Some(d) = &self.delay {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stopped = false;
+            while Instant::now() < deadline {
+                match protocol::delay_ready(&mut self.ports[d.port]) {
+                    Ok(true) => {
+                        stopped = true;
+                        break;
+                    }
+                    Ok(false) => thread::sleep(Duration::from_millis(50)),
+                    Err(e) => {
+                        errors.push(format!("delay STOP verification: {e}"));
+                        break;
+                    }
+                }
+            }
+            if !stopped
+                && !errors
+                    .iter()
+                    .any(|e| e.starts_with("delay STOP verification"))
+            {
+                errors.push("delay STOP verification timed out while moving".into());
+            }
+        }
+        for (axis, s) in self
+            .scanners
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| s.as_ref().map(|s| (i, s)))
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut stopped = false;
+            while Instant::now() < deadline {
+                match s.config.protocol().stopped(&mut self.ports[s.port]) {
+                    Ok(true) => {
+                        stopped = true;
+                        break;
+                    }
+                    Ok(false) => thread::sleep(Duration::from_millis(50)),
+                    Err(e) => {
+                        errors.push(format!("scanner {} STOP verification: {e}", axis + 1));
+                        break;
+                    }
+                }
+            }
+            if !stopped
+                && !errors
+                    .iter()
+                    .any(|e| e.starts_with(&format!("scanner {} STOP verification", axis + 1)))
+            {
+                errors.push(format!(
+                    "scanner {} STOP verification timed out while moving",
+                    axis + 1
+                ));
             }
         }
         if errors.is_empty() {
@@ -1344,8 +1502,6 @@ impl MotionRig {
             if cancel.load(Ordering::Acquire) {
                 return Err("motion cancelled".into());
             }
-            let mut target = [None; 3];
-            target[axis] = Some(0.);
             if axis == 0 {
                 let d = self.delay.as_mut().ok_or("Delay stage not connected")?;
                 // Refresh calibration even when homing was explicitly disabled.
@@ -1356,32 +1512,28 @@ impl MotionRig {
                 )?;
                 d.config.origin(d.micro)?;
                 if home {
+                    let initially_ready = protocol::delay_ready(&mut self.ports[d.port])?;
+                    if !initially_ready {
+                        return Err(
+                            "delay stage is already moving or homing; HOME was not sent".into()
+                        );
+                    }
                     protocol::delay_home(
                         &mut self.ports[d.port],
                         d.config.model()?,
                         d.config.controller_axis,
                     )?;
-                    self.wait(
-                        target,
-                        cancel,
-                        Duration::from_secs(240),
-                        false,
-                        &mut progress,
-                    )?;
+                    self.wait_home(axis, cancel, Duration::from_secs(240), &mut progress)?;
                 }
             } else {
                 let s = self.scanners[axis - 1]
                     .as_ref()
                     .ok_or("Scanner not connected")?;
                 if home && s.config.model()?.capabilities().supports_home {
+                    let initial_state = s.config.protocol().state(&mut self.ports[s.port])?;
+                    s.config.protocol().home_preflight(&initial_state)?;
                     s.config.protocol().home(&mut self.ports[s.port])?;
-                    self.wait(
-                        target,
-                        cancel,
-                        Duration::from_secs(60),
-                        false,
-                        &mut progress,
-                    )?;
+                    self.wait_home(axis, cancel, Duration::from_secs(60), &mut progress)?;
                 } else {
                     s.config
                         .protocol()

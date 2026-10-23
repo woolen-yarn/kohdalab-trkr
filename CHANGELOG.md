@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — 2026-10-23
+
+- Stop motion before retiring a cancelled GPIB reply; keep a healthy session and never reuse its late response. Real transport/recovery failures still disconnect. / Stop時は軸の停止を優先し、中断した応答を回収・破棄して正常なGPIB接続を維持。通信・回復失敗は切断。
+- Abort on acquisition status failure before further scan/return motion; update live overload/reference/error indicators. / 状態取得失敗時は次の走査・原点復帰へ進まず中止し、ライブ異常表示も更新。
+- Verify compensation arrival, HOME transitions and actual stationary states after STOP; reject unsafe or unsupported HOME preconditions and block ordinary writes after serial faults. / 補償位置、HOME遷移、STOP後の停止を確認し、不正なHOMEと通信異常後の通常書込みを拒否。
+- Keep the revision-5 three-file recording format, calibration and scan/return compensation distances unchanged. / 3ファイル保存形式・校正・走査と帰還の補償距離は維持。
+
 ## 0.4.0 — 2026-10-23
 
 - Split new recordings into 29-column analysis CSV, multiline-safe raw CSV and run JSON, with UUID and SHA-256 associations. / 新規保存を29列main CSV・raw CSV・run JSONへ分離し、UUIDとSHA-256で対応付け。

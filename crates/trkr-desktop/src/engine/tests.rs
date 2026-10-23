@@ -714,3 +714,167 @@ fn recording_context_invalidates_settings_when_identity_or_settings_change() {
             .is_none()
     );
 }
+
+#[test]
+fn lockin_status_display_tracks_new_faults_and_does_not_keep_stale_success() {
+    let mut state = Snapshot {
+        lockin: serde_json::json!({"Time Constant":2.,"Overload":{"overload":false}}),
+        ..Default::default()
+    };
+    update_lockin_status(
+        &mut state,
+        &Ok(serde_json::json!({"overload":true,"reference_unlock":true})),
+    );
+    assert_eq!(state.lockin["Overload"]["overload"], true);
+    assert_eq!(state.lockin["Time Constant"], 2.);
+    update_lockin_status(&mut state, &Err("status transport failed".into()));
+    assert!(state.lockin["Overload"].is_null());
+    assert_eq!(state.lockin["Status Error"], "status transport failed");
+}
+#[test]
+fn stop_normalizes_cancellation_but_never_a_failed_stop_or_restoration() {
+    assert!(expected_stop_error("transport: GPIB read cancelled"));
+    assert!(expected_stop_error(
+        "Lock-in status: transport: GPIB read cancelled"
+    ));
+    assert!(!expected_stop_error(
+        "motion cancelled; STOP failed: still moving"
+    ));
+    assert!(!expected_stop_error(
+        "transport: GPIB read cancelled; LI5640 recovery required"
+    ));
+}
+
+#[cfg(unix)]
+static PROTECTION_TEST_LEASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+#[cfg(unix)]
+fn scripted_lockin_session(dir: &Path, source: &str) -> Session {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = dir.join("helper.sh");
+    std::fs::write(&helper, source).unwrap();
+    std::fs::set_permissions(&helper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    Session {
+        gpib: Some(Gpib::open(&helper, 12).unwrap()),
+        config: Some(config()),
+        state: Snapshot {
+            devices: [true, false, false, false],
+            ..Default::default()
+        },
+        ..Default::default()
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn status_transport_failure_marks_even_the_last_point_run_as_error() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let script = r#"#!/bin/sh
+printf 'KIV\tOK\t-\n'
+status_count=0
+while read -r operation address timeout payload; do
+  if [ "$operation" = EXIT ]; then break; fi
+  case "$payload" in
+    534e41503f312c322c332c340a) printf 'KIV\tOK\t312c322c332c34\n' ;;
+    4c4941533f0a)
+      status_count=$((status_count+1))
+      if [ "$status_count" -eq 2 ]; then printf 'KIV\tERR\t617564697420737461747573206661696c757265\n'; else printf 'KIV\tOK\t30\n'; fi ;;
+    *) printf 'KIV\tOK\t30\n' ;;
+  esac
+done
+"#;
+    let mut session = scripted_lockin_session(dir.path(), script);
+    let path = dir.path().join("fault.csv");
+    let plan = Plan {
+        n_points: 1,
+        interval_s: 0.02,
+        ..Default::default()
+    };
+    let (send, _events) = mpsc::sync_channel(64);
+    let error = session
+        .acquire(
+            Source::Gpib {
+                model: Model::Sr830,
+                address: 12,
+            },
+            config(),
+            &plan,
+            Some(&path),
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap_err();
+    assert!(error.contains("audit status failure"), "{error}");
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "error");
+    assert_eq!(metadata["rows"], 1);
+    assert!(session.state.lockin["Overload"].is_null());
+    let mut csv = csv::Reader::from_path(&path).unwrap();
+    let headers = csv.headers().unwrap().clone();
+    let quality = headers.iter().position(|v| v == "quality_flags").unwrap();
+    assert!(csv.records().next().unwrap().unwrap()[quality].contains("status_unknown"));
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_during_a_recorded_read_keeps_connection_and_finalizes_cancelled_metadata() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let marker = dir.path().join("formal-read");
+    let script = format!(
+        r#"#!/bin/sh
+printf 'KIV\tOK\t-\n'
+reads=0
+while read -r operation address timeout payload; do
+  if [ "$operation" = EXIT ]; then break; fi
+  if [ "$payload" = 534e41503f312c322c332c340a ]; then
+    reads=$((reads+1))
+    if [ "$reads" -eq 2 ]; then printf started > '{}'; sleep 0.2; fi
+    printf 'KIV\tOK\t312c322c332c34\n'
+  else printf 'KIV\tOK\t30\n'; fi
+done
+"#,
+        marker.display()
+    );
+    let mut session = scripted_lockin_session(dir.path(), &script);
+    let token = Arc::new(AtomicBool::new(false));
+    let cancel = token.clone();
+    let stopper = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !marker.exists() {
+            assert!(Instant::now() < deadline, "formal read never started");
+            thread::sleep(Duration::from_millis(2));
+        }
+        cancel.store(true, Ordering::Release);
+    });
+    let path = dir.path().join("stopped.csv");
+    let plan = Plan {
+        n_points: 2,
+        interval_s: 0.02,
+        ..Default::default()
+    };
+    let (send, _events) = mpsc::sync_channel(64);
+    session
+        .acquire(
+            Source::Gpib {
+                model: Model::Sr830,
+                address: 12,
+            },
+            config(),
+            &plan,
+            Some(&path),
+            &token,
+            &send,
+        )
+        .unwrap();
+    stopper.join().unwrap();
+    let gpib = session.gpib.as_mut().unwrap();
+    assert!(!gpib.is_poisoned());
+    assert_eq!(gpib.query("SNAP?1,2,3,4\n").unwrap(), "1,2,3,4");
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "cancelled");
+    assert_eq!(metadata["rows"], 0);
+}

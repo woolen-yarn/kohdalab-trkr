@@ -256,6 +256,19 @@ impl CancellableIo for trkr_transport::Gpib {
     }
 }
 
+struct Cancellable<'a, T> {
+    io: &'a mut T,
+    cancel: &'a std::sync::atomic::AtomicBool,
+}
+impl<T: CancellableIo> Io for Cancellable<'_, T> {
+    fn query(&mut self, command: &str) -> Result<String, String> {
+        self.io.query_cancellable(command, self.cancel)
+    }
+    fn write(&mut self, command: &str) -> Result<(), String> {
+        self.io.write_cancellable(command, self.cancel)
+    }
+}
+
 /// Display reads during motion/settling observe Stop even during a helper
 /// response. This also covers LI5640 display selection and restoration writes.
 pub fn read_cancellable(
@@ -263,18 +276,6 @@ pub fn read_cancellable(
     io: &mut impl CancellableIo,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Signal, String> {
-    struct Cancellable<'a, T> {
-        io: &'a mut T,
-        cancel: &'a std::sync::atomic::AtomicBool,
-    }
-    impl<T: CancellableIo> Io for Cancellable<'_, T> {
-        fn query(&mut self, command: &str) -> Result<String, String> {
-            self.io.query_cancellable(command, self.cancel)
-        }
-        fn write(&mut self, command: &str) -> Result<(), String> {
-            self.io.write_cancellable(command, self.cancel)
-        }
-    }
     let result = read(
         model,
         &mut Cancellable {
@@ -295,6 +296,47 @@ pub fn read_cancellable(
         ));
     }
     result
+}
+
+/// Recorded acquisition queries observe Stop without losing raw evidence.
+pub fn read_recorded_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RecordedRead {
+    let mut result = read_recorded(
+        model,
+        &mut Cancellable {
+            io: &mut *io,
+            cancel,
+        },
+    );
+    if result.result.is_err()
+        && model.descriptor().read_changes_display
+        && cancel.load(std::sync::atomic::Ordering::Acquire)
+    {
+        io.invalidate();
+        if let Err(error) = &mut result.result {
+            error.push_str(
+                "; LI5640 recovery required: reconnect and verify display/output settings",
+            );
+        }
+    }
+    result
+}
+pub fn status_recorded_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RecordedOperation<Value> {
+    status_recorded(model, &mut Cancellable { io, cancel })
+}
+pub fn settings_recorded_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RecordedOperation<Value> {
+    settings_recorded(model, &mut Cancellable { io, cancel })
 }
 
 pub fn read(model: Model, io: &mut impl Io) -> Result<Signal, String> {

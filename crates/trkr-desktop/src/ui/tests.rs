@@ -860,3 +860,29 @@ fn raw_csv_snapshot_preserves_quoted_multiline_and_omits_future_point() {
     assert_eq!(rows.len(), 1);
     assert_eq!(&rows[0][8], "  1.23000000,\"raw\"\r\n");
 }
+
+#[test]
+fn lockin_status_shows_output_overload_unlock_and_failed_status_instead_of_live() {
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":true,"input_overload":false}})
+        ),
+        Some("OVERLOAD")
+    );
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":false,"reference_unlock":true}})
+        ),
+        Some("UNLOCK")
+    );
+    assert_eq!(
+        lockin_health_text(&serde_json::json!({"Overload":null,"Status Error":"timeout"})),
+        Some("UNKNOWN")
+    );
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":false,"reference_unlock":false}})
+        ),
+        None
+    );
+}

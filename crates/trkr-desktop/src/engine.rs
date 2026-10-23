@@ -131,6 +131,7 @@ struct LiveMonitor {
     started: Instant,
     read_budget: Duration,
     demo_coordinates: [Option<f64>; 3],
+    next_status: Instant,
 }
 impl Default for LiveMonitor {
     fn default() -> Self {
@@ -140,6 +141,7 @@ impl Default for LiveMonitor {
             started: now,
             read_budget: LIVE_INTERVAL,
             demo_coordinates: [None; 3],
+            next_status: now,
         }
     }
 }
@@ -197,7 +199,7 @@ impl LiveMonitor {
 fn poll_live(
     monitor: &mut LiveMonitor,
     source: Source,
-    gpib: Option<&mut Gpib>,
+    mut gpib: Option<&mut Gpib>,
     state: &mut Snapshot,
     send: &SyncSender<Event>,
     cancel: Option<&AtomicBool>,
@@ -212,7 +214,9 @@ fn poll_live(
     if let Some(signal) = monitor.poll(
         || match source {
             Source::Gpib { model, .. } => {
-                let gpib = gpib.ok_or(OperationError::LockinDisconnected)?;
+                let gpib = gpib
+                    .as_deref_mut()
+                    .ok_or(OperationError::LockinDisconnected)?;
                 match cancel {
                     Some(token) => lockin::read_cancellable(model, gpib, token),
                     None => lockin::read(model, gpib),
@@ -230,8 +234,44 @@ fn poll_live(
     )? {
         state.signal = Some(signal);
         state.signal_origin = Some(origin);
+        if let Source::Gpib { model, .. } = source
+            && Instant::now() >= monitor.next_status
+        {
+            let started = Instant::now();
+            monitor.next_status = started + Duration::from_millis(500);
+            let gpib = gpib.ok_or(OperationError::LockinDisconnected)?;
+            let status = match cancel {
+                Some(token) => lockin::status_recorded_cancellable(model, gpib, token),
+                None => lockin::status_recorded(model, gpib),
+            };
+            update_lockin_status(state, &status.result);
+            let _ = send.try_send(Event::State(Box::new(state.clone())));
+            monitor.read_budget += started.elapsed();
+            status
+                .result
+                .map_err(|error| format!("Lock-in status: {error}"))?;
+        }
     }
     Ok(())
+}
+fn update_lockin_status(state: &mut Snapshot, status: &Result<Value, String>) {
+    if !state.lockin.is_object() {
+        state.lockin = serde_json::json!({});
+    }
+    state.lockin["Overload"] = status.as_ref().ok().cloned().unwrap_or(Value::Null);
+    state.lockin["Status Error"] = status
+        .as_ref()
+        .err()
+        .map(|error| serde_json::json!(error))
+        .unwrap_or(Value::Null);
+}
+fn expected_stop_error(error: &str) -> bool {
+    matches!(
+        error,
+        "motion cancelled"
+            | "transport: GPIB read cancelled"
+            | "Lock-in status: transport: GPIB read cancelled"
+    )
 }
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
@@ -438,17 +478,53 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 session.state.total = 0;
                 let _ = send.send(Event::State(Box::new(session.state.clone())));
             }
-            let result = session.execute(cmd, &token, &send);
-            if let Err(e) = &result {
-                if let Some(rig) = &mut session.rig {
-                    let _ = rig.stop();
+            let mut result = session.execute(cmd, &token, &send);
+            // Jobs own motion cleanup and its audit. Do not issue another
+            // unrecorded STOP after their finalized result/metadata.
+            if !job
+                && result.is_err()
+                && let Some(rig) = &mut session.rig
+                && let Err(stop) = rig.stop()
+            {
+                result = Err(format!(
+                    "{}; STOP failed: {stop}",
+                    result.as_ref().unwrap_err()
+                ));
+            }
+            if job && token.load(Ordering::Acquire) {
+                session.state.phase = Phase::Stopping.into();
+                let _ = send.try_send(Event::State(Box::new(session.state.clone())));
+                let recovery = session
+                    .gpib
+                    .as_mut()
+                    .map(Gpib::finish_cancelled_request)
+                    .transpose();
+                if let Err(error) = recovery {
+                    result = Err(format!(
+                        "{}; Stop response recovery failed: {error}",
+                        result
+                            .as_ref()
+                            .err()
+                            .map(String::as_str)
+                            .unwrap_or("Cancelled")
+                    ));
+                } else if result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| expected_stop_error(error))
+                {
+                    result = Ok(None);
                 }
-                let _ = send.send(Event::Error(e.clone()));
+            }
+            if let Err(error) = &result {
+                let _ = send.send(Event::Error(error.clone()));
             }
             session.clear_failed_lockin();
             if job {
                 session.state.running = false;
-                session.state.phase = if token.load(Ordering::Acquire) {
+                session.state.phase = if result.is_err() {
+                    Phase::Error
+                } else if token.load(Ordering::Acquire) {
                     Phase::Stopped
                 } else if result.is_ok() {
                     Phase::Complete
@@ -979,6 +1055,7 @@ impl Session {
             }
         }
         let mut csv = output.map(|p| create_csv(p, source, plan)).transpose()?;
+        let mut preparation_error = None;
         // Snapshot read-only settings before acquisition. Failure stays explicit;
         // do not guess units/status or change the instrument configuration.
         if let Source::Gpib { model, .. } = source {
@@ -986,7 +1063,7 @@ impl Session {
                 .gpib
                 .as_mut()
                 .ok_or(OperationError::LockinDisconnected)?;
-            let mut snapshot = lockin::settings_recorded(model, gpib);
+            let mut snapshot = lockin::settings_recorded_cancellable(model, gpib, cancel);
             if let Ok(value) = &mut snapshot.result
                 && let Some(object) = value.as_object_mut()
             {
@@ -997,6 +1074,18 @@ impl Session {
                 recording.append_audit(&serde_json::json!({"event":"settings_snapshot", "device_role":"lockin", "observed_at":observed_at,
                     "result":if snapshot.result.is_ok() { "ok" } else { "error" }, "exchanges":snapshot.exchanges,
                     "settings":snapshot.result.as_ref().ok(), "error":snapshot.result.as_ref().err()}))?;
+            }
+            let fatal_snapshot =
+                self.gpib.as_ref().is_some_and(Gpib::is_poisoned) || cancel.load(Ordering::Acquire);
+            if fatal_snapshot {
+                preparation_error = Some(
+                    snapshot
+                        .result
+                        .as_ref()
+                        .err()
+                        .cloned()
+                        .unwrap_or_else(|| "motion cancelled".into()),
+                );
             }
             self.lockin_context = Some(match snapshot.result {
                 Ok(mut value) => {
@@ -1011,11 +1100,14 @@ impl Session {
             });
         }
         let context_config = self.config.as_ref().unwrap_or(&requested_config);
-        let context_result = csv
-            .as_mut()
-            .map(|recording| recording.set_context(&self.recording_context(source, context_config)))
-            .transpose()
-            .map(|_| ());
+        let context_result = preparation_error.map_or(Ok(()), Err).and_then(|()| {
+            csv.as_mut()
+                .map(|recording| {
+                    recording.set_context(&self.recording_context(source, context_config))
+                })
+                .transpose()
+                .map(|_| ())
+        });
         self.state.total = targets.len();
         self.state.rows = 0;
         self.state.phase = Phase::Measuring.into();
@@ -1122,7 +1214,7 @@ impl Session {
                                 }
                             }
                             let gpib = self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
-                            let (recorded, window, captured) = timing::observe(start, || lockin::read_recorded(model, gpib));
+                            let (recorded, window, captured) = timing::observe(start, || lockin::read_recorded_cancellable(model, gpib, cancel));
                             point_timing.signal = Some(window);
                             let exchanges = serde_json::to_value(&recorded.exchanges)
                                 .map_err(|error| error.to_string())?;
@@ -1163,10 +1255,14 @@ impl Session {
                     let mut signal_unit = "V".to_owned();
                     let mut quality_flags = "simulated".to_owned();
                     let mut status_event = None;
+                    let mut status_failure = None;
                     if let Source::Gpib { model, .. } = source {
                         let gpib=self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
-                        let (status,window,_) = timing::observe(start, || lockin::status_recorded(model,gpib));
+                        let (status,window,_) = timing::observe(start, || lockin::status_recorded_cancellable(model,gpib,cancel));
                         signal_unit = if model==Model::Sr7265 && status.result.as_ref().ok().and_then(|v|v["input_mode"].as_f64())==Some(0.) { "V" } else { "unknown" }.into();
+                        update_lockin_status(&mut self.state, &status.result);
+                        let _ = send.try_send(Event::State(Box::new(self.state.clone())));
+                        status_failure = status.result.as_ref().err().cloned();
                         let mut flags=Vec::new();
                         match &status.result {
                             Ok(value) => { if value["overload"]==true { flags.push("overload"); }
@@ -1233,6 +1329,7 @@ impl Session {
                         _ => ReadingOrigin::Hardware,
                     });
                     let _ = send.try_send(Event::Sample(sample));
+                    if let Some(error) = status_failure { return Err(format!("Lock-in status: {error}")); }
                 }
                 if !cancel.load(Ordering::Acquire)
                     && matches!(source, Source::Gpib { .. })
@@ -1253,7 +1350,17 @@ impl Session {
             })()
         });
         if acquisition_started && (result.is_err() || cancel.load(Ordering::Acquire)) {
-            let stopped = self.rig.as_mut().map(|rig| rig.stop()).transpose();
+            self.state.phase = Phase::Stopping.into();
+            let _ = send.try_send(Event::State(Box::new(self.state.clone())));
+            let (stopped, window, _) = timing::observe(start, || {
+                self.rig.as_mut().map(|rig| rig.stop()).transpose()
+            });
+            if let Some(recording) = &mut csv
+                && let Err(error) = recording.append_audit(&serde_json::json!({"event":"stop","device_role":"motion","timing":window,
+                    "verification":if self.rig.is_some() {"stationary_state_queries"} else {"no_motion_devices"},"error":stopped.as_ref().err()}))
+            {
+                Self::append_recording_error(&mut result, "record STOP outcome", error);
+            }
             if let Err(error) = stopped {
                 result = Err(format!(
                     "{}; STOP failed: {error}",
@@ -1267,12 +1374,29 @@ impl Session {
                 && result
                     .as_ref()
                     .err()
-                    .is_none_or(|error| error == "motion cancelled")
+                    .is_none_or(|error| expected_stop_error(error))
             {
                 // A Stop request only clears the expected motion cancellation;
                 // it must not hide a concurrent instrument or recording failure.
                 result = Ok(());
             }
+        }
+        if cancel.load(Ordering::Acquire) {
+            self.state.phase = Phase::Stopping.into();
+            let _ = send.try_send(Event::State(Box::new(self.state.clone())));
+            if let Some(gpib) = &mut self.gpib
+                && let Err(error) = gpib.finish_cancelled_request()
+            {
+                Self::append_recording_error(&mut result, "Stop response recovery failed", error);
+            }
+        }
+        if cancel.load(Ordering::Acquire)
+            && result
+                .as_ref()
+                .err()
+                .is_some_and(|error| expected_stop_error(error))
+        {
+            result = Ok(());
         }
         let terminal_status = if result.is_err() {
             "error"
