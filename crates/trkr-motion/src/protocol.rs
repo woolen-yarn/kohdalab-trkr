@@ -9,6 +9,11 @@ pub trait Bus {
     }
     fn query(&mut self, command: &str) -> Result<String, String>;
     fn write(&mut self, command: &str) -> Result<(), String>;
+    /// Send an emergency stop even when an ordinary transaction has failed.
+    /// Implementations must not use this escape hatch for normal motion.
+    fn emergency_write(&mut self, command: &str) -> Result<(), String> {
+        self.write(command)
+    }
     fn stop_query(&mut self, command: &str) -> Result<String, String> {
         self.query(command)
     }
@@ -29,6 +34,9 @@ impl<T: Bus + ?Sized> Bus for Box<T> {
     }
     fn write(&mut self, command: &str) -> Result<(), String> {
         (**self).write(command)
+    }
+    fn emergency_write(&mut self, command: &str) -> Result<(), String> {
+        (**self).emergency_write(command)
     }
 }
 
@@ -350,7 +358,7 @@ impl ScannerProtocol {
             ScannerModel::ConexCc => "ST".to_owned(),
             ScannerModel::ConexAgap => format!("ST{}", self.axis()?),
         };
-        bus.write(&self.command(&body))
+        bus.emergency_write(&self.command(&body))
     }
 
     pub fn home(&self, bus: &mut impl Bus) -> Result<(), String> {
@@ -359,6 +367,45 @@ impl ScannerProtocol {
             ScannerModel::ConexAgap => format!("OR{}", self.axis()?),
         };
         bus.write(&self.command(&body))
+    }
+
+    /// Newport documents OR as valid only from NOT REFERENCED states. A
+    /// referenced controller must be reset manually before re-homing.
+    pub fn home_preflight(&self, state: &str) -> Result<(), String> {
+        match self.model {
+            ScannerModel::ConexCc
+                if matches!(state, "0A" | "0B" | "0C" | "0D" | "0E" | "0F" | "10") =>
+            {
+                Ok(())
+            }
+            ScannerModel::ConexCc
+                if cc_ready(state) || matches!(state, "3C" | "3D" | "3E" | "3F" | "46" | "47") =>
+            {
+                Err("CONEX-CC is already referenced: initialize without HOME; reset manually to rehome".into())
+            }
+            ScannerModel::ConexCc => Err(format!(
+                "CONEX-CC cannot start HOME while axis is active (state {state})"
+            )),
+            ScannerModel::ConexAgap => Err("CONEX-AGAP does not support HOME".into()),
+        }
+    }
+
+    /// A scanner is stationary after STOP when it is READY or in one of the
+    /// documented disabled/non-referenced states.  Moving, homing and error
+    /// states are never accepted as a successful stop.
+    pub fn stopped(&self, bus: &mut impl Bus) -> Result<bool, String> {
+        let state = self.state(bus)?;
+        let stopped = match self.model {
+            ScannerModel::ConexCc => {
+                cc_ready(&state)
+                    || matches!(
+                        state.as_str(),
+                        "0A" | "0B" | "0C" | "0D" | "0E" | "0F" | "10" | "3C" | "3D" | "3E" | "3F"
+                    )
+            }
+            ScannerModel::ConexAgap => agap_ready(&state) || matches!(state.as_str(), "3C" | "3D"),
+        };
+        Ok(stopped)
     }
 }
 
@@ -553,5 +600,49 @@ mod tests {
                 supports_software_hysteresis: false,
             }
         );
+    }
+
+    #[test]
+    fn stopped_rejects_moving_and_homing_states() {
+        let cc = ScannerProtocol {
+            model: ScannerModel::ConexCc,
+            address: 1,
+            axis: "1".into(),
+            ensure_closed_loop: false,
+        };
+        for response in ["1TS000028", "1TS00001E"] {
+            let mut bus = FakeBus::new(&[response]);
+            assert!(!cc.stopped(&mut bus).unwrap(), "{response}");
+        }
+        let mut disabled = FakeBus::new(&["1TS00003C"]);
+        assert!(cc.stopped(&mut disabled).unwrap());
+    }
+
+    #[test]
+    fn emergency_stop_bypasses_an_ordinary_poisoned_write() {
+        struct PoisonedBus {
+            emergency: Vec<String>,
+        }
+        impl Bus for PoisonedBus {
+            fn query(&mut self, _: &str) -> Result<String, String> {
+                Err("ordinary query blocked after write failure".into())
+            }
+            fn write(&mut self, _: &str) -> Result<(), String> {
+                Err("ordinary write blocked after write failure".into())
+            }
+            fn emergency_write(&mut self, command: &str) -> Result<(), String> {
+                self.emergency.push(command.into());
+                Ok(())
+            }
+        }
+        let cc = ScannerProtocol {
+            model: ScannerModel::ConexCc,
+            address: 1,
+            axis: "1".into(),
+            ensure_closed_loop: false,
+        };
+        let mut bus = PoisonedBus { emergency: vec![] };
+        cc.stop(&mut bus).unwrap();
+        assert_eq!(bus.emergency, ["1ST"]);
     }
 }

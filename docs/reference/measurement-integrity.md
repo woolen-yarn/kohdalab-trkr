@@ -1,5 +1,42 @@
 # Measurement integrity / 測定記録の精度
 
+## Stop and motion verification (0.4.1) / 停止・移動確認
+
+Stop first stops the motion axes and verifies stationary controller states. It then
+retires exactly one interrupted GPIB helper reply before accepting another command.
+A healthy reply is discarded and the session stays connected; missing, malformed or
+failed replies invalidate the session. This never resumes the interrupted run.
+LI5640 display-changing reads still require reconnection if cancellation prevents
+restoring their settings. Communication failure is distinct from a normal Stop.
+
+Stopでは軸への停止命令と停止状態の確認を優先し、その後、中断したGPIB応答を1件だけ回収・破棄します。
+正常な応答なら接続を維持し、未応答・不正応答・通信失敗なら接続を無効にします。中断した測定は再開しません。
+LI5640で表示設定を復元できない中断は、引き続き再接続が必要です。通信異常は通常の停止と区別します。
+
+Compensation must reach its own commanded position before the final move starts.
+HOME requires a post-command BUSY/HOMING transition and a confirmed completion state;
+its physical position is not assumed to equal the application's calibrated zero.
+CONEX-CC OR is allowed only from NOT REFERENCED; an already referenced axis must be
+initialized without HOME, or explicitly reset outside the application before rehoming.
+The application never resets a referenced axis automatically.
+See [Newport's CONEX-CC controller manual](https://www.newport.com/medias/sys_master/npresources/h42/h17/9954514534430/CONEX-CC%20-%20Controller%20Documentation/CONEX-CC-Controller-Documentation.pdf).
+
+補償位置への実到達を確認してから本移動へ進みます。HOMEは命令後のBUSY/HOMINGと完了状態を確認し、
+機械原点とアプリの校正原点を同一と仮定しません。CONEX-CCのORは未参照状態だけに許可し、
+参照済みの軸はHOMEなしで初期化するか、アプリ外で明示的にリセットしてから再原点復帰します。
+アプリが自動でリセットすることはありません。上記メーカー資料に従います。
+
+Live overload/reference/error status is queried at most every 500 ms independently
+of saved acquisition points. A failed point status query preserves the raw evidence
+and acquired point with unknown qualification, then fails the run before another
+scan or return move. Overload/unlock are acquisition-quality indications, not laser
+or electrical-output interlocks. STOP outcome/timing is retained in raw CSV.
+
+測定点とは独立して最大500 msごとにライブ異常状態を照会します。点の状態照会が失敗した場合は、
+raw証跡と取得済みの点を品質不明として保持し、次の走査・原点復帰へ進む前に測定を失敗で終了します。
+過負荷・参照ロック外れは測定品質の表示であり、レーザーや電源出力のインターロックではありません。
+STOPの結果と時間窓もraw CSVに記録します。
+
 ## Three-file recording (0.4.0) / 3ファイル保存
 
 New runs use `<name>.csv` (analysis), `<name>.raw.csv` (raw evidence), and

@@ -31,7 +31,7 @@ enum TransportError {
     HelperStdoutUnavailable,
     HelperFrameExceededSizeLimit,
     ReadCancelled,
-    ReadCancelledReconnect,
+    ResponsePending,
     SessionFailed,
     CommandTooLong,
     ResponseTimedOut,
@@ -61,7 +61,9 @@ impl std::fmt::Display for TransportError {
             Self::HelperStdoutUnavailable => "GPIB helper stdout was unavailable",
             Self::HelperFrameExceededSizeLimit => "GPIB helper frame exceeded size limit",
             Self::ReadCancelled => "GPIB read cancelled",
-            Self::ReadCancelledReconnect => "GPIB read cancelled; reconnect the lock-in",
+            Self::ResponsePending => {
+                "GPIB cancelled reply pending; finish cancellation before further I/O"
+            }
             Self::SessionFailed => "GPIB session has failed; reconnect before further I/O",
             Self::CommandTooLong => "GPIB command exceeds 4096-byte limit",
             Self::ResponseTimedOut => "GPIB helper response timed out",
@@ -99,6 +101,7 @@ pub struct Gpib {
     address: u8,
     backend: &'static str,
     poisoned: bool,
+    cancelled_reply_deadline: Option<Instant>,
 }
 
 impl Gpib {
@@ -222,6 +225,7 @@ impl Gpib {
             address,
             backend,
             poisoned: false,
+            cancelled_reply_deadline: None,
         };
         let startup = gpib.receive(STARTUP_TIMEOUT)?;
         let (status, payload) = parse_frame(&startup)?;
@@ -240,8 +244,8 @@ impl Gpib {
         String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
     }
 
-    /// Cancels an outstanding helper response promptly. An interrupted wire
-    /// transaction invalidates the session so a late reply cannot be reused.
+    /// Return promptly on Stop while retaining the in-flight reply for recovery.
+    /// No further commands are allowed until that exact reply has been retired.
     pub fn write_cancellable(&mut self, command: &str, cancel: &AtomicBool) -> Result<(), String> {
         self.request_cancellable("WRITE", command.as_bytes(), Some(cancel))
             .map(|_| ())
@@ -258,6 +262,38 @@ impl Gpib {
     pub fn invalidate(&mut self) {
         self.poisoned = true;
         let _ = self.child.kill();
+    }
+    /// Retire exactly one cancelled helper reply after motion has stopped.
+    /// A healthy late response is discarded, never used as a subsequent value.
+    /// Real transport/protocol failures still invalidate the session.
+    pub fn finish_cancelled_request(&mut self) -> Result<(), String> {
+        let Some(deadline) = self.cancelled_reply_deadline.take() else {
+            return Ok(());
+        };
+        // Motion STOP verification may consume the remaining deadline. A reply
+        // already queued belongs to this one in-flight request and can safely
+        // be retired; only waiting for a missing reply is deadline-limited.
+        let response = match self.lines.try_recv() {
+            Ok(response) => response,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.receive(deadline.saturating_duration_since(Instant::now()))
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(TransportError::HelperExited.into()),
+        };
+        let result = response
+            .and_then(|line| parse_frame(&line).map(|(status, bytes)| (status.to_owned(), bytes)))
+            .and_then(|(status, bytes)| match status.as_str() {
+                "OK" => Ok(()),
+                "ERR" => Err(format!(
+                    "GPIB cancelled operation failed: {}",
+                    String::from_utf8_lossy(&bytes)
+                )),
+                _ => Err(format!("Unknown GPIB helper status: {status}")),
+            });
+        if result.is_err() {
+            self.invalidate();
+        }
+        result
     }
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
@@ -277,6 +313,9 @@ impl Gpib {
         if self.poisoned {
             return Err(TransportError::SessionFailed.into());
         }
+        if self.cancelled_reply_deadline.is_some() {
+            return Err(TransportError::ResponsePending.into());
+        }
         if payload.len() > 4096 {
             return Err(TransportError::CommandTooLong.into());
         }
@@ -285,6 +324,7 @@ impl Gpib {
             self.address,
             encode_hex(payload)
         );
+        let deadline = Instant::now() + COMMAND_TIMEOUT;
         let result = (|| {
             self.input
                 .write_all(frame.as_bytes())
@@ -298,6 +338,10 @@ impl Gpib {
         let (status, data) = match result {
             Ok(frame) => frame,
             Err(error) => {
+                if error == TransportError::ReadCancelled.to_string() {
+                    self.cancelled_reply_deadline = Some(deadline);
+                    return Err(error);
+                }
                 self.poisoned = true;
                 let _ = self.child.kill();
                 return Err(error);
@@ -328,7 +372,7 @@ impl Gpib {
         let deadline = Instant::now() + timeout;
         loop {
             if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
-                return Err(TransportError::ReadCancelledReconnect.into());
+                return Err(TransportError::ReadCancelled.into());
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -613,6 +657,86 @@ mod tests {
     }
 
     #[test]
+    fn stop_retires_only_the_interrupted_reply_and_keeps_the_session() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("delayed-helper.sh");
+        let marker = dir.path().join("started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf started > '{}'\nsleep 0.2\nprintf 'KIV\\tOK\\t6f6c64\\n'\nIFS= read -r line\nprintf 'KIV\\tOK\\t6672657368\\n'\nwhile IFS= read -r line; do :; done\n",
+                marker.display()
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let token = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel = token.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        let error = gpib.query_cancellable("first", &token).unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(!gpib.is_poisoned());
+        assert!(
+            gpib.query("must not be sent")
+                .unwrap_err()
+                .contains("pending")
+        );
+        gpib.finish_cancelled_request().unwrap();
+        assert!(!gpib.is_poisoned());
+        token.store(false, Ordering::Release);
+        assert_eq!(gpib.query_cancellable("second", &token).unwrap(), "fresh");
+    }
+
+    #[test]
+    fn already_received_cancelled_reply_can_be_retired_after_motion_stop_deadline() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("idle-helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\tOK\t-\n'\nwhile IFS= read -r line; do :; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(Ok("KIV\tOK\t6f6c64".into())).unwrap();
+        gpib.lines = receiver;
+        gpib.cancelled_reply_deadline = Some(Instant::now() - Duration::from_secs(1));
+        gpib.finish_cancelled_request().unwrap();
+        assert!(!gpib.is_poisoned());
+        assert!(gpib.cancelled_reply_deadline.is_none());
+    }
+
+    #[test]
+    fn failed_cancelled_reply_is_not_a_successful_recovery() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        for response in ["KIV\\tERR\\t626164", "malformed frame"] {
+            let dir = tempfile::tempdir().unwrap();
+            let helper = dir.path().join("bad-helper.sh");
+            executable(
+                &helper,
+                &format!(
+                    "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nsleep 0.1\nprintf '{response}\\n'\nwhile IFS= read -r line; do :; done\n"
+                ),
+            );
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            // Model a sent request cancelled before its reply arrives.
+            gpib.input.write_all(b"QUERY 12 10000 58\n").unwrap();
+            gpib.input.flush().unwrap();
+            gpib.cancelled_reply_deadline = Some(Instant::now() + Duration::from_secs(2));
+            assert!(gpib.finish_cancelled_request().is_err());
+            assert!(gpib.is_poisoned());
+        }
+    }
+
+    #[test]
     fn stalled_query_is_cancelled_promptly_and_late_replies_cannot_be_reused() {
         let _guard = TEST_LEASE.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -643,6 +767,10 @@ mod tests {
         stopper.join().unwrap();
         assert!(error.contains("cancelled"));
         assert!(stopped_at.lock().unwrap().unwrap().elapsed() < Duration::from_secs(1));
+        assert!(!gpib.is_poisoned());
+        assert!(gpib.query("XY.\r").unwrap_err().contains("pending"));
+        gpib.cancelled_reply_deadline = Some(Instant::now());
+        assert!(gpib.finish_cancelled_request().is_err());
         assert!(gpib.is_poisoned());
         assert!(gpib.query("XY.\r").unwrap_err().contains("reconnect"));
     }
@@ -702,8 +830,8 @@ mod tests {
         for (error, message) in [
             (TransportError::ReadCancelled, "GPIB read cancelled"),
             (
-                TransportError::ReadCancelledReconnect,
-                "GPIB read cancelled; reconnect the lock-in",
+                TransportError::ResponsePending,
+                "GPIB cancelled reply pending; finish cancellation before further I/O",
             ),
             (
                 TransportError::SessionFailed,

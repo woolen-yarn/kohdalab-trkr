@@ -1417,18 +1417,7 @@ impl App {
         let (voltage_scale, voltage_unit) = sensitivity
             .map(presentation::voltage_scale_from_sensitivity)
             .unwrap_or_else(|| self.demo_voltage_scale());
-        let overload = self
-            .snapshot
-            .lockin
-            .get("Overload")
-            .and_then(|value| {
-                value
-                    .as_bool()
-                    .or_else(|| value.get("input_overload").and_then(Value::as_bool))
-                    .or_else(|| value.get("overload").and_then(Value::as_bool))
-            })
-            .map(|overloaded| if overloaded { "OVERLOAD" } else { "-" })
-            .unwrap_or("-");
+        let alarm = lockin_health_text(&self.snapshot.lockin);
         let time_constant = self
             .snapshot
             .lockin
@@ -1564,8 +1553,11 @@ impl App {
             let sens = sensitivity
                 .map(|v| format!("{} {voltage_unit}", Self::significant(v * voltage_scale, 3)))
                 .unwrap_or_else(|| "-".into());
-            let state = if overload == "OVERLOAD" {
-                "OVERLOAD"
+            let state = if self.snapshot.devices[0]
+                && matches!(origin, Some(engine::ReadingOrigin::Hardware))
+                && alarm.is_some()
+            {
+                alarm.unwrap_or("UNKNOWN")
             } else if live {
                 match origin {
                     Some(engine::ReadingOrigin::Demo) => "SIM",
@@ -1605,7 +1597,7 @@ impl App {
                             .into(),
                         precision::rect(x + 42., y, half - 42., 13.),
                         value,
-                        if index == 3 && state == "OVERLOAD" {
+                        if index == 3 && matches!(state, "OVERLOAD" | "UNLOCK" | "UNKNOWN") {
                             Color32::from_rgb(235, 100, 100)
                         } else {
                             TEXT
@@ -3342,6 +3334,32 @@ impl eframe::App for App {
         self.demo_smoke_tick(ctx);
     }
 }
+fn lockin_health_text(settings: &Value) -> Option<&'static str> {
+    if settings
+        .get("Status Error")
+        .and_then(Value::as_str)
+        .is_some()
+    {
+        return Some("UNKNOWN");
+    }
+    let health = settings.get("Overload")?;
+    if health.is_null() {
+        return Some("UNKNOWN");
+    }
+    // Output/filter overload must not be hidden by input_overload=false.
+    let overload = health
+        .as_bool()
+        .or_else(|| health.get("overload").and_then(Value::as_bool))
+        .or_else(|| health.get("input_overload").and_then(Value::as_bool));
+    if overload == Some(true) {
+        Some("OVERLOAD")
+    } else if health.get("reference_unlock").and_then(Value::as_bool) == Some(true) {
+        Some("UNLOCK")
+    } else {
+        None
+    }
+}
+
 fn step_progress(completed: usize, total: usize) -> String {
     if total == 0 {
         "-".into()
