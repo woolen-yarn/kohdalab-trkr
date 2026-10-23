@@ -886,3 +886,40 @@ fn lockin_status_shows_output_overload_unlock_and_failed_status_instead_of_live(
         None
     );
 }
+
+#[test]
+fn referenced_cc_gui_initialization_can_skip_home_while_still_moving_to_zero() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.scanner_model[0] = "CONEXCC".into();
+    app.scanner_actuator[0] = "TRA12CC".into();
+    app.scanner_port[0] = "COM5".into();
+    app.initialize_skip_home = true;
+    assert!(matches!(
+        app.initialization_command(1).unwrap(),
+        Command::Initialize {
+            axis: 1,
+            home: false,
+            move_to_origin: true,
+            ..
+        }
+    ));
+    app.initialize_skip_home = false;
+    assert!(matches!(
+        app.initialization_command(1).unwrap(),
+        Command::Initialize {
+            axis: 1,
+            home: true,
+            move_to_origin: true,
+            ..
+        }
+    ));
+    app.initialize_skip_home = true;
+    assert!(matches!(
+        app.initialization_command(0).unwrap(),
+        Command::Initialize {
+            axis: 0,
+            home: true,
+            ..
+        }
+    ));
+}
