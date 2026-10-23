@@ -17,13 +17,13 @@ Compensation must reach its own commanded position before the final move starts.
 HOME requires a post-command BUSY/HOMING transition and a confirmed completion state;
 its physical position is not assumed to equal the application's calibrated zero.
 CONEX-CC OR is allowed only from NOT REFERENCED; an already referenced axis must be
-initialized without HOME, or explicitly reset outside the application before rehoming.
+initialized with the GUI **Skip HOME (already referenced)** option (0.4.2), or explicitly reset outside the application before rehoming.
 The application never resets a referenced axis automatically.
 See [Newport's CONEX-CC controller manual](https://www.newport.com/medias/sys_master/npresources/h42/h17/9954514534430/CONEX-CC%20-%20Controller%20Documentation/CONEX-CC-Controller-Documentation.pdf).
 
 補償位置への実到達を確認してから本移動へ進みます。HOMEは命令後のBUSY/HOMINGと完了状態を確認し、
 機械原点とアプリの校正原点を同一と仮定しません。CONEX-CCのORは未参照状態だけに許可し、
-参照済みの軸はHOMEなしで初期化するか、アプリ外で明示的にリセットしてから再原点復帰します。
+参照済みの軸はGUIの **Skip HOME (already referenced)**（0.4.2）で初期化するか、アプリ外で明示的にリセットしてから再原点復帰します。
 アプリが自動でリセットすることはありません。上記メーカー資料に従います。
 
 Live overload/reference/error status is queried at most every 500 ms independently

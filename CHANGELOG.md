@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.2 — 2026-10-23
+
+- Include the 0.4.1 protection fixes with a GUI Skip HOME option for already referenced CONEX-CC axes. / 0.4.1の保護修正に、参照済みCONEX-CC向けのGUI「Skip HOME」を追加。
+- The v0.4.1 tag build was cancelled before publication so the referenced-axis initialization path could be included. / 参照済み軸の初期化操作を揃えるため、v0.4.1のタグビルドは公開前に中止。
+
 ## 0.4.1 — 2026-10-23
 
 - Stop motion before retiring a cancelled GPIB reply; keep a healthy session and never reuse its late response. Real transport/recovery failures still disconnect. / Stop時は軸の停止を優先し、中断した応答を回収・破棄して正常なGPIB接続を維持。通信・回復失敗は切断。

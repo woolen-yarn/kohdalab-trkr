@@ -181,6 +181,7 @@ pub struct App {
     map_cache: presentation::MapCache,
     dialog: Option<PendingDialog>,
     initialize_axis: Option<usize>,
+    initialize_skip_home: bool,
     plot_history: crate::plot_history::History,
     saved_traces: [Vec<Sample>; 5],
     trace_plans: [Option<Plan>; 5],
@@ -273,6 +274,7 @@ impl App {
             map_cache: [None, None],
             dialog: None,
             initialize_axis: None,
+            initialize_skip_home: false,
             plot_history: crate::plot_history::History::default(),
             saved_traces: std::array::from_fn(|_| Vec::new()),
             trace_plans: std::array::from_fn(|_| None),
@@ -1995,6 +1997,7 @@ impl App {
             self.disconnect(vec![d]);
         }
         if initialize {
+            self.initialize_skip_home = false;
             self.initialize_axis = Some(i);
         }
     }
@@ -2003,13 +2006,18 @@ impl App {
             return;
         };
         let name = ["Stage (t)", "Scanner X", "Scanner Y"][axis];
-        let homes = initialization_homes(axis, &self.scanner_model);
+        let cc = axis > 0 && initialization_homes(axis, &self.scanner_model);
         egui::Modal::new(egui::Id::new("initialize-motion")).show(ctx, |ui| {
             ui.heading(format!("Initialize {name}"));
+            if cc {
+                ui.checkbox(&mut self.initialize_skip_home, "Skip HOME (already referenced)");
+                ui.label("CONEX-CC HOME requires an unreferenced axis. Select Skip HOME if it is already referenced.");
+            }
+            let homes = initialization_homes(axis, &self.scanner_model) && !(cc && self.initialize_skip_home);
             ui.label(if homes {
                 "Home the axis, then move to instrument zero (not the experiment zero). The optical position will change."
             } else {
-                "Enable closed-loop operation, then move the CONEX-AGAP scanner to instrument zero. The optical position will change."
+                "Verify closed-loop operation, then move to instrument zero (not the experiment zero). The optical position will change."
             });
             ui.horizontal(|ui| {
                 if ui.button("Cancel").clicked() {
@@ -2017,15 +2025,27 @@ impl App {
                 }
                 if ui.add_enabled(!self.snapshot.running, egui::Button::new(if homes { "Home & initialize" } else { "Initialize & zero" })).clicked() {
                     self.initialize_axis = None;
-                    match self.config().and_then(|config| self.controller.send(Command::Initialize {
-                        config, axis, home: homes, move_to_origin: true,
-                    })) {
+                    match self.initialization_command(axis).and_then(|command| self.controller.send(command)) {
                         Ok(_) => self.note(format!("Initializing {name}{}…", if homes { " · homing" } else { "" })),
                         Err(error) => self.note(error),
                     }
                 }
             });
         });
+    }
+    fn initialization_command(&mut self, axis: usize) -> Result<Command, String> {
+        if axis > 2 {
+            return Err("Unknown axis".into());
+        }
+        let cc = axis > 0 && initialization_homes(axis, &self.scanner_model);
+        let home =
+            initialization_homes(axis, &self.scanner_model) && !(cc && self.initialize_skip_home);
+        Ok(Command::Initialize {
+            config: self.config()?,
+            axis,
+            home,
+            move_to_origin: true,
+        })
     }
     fn move_axis(&mut self, axis: usize, target: f64) {
         let targets = std::array::from_fn(|i| if i == axis { Some(target) } else { None });
