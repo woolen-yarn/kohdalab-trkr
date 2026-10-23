@@ -14,6 +14,7 @@ mod precision;
 mod presentation;
 #[cfg(test)]
 mod python_parity_tests;
+mod raw_csv;
 mod replay_data;
 mod replay_player;
 mod ui;
@@ -323,42 +324,39 @@ mod compatibility_tests {
     fn revision_one_command_and_rejection_wire_shapes_are_stable() {
         assert_eq!(compatibility::JSON_LINES_API_REVISION, 1);
         assert_eq!(compatibility::PROFILE_REVISION, 1);
-        assert_eq!(compatibility::RECORDING_REVISION, 4);
+        assert_eq!(compatibility::RECORDING_REVISION, 5);
         assert_eq!(
             engine::FIELDS,
             &[
+                "run_id",
+                "point_index",
                 "timestamp",
+                "elapsed_s",
+                "quality_flags",
                 "measurement",
                 "fast_axis",
                 "slow_axis",
+                "line_index",
                 "target_elapsed_s",
                 "target_t_cor_ps",
                 "target_x_cor_um",
                 "target_y_cor_um",
                 "target_u_cor_um",
                 "target_v_cor_um",
-                "elapsed_s",
-                "acquisition_elapsed_s",
-                "t_cor_ps",
                 "t_ps",
-                "x_cor_um",
                 "x_um",
-                "y_cor_um",
                 "y_um",
+                "t_cor_ps",
+                "x_cor_um",
+                "y_cor_um",
                 "u_cor_um",
                 "v_cor_um",
-                "X_V",
-                "Y_V",
-                "R_V",
-                "Theta_deg",
                 "spatial_theta_deg",
-                "coordinate",
-                "delay_stage_mm",
-                "delay_stage_pulse",
-                "x_scanner_mm",
-                "x_scanner_deg",
-                "y_scanner_mm",
-                "y_scanner_deg",
+                "X",
+                "Y",
+                "R",
+                "Theta_deg",
+                "signal_unit",
             ]
         );
         let command = decode_command(r#"{"command":"stop"}"#).unwrap();

@@ -1206,6 +1206,7 @@ impl App {
                                 .into_iter()
                                 .enumerate()
                                 .map(|(i, target)| Sample {
+                                    recording: Default::default(),
                                     timing: Default::default(),
                                     captured_at: None,
                                     elapsed: i as f64 * 0.01,
@@ -3459,10 +3460,26 @@ fn copy_complete_csv(
     }
 
     let destination_metadata = destination.with_extension("run.json");
-    let destination_audit = destination.with_extension("readings.jsonl");
+    let raw_format = source_audit_path
+        .as_ref()
+        .is_some_and(|path| path.extension().is_some_and(|ext| ext == "csv"));
+    let destination_audit = destination.with_extension(if raw_format {
+        "raw.csv"
+    } else {
+        "readings.jsonl"
+    });
     // Check every related destination before staging.  This also avoids
     // combining a legacy CSV snapshot with sidecars from another run.
-    for path in [destination, &destination_metadata, &destination_audit] {
+    for path in [
+        destination,
+        &destination_metadata,
+        &destination_audit,
+        &destination.with_extension(if raw_format {
+            "readings.jsonl"
+        } else {
+            "raw.csv"
+        }),
+    ] {
         if path.exists() {
             return Err(format!("Save snapshot: {} already exists", path.display()));
         }
@@ -3483,6 +3500,12 @@ fn copy_complete_csv(
             )
         })
         .transpose()?;
+    if let Some(metadata) = &mut metadata
+        && raw_format
+    {
+        metadata["file_hashes"] = json!({"csv_sha256":crate::raw_csv::file_sha256(csv.path())?,
+            "raw_csv_sha256":audit.as_ref().map(|file|crate::raw_csv::file_sha256(file.path())).transpose()?});
+    }
     let metadata = metadata
         .as_mut()
         .map(|metadata| {
@@ -3510,11 +3533,18 @@ fn source_audit_path(
     source: &std::path::Path,
     metadata: Option<&Value>,
 ) -> Result<Option<PathBuf>, String> {
-    let default_path = source.with_extension("readings.jsonl");
+    let default_path = if source.with_extension("raw.csv").exists() {
+        source.with_extension("raw.csv")
+    } else {
+        source.with_extension("readings.jsonl")
+    };
     let Some(metadata) = metadata else {
         return Ok(default_path.exists().then_some(default_path));
     };
-    let declared = metadata.get("readings_file").and_then(Value::as_str);
+    let declared = metadata
+        .pointer("/raw_csv/filename")
+        .or_else(|| metadata.get("readings_file"))
+        .and_then(Value::as_str);
     let Some(declared) = declared else {
         return Ok(default_path.exists().then_some(default_path));
     };
@@ -3576,6 +3606,18 @@ fn stage_complete_audit(
     preserve_failed_attempts: bool,
 ) -> Result<tempfile::NamedTempFile, String> {
     use std::io::{BufRead, Read, Write};
+    if source
+        .extension()
+        .is_some_and(|extension| extension == "csv")
+    {
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
+        crate::raw_csv::snapshot(source, &mut temporary, csv_rows, preserve_failed_attempts)?;
+        temporary
+            .flush()
+            .and_then(|()| temporary.as_file().sync_all())
+            .map_err(|e| e.to_string())?;
+        return Ok(temporary);
+    }
     let input = std::fs::File::open(source).map_err(|e| e.to_string())?;
     let length = input.metadata().map_err(|e| e.to_string())?.len();
     let mut temporary =
@@ -3664,7 +3706,12 @@ fn stage_snapshot_metadata(
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| "Save snapshot readings filename must be UTF-8".to_string())?;
-        object.insert("readings_file".into(), json!(filename));
+        if let Some(raw) = object.get_mut("raw_csv") {
+            raw["filename"] = json!(filename);
+            raw["path"] = json!(path.display().to_string());
+        } else {
+            object.insert("readings_file".into(), json!(filename));
+        }
     }
     let bytes = serde_json::to_vec_pretty(metadata).map_err(|e| e.to_string())?;
     let mut temporary =

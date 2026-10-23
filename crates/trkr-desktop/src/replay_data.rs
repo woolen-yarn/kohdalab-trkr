@@ -129,6 +129,7 @@ struct Row {
     workflow: Workflow,
     axes: (Axis, Option<Axis>),
     elapsed: f64,
+    recording: crate::engine::SampleRecording,
     fast: f64,
     slow: Option<f64>,
     commanded: [bool; 2],
@@ -165,6 +166,7 @@ impl Row {
         }
         let physical = std::array::from_fn(|i| corrected[i] + plan.zero[i]);
         Ok(Sample {
+            recording: Box::new(self.recording),
             timing: Default::default(),
             captured_at: None,
             elapsed: self.elapsed,
@@ -216,9 +218,13 @@ fn parse_row(
         }
         _ => None,
     };
-    let x = number("X_V")?;
-    let y = number("Y_V")?;
-    let r = number("R_V")?;
+    let number_alias = |primary: &str, legacy: &str| match get(primary).or_else(|| get(legacy)) {
+        Some(v) => parse_number(v, row_number, primary).map(Some),
+        None => Ok(None),
+    };
+    let x = number_alias("X", "X_V")?;
+    let y = number_alias("Y", "Y_V")?;
+    let r = number_alias("R", "R_V")?;
     let theta = number("Theta_deg")?;
     let signal = signal(x, y, r, theta, row_number)?;
     let corrected = [
@@ -267,6 +273,18 @@ fn parse_row(
         number: row_number,
         workflow,
         axes: (fast_axis, slow_axis),
+        recording: crate::engine::SampleRecording {
+            run_id: get("run_id").unwrap_or_default().into(),
+            point_index: get("point_index")
+                .unwrap_or("0")
+                .parse()
+                .map_err(|_| format!("Row {row_number}: invalid point_index"))?,
+            signal_unit: get("signal_unit").unwrap_or("V").into(),
+            quality_flags: get("quality_flags")
+                .unwrap_or("legacy_status_unknown")
+                .into(),
+            canonical_target: Default::default(),
+        },
         elapsed: number("elapsed_s")?
             .or(number("acquisition_elapsed_s")?)
             .unwrap_or(0.0),
@@ -720,7 +738,11 @@ mod tests {
         let mut r = row("trkr", "t", "");
         r[16] = "not-a-number".into();
         let f = csv(&text(r));
-        assert!(load(f.path()).unwrap_err().contains("Y_V"));
+        assert!(
+            load(f.path())
+                .unwrap_err()
+                .contains("must be a finite number")
+        );
     }
     #[test]
     fn rotated_grid_uses_commanded_lines_while_retaining_readback_error() {

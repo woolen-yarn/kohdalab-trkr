@@ -70,6 +70,7 @@ fn plan(case: &serde_json::Map<String, Value>) -> Plan {
         .try_into()
         .expect("three fixture zero coordinates");
     Plan {
+        experiment: Default::default(),
         workflow: workflow(plan["workflow"].as_str().expect("fixture workflow")),
         fast: axis(plan["fast"].as_str().expect("fixture fast axis")),
         slow: axis(plan["slow"].as_str().expect("fixture slow axis")),
@@ -130,6 +131,7 @@ fn sample(case: &serde_json::Map<String, Value>) -> Sample {
     });
     let target_physical = fallback_physical.map(Option::unwrap_or_default);
     Sample {
+        recording: Default::default(),
         timing: Default::default(),
         captured_at: None,
         elapsed: number(sample, "elapsed_s"),
@@ -254,21 +256,17 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
         ] {
             if !legacy_axes[axis] {
                 for column in columns {
-                    row[engine::FIELDS
-                        .iter()
-                        .position(|field| field == column)
-                        .unwrap()]
-                    .clear();
+                    if let Some(index) = engine::FIELDS.iter().position(|field| field == column) {
+                        row[index].clear();
+                    }
                 }
             }
         }
         if plan.workflow == Workflow::SignalMonitor {
             for column in ["coordinate", "spatial_theta_deg"] {
-                row[engine::FIELDS
-                    .iter()
-                    .position(|field| *field == column)
-                    .unwrap()]
-                .clear();
+                if let Some(index) = engine::FIELDS.iter().position(|field| *field == column) {
+                    row[index].clear();
+                }
             }
         }
         let expected = case["expected_csv"]
@@ -281,10 +279,46 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
             if column == "timestamp" {
                 continue;
             }
-            let index = engine::FIELDS
-                .iter()
-                .position(|field| *field == column)
-                .unwrap_or_else(|| panic!("{case_id}: missing legacy column {column}"));
+            let alias = match column.as_str() {
+                "X_V" => "X",
+                "Y_V" => "Y",
+                "R_V" => "R",
+                "acquisition_elapsed_s" => "elapsed_s",
+                other => other,
+            };
+            let controller = serde_json::to_value(&sample.position).unwrap();
+            let projected = if column == "elapsed_s" && plan.workflow != Workflow::SignalMonitor {
+                String::new()
+            } else if column == "coordinate" {
+                if plan.workflow == Workflow::SignalMonitor {
+                    String::new()
+                } else {
+                    crate::engine::coordinate_name(plan.coordinate).into()
+                }
+            } else if controller.get(column).is_some() && column != "physical" {
+                let axis = if column.starts_with("delay") {
+                    0
+                } else if column.starts_with('x') {
+                    1
+                } else {
+                    2
+                };
+                if legacy_axes[axis] && !controller[column].is_null() {
+                    if column == "delay_stage_pulse" {
+                        controller[column].to_string()
+                    } else {
+                        crate::engine::csv_float(controller[column].as_f64().unwrap())
+                    }
+                } else {
+                    String::new()
+                }
+            } else {
+                row[engine::FIELDS
+                    .iter()
+                    .position(|field| *field == alias)
+                    .unwrap_or_else(|| panic!("{case_id}: missing column {column}"))]
+                .clone()
+            };
             if let Some(value) = match column.as_str() {
                 "X_V" => Some(sample.signal.x_v),
                 "Y_V" => Some(sample.signal.y_v),
@@ -296,7 +330,7 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
                 // the unchanged Python fixture, without accepting its rounding
                 // in newly saved data.
                 assert_eq!(
-                    row[index].parse::<f64>().unwrap().to_bits(),
+                    projected.parse::<f64>().unwrap().to_bits(),
                     value.to_bits(),
                     "{case_id}: lossless {column}"
                 );
@@ -309,7 +343,7 @@ fn rows_match_common_columns_at_frozen_python_csv_boundary() {
                     "{case_id}: frozen revision-1 {column}"
                 );
             } else {
-                assert_eq!(row[index], csv_value(expected), "{case_id}: {column}");
+                assert_eq!(projected, csv_value(expected), "{case_id}: {column}");
             }
         }
     }
