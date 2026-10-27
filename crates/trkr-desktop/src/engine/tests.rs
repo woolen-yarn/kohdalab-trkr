@@ -878,3 +878,36 @@ done
     assert_eq!(metadata["status"], "cancelled");
     assert_eq!(metadata["rows"], 0);
 }
+
+#[cfg(unix)]
+#[test]
+fn external_lockin_write_reads_back_the_settings_before_acknowledging() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let script = r#"#!/bin/sh
+printf 'KIV\tOK\t-\n'
+changed=0
+while read -r operation address timeout payload; do
+  if [ "$operation" = EXIT ]; then break; fi
+  case "$payload" in
+    53454e532031300a) changed=1; printf 'KIV\tOK\t-\n' ;;
+    53454e533f0a) if [ "$changed" -eq 1 ]; then printf 'KIV\tOK\t3130\n'; else printf 'KIV\tOK\t30\n'; fi ;;
+    *) printf 'KIV\tOK\t30\n' ;;
+  esac
+done
+"#;
+    let mut session = scripted_lockin_session(dir.path(), script);
+    let (send, _events) = mpsc::sync_channel(10);
+    session
+        .execute_remote(
+            Command::SetLockin {
+                setting: "Sensitivity".into(),
+                value: serde_json::json!(5e-6),
+            },
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap();
+    assert_eq!(session.state.lockin["Sensitivity"], serde_json::json!(5e-6));
+    assert!(session.lockin_context.is_some());
+}

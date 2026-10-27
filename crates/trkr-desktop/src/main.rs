@@ -31,8 +31,13 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
         [flag] if flag == "--stdio" => stdio(),
-        [flag] if flag == "--gui-api" => remote::Server::start()
-            .and_then(|server| run_gui_with_api(None, [1512., 900.], false, "", Some(server))),
+        [flag] if flag == "--gui-api" => remote::Server::start().and_then(|server| {
+            run_gui_with_api(None, [1512., 900.], false, "", Some(Ok(server)), None)
+        }),
+        [flag, option, path] if flag == "--gui-api" && option == "--config" => {
+            run_gui_profile(path, true)
+        }
+        [option, path] if option == "--config" => run_gui_profile(path, false),
         [flag] if flag == "--gpib-resources" => trkr_transport::available_gpib_resources()
             .map(|resources| println!("{}", serde_json::json!({"resources":resources}))),
         [flag] if flag == "--demo" => run_demo(None, None),
@@ -121,7 +126,31 @@ fn layout_capture(
     }
 }
 fn run_gui(smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>) -> Result<(), String> {
-    run_gui_at(smoke, [1512., 900.], false, "")
+    if smoke.is_some() {
+        run_gui_at(smoke, [1512., 900.], false, "")
+    } else {
+        run_gui_with_api(
+            None,
+            [1512., 900.],
+            false,
+            "",
+            Some(remote::Server::start()),
+            None,
+        )
+    }
+}
+fn run_gui_profile(path: &str, strict: bool) -> Result<(), String> {
+    let settings = config::Settings::load(std::path::Path::new(path))?;
+    let server = remote::Server::start();
+    let server = if strict { Ok(server?) } else { server };
+    run_gui_with_api(
+        None,
+        [1512., 900.],
+        false,
+        "",
+        Some(server),
+        Some((settings, path.into())),
+    )
 }
 fn run_gui_at(
     smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>,
@@ -129,14 +158,15 @@ fn run_gui_at(
     layout_only: bool,
     state: &str,
 ) -> Result<(), String> {
-    run_gui_with_api(smoke, size, layout_only, state, None)
+    run_gui_with_api(smoke, size, layout_only, state, None, None)
 }
 fn run_gui_with_api(
     smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>,
     size: [f32; 2],
     layout_only: bool,
     state: &str,
-    remote: Option<remote::Server>,
+    remote: Option<Result<remote::Server, String>>,
+    profile: Option<(config::Settings, std::path::PathBuf)>,
 ) -> Result<(), String> {
     eframe::run_native(
         &format!("KohdaLab TRKR v{}", env!("CARGO_PKG_VERSION")),
@@ -155,6 +185,9 @@ fn run_gui_with_api(
         },
         Box::new(move |cc| {
             let mut app = ui::App::new(cc, false);
+            if let Some((settings, path)) = profile {
+                app.load_startup_profile(settings, path);
+            }
             if let Some(server) = remote {
                 app.enable_remote(server);
             }
@@ -269,7 +302,7 @@ fn profile_json(path: &std::path::Path) -> Result<(), String> {
 fn cli(args: &[String]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "KohdaLab TRKR\n--gui-api GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
+            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
         );
         return Ok(());
     }

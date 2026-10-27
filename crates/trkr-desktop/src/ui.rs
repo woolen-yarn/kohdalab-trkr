@@ -916,7 +916,10 @@ impl App {
         }
     }
     fn measurement_output(&self) -> Option<PathBuf> {
-        let profile = &self.outputs[Self::ix(self.workflow)];
+        self.measurement_output_for(self.workflow)
+    }
+    fn measurement_output_for(&self, workflow: Workflow) -> Option<PathBuf> {
+        let profile = &self.outputs[Self::ix(workflow)];
         let suffix = if profile.auto_timestamp_suffix {
             format!("_{}", time::OffsetDateTime::now_utc().unix_timestamp())
         } else {
@@ -926,6 +929,14 @@ impl App {
         Some(PathBuf::from(profile.dir.trim()).join(format!("{name}{suffix}.csv")))
     }
     fn begin_measurement(&mut self, plan: Plan, out: Option<PathBuf>) -> Result<(), String> {
+        self.begin_measurement_tagged(plan, out, None)
+    }
+    fn begin_measurement_tagged(
+        &mut self,
+        plan: Plan,
+        out: Option<PathBuf>,
+        remote_id: Option<String>,
+    ) -> Result<(), String> {
         if self.snapshot.running || self.measurement_pending {
             return Err("A measurement or motion is already running".into());
         }
@@ -933,12 +944,17 @@ impl App {
         let mut settings = self.settings.clone();
         settings.set_plan(&plan)?;
         let config = settings.hardware()?;
-        self.controller.send(Command::Run {
+        let command = Command::Run {
             source: self.source(),
             config,
             plan: plan.clone(),
             output: out.clone(),
-        })?;
+        };
+        if let Some(id) = remote_id {
+            self.controller.send_remote(id, command)?;
+        } else {
+            self.controller.send(command)?;
+        }
         // Commit the accepted plan atomically; all tabs share one zero/theta,
         // just as they do when the GUI editor switches workflow or saves.
         self.settings = settings;
@@ -1061,6 +1077,7 @@ impl App {
                     }
                 }
                 Event::Error(e) => self.note(e),
+                Event::RemoteFinished { .. } => {}
             }
         }
     }
@@ -3189,9 +3206,12 @@ impl eframe::App for App {
         self.receive();
         self.poll_remote();
         self.poll_dialog();
-        self.initialize_confirmation(ctx);
+        if !self.python_locked() {
+            self.initialize_confirmation(ctx);
+        }
         self.demo_tick();
         if !self.demo_viewer
+            && !self.python_operation_pending()
             && !self.snapshot.running
             && self.snapshot.devices[0]
             && self.last_settings.elapsed() >= Duration::from_secs(5)
@@ -3206,10 +3226,15 @@ impl eframe::App for App {
                 75
             },
         ));
+        self.python_banner(ctx);
         self.geometry.clear();
+        let python_locked = self.python_locked();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(18, 19, 23)))
             .show(ctx, |ui| {
+                if python_locked {
+                    ui.disable();
+                }
                 let viewport = ui.max_rect();
                 let minimum =
                     precision::Columns::minimum_width(self.right_collapsed, self.left_collapsed);

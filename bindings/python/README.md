@@ -96,46 +96,58 @@ CSVを保存する場合は `run(..., output="new_run.csv")` と指定します�
 
 ## 開いているGUIをPythonから制御する / External control of the open GUI
 
-外部制御を使う場合だけ、専用引数でGUIを起動します。通常のGUI起動・表示・設定は変わりません。
+通常のGUIもローカルAPIを公開します。すでに開いているGUIには、そのまま接続できます。Pythonから新規に起動する場合だけ`GuiClient.launch()`を使います。通常のGUI起動・表示・設定は変わりません。
 
-```powershell
-# Windows
-& "$env:LOCALAPPDATA\KohdaLab\TRKR\kohdalab-trkr.exe" --gui-api
+```python
+# 必要なときだけ、設定を指定して新しいGUIを起動する。
+gui = GuiClient.launch(profile="C:/Lab/kim.json")
 ```
 
-```sh
-# macOS
-'/Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr' --gui-api
-```
-
-`GuiClient`はGUIを起動せず、機器へ直接接続せず、同じPCで`--gui-api`により起動済みのGUIを探して測定を開始・完了待ち・Stopできます。開始した計画はGUIの通常の入力欄・進捗・プロットに反映されます。複数のGUIが開いている場合は、誤った装置を選ばないようエラーになります。その場合はセッションJSONを`session=`で明示してください。
+`GuiClient`は機器へ直接接続せず、同じPCのGUIを探して操作します。`with`に入るとGUIの外部制御権を取得し、1秒ごとに更新します。Pythonが権限を持つ間はGUIが操作を受け付けず、GUIにはPython制御中であることが表示されます。GUIの**Take control**はPythonの権限を取り消します。その後のPythonの変更要求は再取得せずエラーになります。複数のGUIが開いている場合は、誤った装置を選ばないようエラーになります。その場合はセッションJSONを`session=`で明示してください。
 
 ```python
 from kohdalab_trkr import GuiClient
 
 with GuiClient() as gui:
-    # GUIで現在選ばれているTRKR計画を読み、必要ならPythonで計画だけ変更する。
+    # 開いているGUIの設定を読み、同じ設定をGUI側に反映して測定する。
     selected = gui.plan("trkr")
-    plan = {**selected["plan"], "interval_s": 2.0}
+    gui.set_plan({**selected["plan"], "interval_s": 2.0})
+    gui.set_output(directory="D:/TRKR/data", filename="trkr_field_0.50T.csv")
 
     # 例: 外部の磁場・温度コントローラーをここで変更して安定を待つ。
     external_field.set_field(0.50)
     external_field.wait_stable()
 
-    run = gui.start("trkr", plan=plan, output="trkr_field_0.50T.csv")
+    run = gui.start("trkr")
     record = gui.wait(run["id"], timeout=3600)
     print(record["output"])
 ```
 
-外部条件は出力ファイル名など実験側の命名規則で管理してください。明示した相対パスはPythonの作業フォルダー基準です。`output`を省略するとGUIの保存先・ファイル名・Auto設定を使います。`plan()`で変えるのは測定計画だけで、ハードウェア設定・GUIで接続済みの測定源・Demo/GPIB選択・機器設定はGUIの現在のものを使います。
+外部条件は出力ファイル名など実験側の命名規則で管理してください。明示した相対パスはPythonの作業フォルダー基準です。`output`を省略するとGUIの保存先・ファイル名・Auto設定を使います。`set_output(filename="field_0.5T.csv")`のように`.csv`付きで指定でき、GUIが通常の保存名へ正規化します。`config()`、`plan()`、`output()`は現在のGUI状態を読むだけです。`settings()`はGUIのロックイン接続で設定を取得するジョブです。`load_config()`、`configure()`、`set_plan()`、`set_output()`、`move()`、`initialize()`、`connect()`、`disconnect()`、`set_lockin()`、`auto_lockin()`は、取得済みの制御権でGUIに命令します。すべての機器設定、補償移動、接続、保存はGUI側が実行します。
+
+空間位置を変えてTRKRを繰り返す場合も、直接シリアルポートを開かずGUIに順番に任せます。
+
+```python
+with GuiClient.launch(profile="C:/Lab/kim.json") as gui:
+    gui.wait(gui.connect()["id"])  # 設定内の機器へGUI側で接続
+    gui.set_output(directory="D:/TRKR/data", auto_timestamp_suffix=False, workflow="trkr")
+    for x_um in [0.0, 5.0, 10.0]:
+        gui.wait(gui.move([None, x_um, None])["id"])  # 測定座標のx、µm
+        gui.set_output(filename=f"trkr_x_{x_um:g}um.csv", workflow="trkr")
+        gui.run("trkr")
+```
+
+`move()`の順序は`[t (ps), x (µm), y (µm)]`、`None`は動かさない軸です。既定の`measurement`座標はGUIの共有原点を使います。機器設定のJSONを置き換えるときとDemo／実機を切り替えるときは、先に`disconnect()`の完了を待ちます。原点復帰は自動で行わず、`initialize(home=True)`を明示した場合だけ要求します。Pythonが異常終了した場合は約6秒で操作権が失効し、動作中ならその完了までロックを維持します。GUIのStop／Take controlは常に使えます。
+
+For a spatial-position loop, use `move([None, x_um, None])`, wait for its receipt, then run TRKR as above. With the default measurement coordinates, targets use the GUI’s shared zero. `[t, x, y]` units are ps/µm/µm; `None` leaves an axis unchanged. Disconnect and wait before replacing the hardware JSON or changing Demo/hardware source. Homing is never implicit: request `initialize(home=True)` explicitly. If Python crashes, its lease expires after about six seconds; an active operation keeps the GUI locked until completion, with Stop/Take control available throughout.
 
 結果の受付記録はGUIの起動中に直近32件を保持します。CSVは従来どおり保存されます。通信エラー時は`status()`で状態を確認してから判断してください。`start(request_id=...)`にUUIDを明示し、同じIDを再送した場合は再測定せず元の受付記録を返します。
 
-Pythonクライアントを閉じても測定は停止しません。停止が必要なときだけ、`gui.stop(run["id"])`またはGUIのStopを使います。`wait()`はGUI Stopによる中断を`GuiRunStopped`として通知し、タイムアウトしてもStopや再開始をしません。
+Pythonクライアントを閉じても測定は停止せず、GUIも閉じません。停止が必要なときだけ、`gui.stop(run["id"])`またはGUIのStopを使います。`wait()`はGUI Stopによる中断を`GuiRunStopped`として通知し、タイムアウトしてもStopや再開始をしません。新規GUIは`GuiClient.launch(profile="C:/Lab/kim.json")`で起動できます。Python終了後もGUIは独立して動作します。
 
-Start the GUI with `--gui-api` only when external control is required: on Windows use `& "$env:LOCALAPPDATA\KohdaLab\TRKR\kohdalab-trkr.exe" --gui-api`; on macOS use `'/Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr' --gui-api`. Ordinary GUI startup, controls, and settings remain unchanged. `GuiClient` neither launches the GUI nor connects to instruments: it finds one GUI already started with this option on the same computer and can start, wait for, or stop its measurement. A remotely started plan updates the normal GUI fields, progress, and plots. Multiple live GUIs are rejected instead of selecting an arbitrary instrument; pass the session JSON as `session=` in that case.
+The ordinary GUI publishes its local API, so `GuiClient()` attaches to its current settings without a special launch flag. `GuiClient.launch(profile=...)` starts a new independent GUI when needed. The client never talks to an instrument directly. Entering its context acquires a six-second GUI lease and refreshes it every second: while held, the GUI displays that Python controls it and rejects competing edits. **Take control** in the GUI revokes that lease; later Python mutations fail rather than silently reclaiming it. `config()`, `plan()`, and `output()` are read-only; `settings()` reads lock-in settings as a GUI job. Profile, plan, output, device, motion, and lock-in changes execute in the GUI after the lease is held. Closing Python releases only its lease; it never stops a run or closes the GUI. Multiple live GUIs are rejected instead of selecting an arbitrary instrument; pass the session JSON as `session=` in that case.
 
-Use the output file name or your experiment naming convention for external conditions. Explicit relative output paths are resolved against Python’s working directory; omit `output` to use the GUI directory, name, and Auto setting. `plan()` changes only the measurement plan. Connected hardware, Demo/GPIB source selection, and current device settings remain those of the GUI. The GUI retains the latest 32 run receipts during its lifetime; CSV storage is unchanged. After a connection error, check `status()` before deciding what to do. An explicit UUID passed to `start(request_id=...)` makes resubmission return the original receipt instead of starting another measurement. Closing a Python client never cancels a measurement; use `gui.stop(run["id"])` or the GUI Stop button deliberately. `wait()` raises `GuiRunStopped` when GUI Stop interrupts the run, and its timeout never stops or restarts a run.
+Use the output file name or your experiment naming convention for external conditions. Explicit relative output paths are resolved against Python’s working directory; omit `output` to use the GUI directory, name, and Auto setting. `set_output(filename="field_0.5T.csv")` is accepted; the GUI normalizes the CSV suffix for its normal output naming. `plan()` changes only the measurement plan. Connected hardware, Demo/GPIB source selection, and current device settings remain those of the GUI. The GUI retains the latest 32 run receipts during its lifetime; CSV storage is unchanged. After a connection error, check `status()` before deciding what to do. An explicit UUID passed to `start(request_id=...)` makes resubmission return the original receipt instead of starting another measurement. Closing a Python client never cancels a measurement; use `gui.stop(run["id"])` or the GUI Stop button deliberately. `wait()` raises `GuiRunStopped` when GUI Stop interrupts the run, and its timeout never stops or restarts a run.
 
 ## English
 

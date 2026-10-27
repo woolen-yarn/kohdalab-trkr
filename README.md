@@ -57,7 +57,7 @@ See [hardware and transport](docs/reference/hardware.md) for stage/actuator pres
 
 Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings/python/README.md) · [notebooks](notebook/).
 
-Optional `--gui-api` startup lets Python orchestrate measurements in the existing GUI, including live plots and Stop. / `--gui-api`付きで起動すると、既存GUIのライブプロット・Stopを使いながらPythonから測定を実行できます。
+Python can attach to the desktop GUI or launch it with a JSON profile, then exclusively control measurements, motion, and output settings while keeping the live plots and Stop available. / Pythonから既存GUIへ接続、またはJSON設定で新規起動し、ライブプロット・Stopを使いながら測定・移動・保存先を排他制御できます。
 
 ## Development / 開発
 

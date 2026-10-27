@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import importlib.util
+import gc
 import json
 import socket
 import threading
+import time
+import weakref
 from pathlib import Path
 
 import pytest
@@ -87,7 +90,7 @@ def descriptor(path: Path, port: int, *, host: str = "127.0.0.1") -> Path:
 
 
 def test_gui_client_sends_authenticated_one_socket_rpcs(api_module, server, tmp_path):
-    records = [{"id": "run-1", "status": "completed", "rows": 3, "output": "run.csv", "error": None}]
+    records = [{"id": "run-1", "status": "completed", "rows": 3, "output": "run.csv", "error": None, "kind": "trkr"}]
 
     def handler(request):
         action = request["action"]
@@ -95,11 +98,12 @@ def test_gui_client_sends_authenticated_one_socket_rpcs(api_module, server, tmp_
             result = {"snapshot": {"state": "ready"}, "active_run": None}
         elif action == "plan":
             result = {"plan": {"interval_s": 1}, "workflow": request.get("workflow", "trkr"), "source": "gui"}
-        elif action == "start":
+        elif action in {"acquire", "heartbeat", "release"}:
+            result = {"owned": action != "release", "client_id": request["client_id"] if action != "release" else None,
+                      "status": "python" if action != "release" else "idle", "active_run": None}
+        elif action in {"start", "move", "initialize", "connect", "disconnect", "read", "set_lockin", "auto_lockin", "stop"}:
             result = records[0]
         elif action == "result":
-            result = records[0]
-        elif action == "stop":
             result = records[0]
         else:
             return {"ok": False, "error": "unknown action"}
@@ -113,9 +117,10 @@ def test_gui_client_sends_authenticated_one_socket_rpcs(api_module, server, tmp_
     assert client.start("trkr", plan={"interval_s": 2}, output=Path("run.csv"), request_id=request_id)["id"] == "run-1"
     assert client.result("run-1")["rows"] == 3
     assert client.stop("run-1")["status"] == "completed"
-    assert [item["action"] for item in rpc.requests] == ["status", "plan", "start", "result", "stop"]
+    assert [item["action"] for item in rpc.requests] == ["status", "plan", "acquire", "start", "result", "stop"]
     assert all(item["token"] == "secret" for item in rpc.requests)
-    start = rpc.requests[2]
+    assert len({item["client_id"] for item in rpc.requests}) == 1
+    start = rpc.requests[3]
     assert start["workflow"] == "trkr" and start["plan"] == {"interval_s": 2}
     assert start["output"] == str(Path("run.csv").resolve()) and start["request_id"] == request_id
 
@@ -144,10 +149,13 @@ def test_wait_terminal_statuses_timeout_and_close_never_stops(api_module, server
 
     def handler(request):
         if request["action"] == "result":
-            result = {"id": request["run_id"], "status": state["status"], "rows": 0, "output": None, "error": "broken" if state["status"] == "error" else None}
+            result = {"id": request["run_id"], "status": state["status"], "rows": 0, "output": None, "error": "broken" if state["status"] == "error" else None, "kind": "trkr"}
             return {"ok": True, "result": result}
         if request["action"] == "start":
-            return {"ok": True, "result": {"id": "run-1", "status": "running", "rows": 0, "output": None, "error": None}}
+            return {"ok": True, "result": {"id": "run-1", "status": "running", "rows": 0, "output": None, "error": None, "kind": "trkr"}}
+        if request["action"] in {"acquire", "heartbeat", "release"}:
+            active = None
+            return {"ok": True, "result": {"owned": request["action"] != "release", "client_id": request["client_id"] if request["action"] != "release" else None, "status": "python" if request["action"] != "release" else "idle", "active_run": active}}
         return {"ok": True, "result": {"snapshot": {}, "active_run": None}}
 
     rpc = server(handler)
@@ -165,6 +173,139 @@ def test_wait_terminal_statuses_timeout_and_close_never_stops(api_module, server
     client.close()
     assert len(rpc.requests) == before_close
     assert "stop" not in [item["action"] for item in rpc.requests]
+
+
+def test_control_lease_and_full_gui_surface(api_module, server, tmp_path):
+    def receipt(request):
+        return {"id": request.get("request_id", "job"), "status": "completed", "rows": 0,
+                "output": None, "error": None, "kind": request["action"]}
+
+    def handler(request):
+        action = request["action"]
+        if action in {"acquire", "heartbeat"}:
+            return {"ok": True, "result": {"owned": True, "client_id": request["client_id"], "status": "python", "active_run": None}}
+        if action == "release":
+            return {"ok": True, "result": {"owned": False, "client_id": None, "status": "idle", "active_run": None}}
+        if action == "config":
+            return {"ok": True, "result": {"profile": {"instruments": {}}, "workflow": "trkr", "source": "demo", "config_path": None}}
+        if action == "output":
+            return {"ok": True, "result": {"dir": "/tmp/data", "filename": "run", "auto_timestamp_suffix": True}}
+        if action in {"load_config", "configure", "set_plan", "set_output"}:
+            return {"ok": True, "result": {"profile": {}, "workflow": "trkr", "source": "hardware", "config_path": "/tmp/kim.json"}}
+        return {"ok": True, "result": receipt(request)}
+
+    rpc = server(handler)
+    client = api_module.GuiClient(descriptor(tmp_path / "session.json", rpc.port))
+    assert client.config()["source"] == "demo"
+    assert client.settings()["kind"] == "lockin_settings"
+    assert client.output()["filename"] == "run"
+    assert client.load_config("kim.json")["config_path"] == "/tmp/kim.json"
+    assert client.configure({"instruments": {}}, source="hardware")["source"] == "hardware"
+    assert client.set_plan({"workflow": "trkr"})["workflow"] == "trkr"
+    assert client.set_output(directory="data", filename="field.csv", auto_timestamp_suffix=False)["source"] == "hardware"
+    assert client.move([1.0, None, 3.0])["kind"] == "move"
+    assert client.initialize(1, home=True)["kind"] == "initialize"
+    assert client.connect(["lockin"])["kind"] == "connect"
+    assert client.disconnect()["kind"] == "disconnect"
+    assert client.read()["kind"] == "read"
+    assert client.set_lockin("sensitivity", "1 mV")["kind"] == "set_lockin"
+    assert client.auto_lockin("auto_sensitivity")["kind"] == "auto_lockin"
+    assert all("client_id" in request for request in rpc.requests)
+    assert all("request_id" in request for request in rpc.requests if request["action"] in {
+        "move", "initialize", "connect", "disconnect", "read", "lockin_settings", "set_lockin", "auto_lockin"
+    })
+    client.close()
+    assert rpc.requests[-1]["action"] == "release"
+
+
+def test_revoked_lease_refuses_future_mutation(api_module, server, tmp_path):
+    state = {"beats": 0}
+
+    def handler(request):
+        if request["action"] == "acquire":
+            result = {"owned": True, "client_id": request["client_id"], "status": "python", "active_run": None}
+        elif request["action"] == "heartbeat":
+            state["beats"] += 1
+            result = {"owned": False, "client_id": None, "status": "detached", "active_run": None}
+        else:
+            result = {"id": request.get("request_id", "x"), "status": "completed", "rows": 0, "output": None, "error": None, "kind": request["action"]}
+        return {"ok": True, "result": result}
+
+    rpc = server(handler)
+    client = api_module.GuiClient(descriptor(tmp_path / "session.json", rpc.port))
+    client.acquire()
+    client.heartbeat()
+    with pytest.raises(RuntimeError, match="revoked"):
+        client.move([None, 0.0, None])
+    client.close()
+
+
+def test_dropped_client_stops_heartbeat_without_releasing_or_stopping(api_module):
+    requests = []
+    client = api_module.GuiClient("unused-session.json")
+
+    def request(operation, **_data):
+        requests.append(operation)
+        return {"owned": True, "client_id": client_id, "status": "python", "active_run": None}
+
+    client_id = client._client_id
+    client._request = request
+    client.acquire()
+    reference = weakref.ref(client)
+    del client
+    gc.collect()
+    assert reference() is None
+    time.sleep(1.05)
+    assert requests == ["acquire"]
+
+
+def test_launch_attaches_only_to_its_own_descriptor(api_module, server, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    run_dir = home / ".kohdalab/run"
+    run_dir.mkdir(parents=True)
+    binary = tmp_path / "kohdalab-trkr"
+    binary.write_text("binary", encoding="utf-8")
+    ready = server(lambda request: {"ok": True, "result": {"snapshot": {}, "active_run": None}})
+    descriptor(run_dir / "trkr-gui-other.json", ready.port)
+    launched = descriptor(run_dir / "trkr-gui-own.json", ready.port)
+    monkeypatch.setattr(api_module.Path, "home", classmethod(lambda cls: home))
+    calls = []
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return None
+
+    def popen(command, **options):
+        calls.append((command, options))
+        return Process()
+
+    monkeypatch.setattr(api_module.subprocess, "Popen", popen)
+    client = api_module.GuiClient.launch(profile="kim.json", binary=binary)
+    assert client._session_path == launched
+    assert calls[0][0] == [str(binary), "--gui-api", "--config", str(Path("kim.json").resolve())]
+    assert calls[0][1]["stdin"] is api_module.subprocess.DEVNULL
+
+
+def test_launch_reports_early_process_exit(api_module, tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".kohdalab/run").mkdir(parents=True)
+    binary = tmp_path / "kohdalab-trkr"
+    binary.write_text("binary", encoding="utf-8")
+    monkeypatch.setattr(api_module.Path, "home", classmethod(lambda cls: home))
+
+    class Process:
+        pid = 4321
+
+        @staticmethod
+        def poll():
+            return 7
+
+    monkeypatch.setattr(api_module.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    with pytest.raises(RuntimeError, match="exited.*7"):
+        api_module.GuiClient.launch(binary=binary)
 
 
 def test_invalid_descriptor_rejects_non_loopback_and_bad_port(api_module, tmp_path):

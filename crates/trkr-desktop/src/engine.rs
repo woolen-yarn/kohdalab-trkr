@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender},
     },
     thread,
@@ -285,6 +285,13 @@ pub enum Event {
     Phase(String),
     Finished(Result<(usize, Option<PathBuf>), String>),
     Error(String),
+    /// Correlated completion for GUI-owned external operations only. Untagged
+    /// GUI/stdio commands retain their existing event stream.
+    RemoteFinished {
+        id: String,
+        phase: String,
+        result: Result<(usize, Option<PathBuf>), String>,
+    },
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -344,14 +351,27 @@ impl Command {
 }
 pub struct Controller {
     pub events: Receiver<Event>,
-    commands: Sender<Command>,
+    commands: Sender<(Command, Option<String>)>,
     cancel: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
+    pending: Arc<AtomicUsize>,
     read_only: bool,
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Controller {
     pub fn send(&self, command: Command) -> Result<(), String> {
+        self.enqueue(command, None)
+    }
+    pub(crate) fn send_remote(&self, id: String, command: Command) -> Result<(), String> {
+        if matches!(command, Command::Stop | Command::Shutdown) {
+            return Err("Stop/shutdown cannot be queued as an external job".into());
+        }
+        self.enqueue(command, Some(id))
+    }
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) > 0
+    }
+    fn enqueue(&self, command: Command, remote_id: Option<String>) -> Result<(), String> {
         if self.read_only && !matches!(command, Command::Stop | Command::Shutdown) {
             return Err(OperationError::ReadOnly.into());
         }
@@ -366,7 +386,9 @@ impl Controller {
             }
             self.cancel.store(false, Ordering::Release);
         }
-        if self.commands.send(command).is_err() {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if self.commands.send((command, remote_id)).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
             if job {
                 self.busy.store(false, Ordering::Release);
             }
@@ -381,7 +403,7 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.stop();
-        let _ = self.commands.send(Command::Shutdown);
+        let _ = self.commands.send((Command::Shutdown, None));
         if let Some(handle) = self.thread.take() {
             while !handle.is_finished() {
                 let _ = self.events.recv_timeout(Duration::from_millis(20));
@@ -404,12 +426,14 @@ pub fn controller_read_only() -> Controller {
 }
 
 fn controller_with_mode(read_only: bool) -> Controller {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<(Command, Option<String>)>();
     let (send, events) = mpsc::sync_channel(2048);
     let cancel = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
     let token = cancel.clone();
     let working = busy.clone();
+    let pending = Arc::new(AtomicUsize::new(0));
+    let pending_worker = pending.clone();
     let handle = thread::spawn(move || {
         let mut session = Session::default();
         let mut last_position = Instant::now() - Duration::from_millis(500);
@@ -424,7 +448,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 position_due,
                 now,
             );
-            let cmd = match rx.recv_timeout(timeout) {
+            let (cmd, remote_id) = match rx.recv_timeout(timeout) {
                 Ok(c) => c,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -478,7 +502,11 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 session.state.total = 0;
                 let _ = send.send(Event::State(Box::new(session.state.clone())));
             }
-            let mut result = session.execute(cmd, &token, &send);
+            let mut result = if remote_id.is_some() {
+                session.execute_remote(cmd, &token, &send)
+            } else {
+                session.execute(cmd, &token, &send)
+            };
             // Jobs own motion cleanup and its audit. Do not issue another
             // unrecorded STOP after their finalized result/metadata.
             if !job
@@ -534,9 +562,26 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 .into();
                 working.store(false, Ordering::Release);
             }
+            pending_worker.fetch_sub(1, Ordering::AcqRel);
             let _ = send.send(Event::State(Box::new(session.state.clone())));
             if acquisition {
-                let _ = send.send(Event::Finished(result.map(|out| (session.state.rows, out))));
+                let _ = send.send(Event::Finished(
+                    result.clone().map(|out| (session.state.rows, out)),
+                ));
+            }
+            if let Some(id) = remote_id {
+                let _ = send.send(Event::RemoteFinished {
+                    id,
+                    phase: if job {
+                        session.state.phase.clone()
+                    } else if result.is_ok() {
+                        "Complete".into()
+                    } else {
+                        "Error".into()
+                    },
+                    result: result
+                        .map(|out| (if acquisition { session.state.rows } else { 0 }, out)),
+                });
             }
         }
         if let Some(rig) = &mut session.rig {
@@ -548,6 +593,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
         commands: tx,
         cancel,
         busy,
+        pending,
         read_only,
         thread: Some(handle),
     }
@@ -666,6 +712,25 @@ impl Session {
             self.state.position = rig.position()?;
         }
         Ok(())
+    }
+    fn execute_remote(
+        &mut self,
+        command: Command,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<Option<PathBuf>, String> {
+        let refresh = matches!(
+            command,
+            Command::SetLockin { .. } | Command::AutoLockin { .. }
+        );
+        let result = self.execute(command, cancel, send)?;
+        if refresh {
+            self.execute(Command::LockinSettings, cancel, send)
+                .map_err(|error| {
+                    format!("Lock-in setting was sent, but readback failed: {error}")
+                })?;
+        }
+        Ok(result)
     }
     fn execute(
         &mut self,
