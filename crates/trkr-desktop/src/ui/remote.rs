@@ -534,8 +534,18 @@ impl App {
                         "PYTHON CONTROL · GUI controls locked"
                     },
                 );
-                let kind = control["active_run"]["kind"].as_str().unwrap_or("Idle");
-                ui.label(format!("{} · {}", kind, self.snapshot.phase));
+                let kind = control["active_run"]["kind"].as_str();
+                let activity = match kind {
+                    Some("start" | "move" | "initialize") => self.snapshot.phase.as_str(),
+                    Some("connect") => "Connecting devices",
+                    Some("disconnect") => "Disconnecting devices",
+                    Some("set_lockin") => "Updating lock-in",
+                    Some("auto_lockin") => "Lock-in auto adjustment",
+                    Some("lockin_settings") => "Reading lock-in settings",
+                    Some("read") => "Reading devices",
+                    _ => "Waiting for Python",
+                };
+                ui.label(activity);
                 if ui.button("Stop").clicked() {
                     self.controller.stop();
                 }
