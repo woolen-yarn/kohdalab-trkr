@@ -15,6 +15,7 @@ mod presentation;
 #[cfg(test)]
 mod python_parity_tests;
 mod raw_csv;
+mod remote;
 mod replay_data;
 mod replay_player;
 mod ui;
@@ -30,6 +31,8 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
         [flag] if flag == "--stdio" => stdio(),
+        [flag] if flag == "--gui-api" => remote::Server::start()
+            .and_then(|server| run_gui_with_api(None, [1512., 900.], false, "", Some(server))),
         [flag] if flag == "--gpib-resources" => trkr_transport::available_gpib_resources()
             .map(|resources| println!("{}", serde_json::json!({"resources":resources}))),
         [flag] if flag == "--demo" => run_demo(None, None),
@@ -126,6 +129,15 @@ fn run_gui_at(
     layout_only: bool,
     state: &str,
 ) -> Result<(), String> {
+    run_gui_with_api(smoke, size, layout_only, state, None)
+}
+fn run_gui_with_api(
+    smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>,
+    size: [f32; 2],
+    layout_only: bool,
+    state: &str,
+    remote: Option<remote::Server>,
+) -> Result<(), String> {
     eframe::run_native(
         &format!("KohdaLab TRKR v{}", env!("CARGO_PKG_VERSION")),
         eframe::NativeOptions {
@@ -143,6 +155,9 @@ fn run_gui_at(
         },
         Box::new(move |cc| {
             let mut app = ui::App::new(cc, false);
+            if let Some(server) = remote {
+                app.enable_remote(server);
+            }
             if let Some((dir, ok)) = smoke {
                 if layout_only {
                     app.enable_layout_capture(dir, ok, state)
@@ -254,7 +269,7 @@ fn profile_json(path: &std::path::Path) -> Result<(), String> {
 fn cli(args: &[String]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "KohdaLab TRKR\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
+            "KohdaLab TRKR\n--gui-api GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
         );
         return Ok(());
     }

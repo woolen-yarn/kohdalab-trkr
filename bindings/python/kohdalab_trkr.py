@@ -9,9 +9,12 @@ import json
 import os
 import queue
 import shutil
+import socket
 import subprocess
 import sys
 import threading
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +27,230 @@ _PLATFORM = sys.platform
 PROFILE_COMPATIBILITY_REVISION = 1
 JSON_LINES_API_REVISION = 1
 RECORDING_COMPATIBILITY_REVISION = 5
+
+
+class GuiRunStopped(RuntimeError):
+    """Raised when a GUI-managed run was stopped before completion."""
+
+
+class GuiClient:
+    """Control an already running TRKR GUI through its local API.
+
+    The client never starts the GUI or talks to an instrument.  Each request
+    opens a new authenticated loopback connection, so closing this object
+    cannot stop an acquisition owned by the GUI.
+    """
+
+    _RUN_STATES = {"running", "completed", "stopped", "error"}
+    _MAX_RESPONSE_BYTES = 1_048_576
+
+    def __init__(
+        self,
+        session: str | Path | None = None,
+        *,
+        timeout: float = 5.0,
+    ) -> None:
+        if timeout <= 0:
+            raise ValueError("timeout must be greater than zero")
+        self._session_path = None if session is None else Path(session).expanduser()
+        self._timeout = float(timeout)
+        self._descriptor: dict[str, Any] | None = None
+        self._closed = False
+
+    @staticmethod
+    def _validate_descriptor(data: object, path: Path) -> dict[str, Any]:
+        if not isinstance(data, dict):
+            raise ValueError(f"Invalid GUI session descriptor: {path}")
+        if data.get("revision") != 1:
+            raise ValueError(f"Unsupported GUI session revision in {path}")
+        host = data.get("host")
+        port = data.get("port")
+        token = data.get("token")
+        instance_id = data.get("instance_id")
+        pid = data.get("pid")
+        if host != "127.0.0.1":
+            raise ValueError("GUI session host must be 127.0.0.1")
+        if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
+            raise ValueError("GUI session port must be between 1 and 65535")
+        if not all(isinstance(value, str) and value for value in (token, instance_id)):
+            raise ValueError("GUI session token and instance_id must be non-empty strings")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            raise ValueError("GUI session pid must be a positive integer")
+        return data
+
+    @classmethod
+    def _load_descriptor(cls, path: Path) -> dict[str, Any]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"Could not read GUI session descriptor: {path}") from exc
+        return cls._validate_descriptor(data, path)
+
+    def _request_to(self, descriptor: dict[str, Any], action: str, **data: Any) -> Any:
+        payload = {"token": descriptor["token"], "action": action, **data}
+        encoded = (json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8")
+        try:
+            with socket.create_connection(
+                (descriptor["host"], descriptor["port"]), timeout=self._timeout
+            ) as connection:
+                connection.settimeout(self._timeout)
+                connection.sendall(encoded)
+                response = bytearray()
+                while b"\n" not in response:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        raise RuntimeError("GUI API closed before returning a response")
+                    response.extend(chunk)
+                    if len(response) > self._MAX_RESPONSE_BYTES:
+                        raise RuntimeError("GUI API response is too large")
+        except OSError as exc:
+            raise RuntimeError("Could not connect to the running TRKR GUI") from exc
+        try:
+            decoded = json.loads(response.split(b"\n", 1)[0].decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Invalid JSON response from TRKR GUI") from exc
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("ok"), bool):
+            raise RuntimeError("Invalid response envelope from TRKR GUI")
+        if not decoded["ok"]:
+            raise RuntimeError(str(decoded.get("error", "TRKR GUI rejected request")))
+        if "result" not in decoded:
+            raise RuntimeError("TRKR GUI response omitted result")
+        return decoded["result"]
+
+    def _discover(self) -> dict[str, Any]:
+        if self._session_path is not None:
+            return self._load_descriptor(self._session_path)
+        directory = Path.home() / ".kohdalab" / "run"
+        candidates: list[dict[str, Any]] = []
+        for path in sorted(directory.glob("trkr-gui-*.json")) if directory.is_dir() else []:
+            try:
+                descriptor = self._load_descriptor(path)
+                self._request_to(descriptor, "status")
+            except (RuntimeError, ValueError):
+                # A GUI can remove its descriptor between glob and ping.  It is stale,
+                # not a reason to select another running GUI arbitrarily.
+                continue
+            candidates.append(descriptor)
+        if not candidates:
+            raise RuntimeError("No running TRKR GUI API session was found")
+        if len(candidates) != 1:
+            raise RuntimeError("Multiple running TRKR GUI API sessions were found; pass session=")
+        return candidates[0]
+
+    def _request(self, action: str, **data: Any) -> Any:
+        if self._closed:
+            raise RuntimeError("GuiClient is closed")
+        if self._descriptor is None:
+            self._descriptor = self._discover()
+        return self._request_to(self._descriptor, action, **data)
+
+    @classmethod
+    def _run_record(cls, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict) or not isinstance(value.get("id"), str):
+            raise RuntimeError("Invalid run record from TRKR GUI")
+        status = value.get("status")
+        if status not in cls._RUN_STATES:
+            raise RuntimeError("Invalid run status from TRKR GUI")
+        return value
+
+    def status(self) -> dict[str, Any]:
+        """Return the GUI snapshot and its active run, if any."""
+        result = self._request("status")
+        if not isinstance(result, dict) or "snapshot" not in result or "active_run" not in result:
+            raise RuntimeError("Invalid status result from TRKR GUI")
+        active = result["active_run"]
+        if active is not None:
+            self._run_record(active)
+        return result
+
+    def plan(self, workflow: str | None = None) -> dict[str, Any]:
+        payload = {} if workflow is None else {"workflow": workflow}
+        result = self._request("plan", **payload)
+        if not isinstance(result, dict) or not {"plan", "workflow", "source"} <= result.keys():
+            raise RuntimeError("Invalid plan result from TRKR GUI")
+        return result
+
+    def start(
+        self,
+        workflow: str | None = None,
+        *,
+        plan: dict[str, Any] | None = None,
+        output: str | Path | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        if workflow is not None and not isinstance(workflow, str):
+            raise TypeError("workflow must be a string or None")
+        if plan is not None and not isinstance(plan, dict):
+            raise TypeError("plan must be a dictionary or None")
+        if request_id is not None:
+            if not isinstance(request_id, str):
+                raise ValueError("request_id must be a UUID string or None")
+            try:
+                uuid.UUID(request_id)
+            except ValueError as exc:
+                raise ValueError("request_id must be a UUID string or None") from exc
+        payload: dict[str, Any] = {"request_id": request_id or str(uuid.uuid4())}
+        if workflow is not None:
+            payload["workflow"] = workflow
+        if plan is not None:
+            payload["plan"] = plan
+        if output is not None:
+            payload["output"] = str(Path(output).expanduser().resolve())
+        return self._run_record(self._request("start", **payload))
+
+    def result(self, run_id: str) -> dict[str, Any]:
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        return self._run_record(self._request("result", run_id=run_id))
+
+    def stop(self, run_id: str) -> dict[str, Any]:
+        """Ask the GUI to stop its matching active run; this is never implicit."""
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        return self._run_record(self._request("stop", run_id=run_id))
+
+    def wait(
+        self,
+        run_id: str,
+        *,
+        timeout: float | None = None,
+        poll_interval: float = 0.1,
+    ) -> dict[str, Any]:
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be non-negative or None")
+        if poll_interval <= 0:
+            raise ValueError("poll_interval must be greater than zero")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            record = self.result(run_id)
+            if record["status"] == "completed":
+                return record
+            if record["status"] == "stopped":
+                raise GuiRunStopped(f"GUI run {run_id} was stopped")
+            if record["status"] == "error":
+                raise RuntimeError(str(record.get("error") or f"GUI run {run_id} failed"))
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError(f"GUI run {run_id} did not finish before timeout")
+            sleep_for = poll_interval if deadline is None else min(poll_interval, deadline - time.monotonic())
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+
+    def run(self, workflow: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Start one GUI measurement and wait for its terminal record."""
+        timeout = kwargs.pop("timeout", None)
+        poll_interval = kwargs.pop("poll_interval", 0.1)
+        record = self.start(workflow, **kwargs)
+        return self.wait(record["id"], timeout=timeout, poll_interval=poll_interval)
+
+    def close(self) -> None:
+        """Release this client only; it never sends Stop or closes the GUI."""
+        self._closed = True
+
+    def __enter__(self) -> "GuiClient":
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
 
 
 def _roots(search_from: str | Path | None = None) -> list[Path]:

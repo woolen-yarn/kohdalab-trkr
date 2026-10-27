@@ -57,6 +57,8 @@ See [hardware and transport](docs/reference/hardware.md) for stage/actuator pres
 
 Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings/python/README.md) · [notebooks](notebook/).
 
+Optional `--gui-api` startup lets Python orchestrate measurements in the existing GUI, including live plots and Stop. / `--gui-api`付きで起動すると、既存GUIのライブプロット・Stopを使いながらPythonから測定を実行できます。
+
 ## Development / 開発
 
 Run commands from the repository root. The root `Cargo.toml` and `Cargo.lock`

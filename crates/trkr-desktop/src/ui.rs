@@ -1,5 +1,6 @@
 mod demo;
 mod eta;
+mod remote;
 use crate::{axis_choices, precision};
 use crate::{
     config::Settings,
@@ -121,6 +122,8 @@ fn edit(ui: &mut egui::Ui, v: &mut String) {
     ui.add(egui::TextEdit::singleline(v).desired_width(ui.available_width().clamp(80.0, 220.0)));
 }
 pub struct App {
+    remote: Option<remote::Bridge>,
+    measurement_pending: bool,
     demo_viewer: bool,
     demo: demo::Replay,
     settings: Settings,
@@ -210,6 +213,8 @@ impl App {
         p[4].fast = Axis::X;
         p[4].slow = Axis::Y;
         let mut app = Self {
+            remote: None,
+            measurement_pending: false,
             demo_viewer,
             demo: demo::Replay::default(),
             settings: Settings::default(),
@@ -904,47 +909,61 @@ impl App {
             self.demo_start();
             return;
         }
-        self.select_plot_axes();
-        let profile = self.outputs[Self::ix(self.workflow)].clone();
+        let plan = self.plan().clone();
+        let out = self.measurement_output();
+        if let Err(error) = self.begin_measurement(plan, out) {
+            self.note(error);
+        }
+    }
+    fn measurement_output(&self) -> Option<PathBuf> {
+        let profile = &self.outputs[Self::ix(self.workflow)];
         let suffix = if profile.auto_timestamp_suffix {
             format!("_{}", time::OffsetDateTime::now_utc().unix_timestamp())
         } else {
-            "".into()
+            String::new()
         };
-        let source = self.source();
-        let name = output_filename(&profile, matches!(source, Source::Demo));
-        let out = Some(PathBuf::from(profile.dir.trim()).join(format!("{name}{suffix}.csv")));
-        let plan = self.plan().clone();
-        let r = self.config().and_then(|c| {
-            self.controller.send(Command::Run {
-                source,
-                config: c,
-                plan: plan.clone(),
-                output: out.clone(),
-            })
-        });
-        match r {
-            Ok(_) => {
-                self.active_live_origin = if self.source_demo {
-                    engine::ReadingOrigin::Demo
-                } else {
-                    engine::ReadingOrigin::Hardware
-                };
-                self.trace.clear();
-                self.plot_epoch = self.plot_epoch.wrapping_add(1);
-                let index = Self::ix(self.workflow);
-                self.saved_traces[index].clear();
-                self.trace_plans[index] = Some(plan);
-                self.output_paths[index] = out;
-                self.active_workflow = self.workflow;
-                // Disable axis edits immediately, including before the worker's first state.
-                self.snapshot.running = true;
-                self.scan_progress[index] = (0, 0);
-                self.eta.start();
-                self.note("Measurement started")
-            }
-            Err(e) => self.note(e),
+        let name = output_filename(profile, matches!(self.source(), Source::Demo));
+        Some(PathBuf::from(profile.dir.trim()).join(format!("{name}{suffix}.csv")))
+    }
+    fn begin_measurement(&mut self, plan: Plan, out: Option<PathBuf>) -> Result<(), String> {
+        if self.snapshot.running || self.measurement_pending {
+            return Err("A measurement or motion is already running".into());
         }
+        self.sync();
+        let mut settings = self.settings.clone();
+        settings.set_plan(&plan)?;
+        let config = settings.hardware()?;
+        self.controller.send(Command::Run {
+            source: self.source(),
+            config,
+            plan: plan.clone(),
+            output: out.clone(),
+        })?;
+        // Commit the accepted plan atomically; all tabs share one zero/theta,
+        // just as they do when the GUI editor switches workflow or saves.
+        self.settings = settings;
+        self.switch_workflow(plan.workflow);
+        self.plans[Self::ix(self.workflow)] = plan.clone();
+        sync_shared_coordinates(&mut self.plans, self.workflow);
+        self.select_plot_axes();
+        self.active_live_origin = if self.source_demo {
+            engine::ReadingOrigin::Demo
+        } else {
+            engine::ReadingOrigin::Hardware
+        };
+        self.trace.clear();
+        self.plot_epoch = self.plot_epoch.wrapping_add(1);
+        let index = Self::ix(self.workflow);
+        self.saved_traces[index].clear();
+        self.trace_plans[index] = Some(plan);
+        self.output_paths[index] = out;
+        self.active_workflow = self.workflow;
+        self.snapshot.running = true;
+        self.measurement_pending = true;
+        self.scan_progress[index] = (0, 0);
+        self.eta.start();
+        self.note("Measurement started");
+        Ok(())
     }
     fn replay(&mut self) {
         let path = PathBuf::from(self.replay_path.trim());
@@ -993,8 +1012,14 @@ impl App {
     }
     fn receive(&mut self) {
         for _ in 0..512 {
-            match self.controller.events.try_recv() {
-                Ok(Event::Sample(s)) => {
+            let Ok(event) = self.controller.events.try_recv() else {
+                break;
+            };
+            if let Some(remote) = &mut self.remote {
+                remote.observe(&event);
+            }
+            match event {
+                Event::Sample(s) => {
                     self.snapshot.signal = Some(s.signal);
                     self.snapshot.position = s.position.clone();
                     self.snapshot.rows = self.snapshot.rows.saturating_add(1);
@@ -1017,23 +1042,25 @@ impl App {
                         trace.drain(..MAX_TRACE / 2);
                     }
                 }
-                Ok(Event::Live(reading)) => {
+                Event::Live(reading) => {
                     self.snapshot.signal = Some(reading.signal);
                     self.snapshot.signal_origin = Some(reading.origin);
                     self.snapshot.position = reading.position;
                     self.live.push(reading.signal, reading.origin);
                 }
-                Ok(Event::Phase(phase)) => self.snapshot.phase = phase,
-                Ok(Event::State(s)) => self.apply_snapshot(*s),
-                Ok(Event::Finished(r)) => match r {
-                    Ok((n, p)) => self.note(format!(
-                        "Finished · {n} rows{}",
-                        p.map(|x| format!(" · {}", x.display())).unwrap_or_default()
-                    )),
-                    Err(e) => self.note(e),
-                },
-                Ok(Event::Error(e)) => self.note(e),
-                Err(_) => break,
+                Event::Phase(phase) => self.snapshot.phase = phase,
+                Event::State(s) => self.apply_snapshot(*s),
+                Event::Finished(r) => {
+                    self.measurement_pending = false;
+                    match r {
+                        Ok((n, p)) => self.note(format!(
+                            "Finished · {n} rows{}",
+                            p.map(|x| format!(" · {}", x.display())).unwrap_or_default()
+                        )),
+                        Err(e) => self.note(e),
+                    }
+                }
+                Event::Error(e) => self.note(e),
             }
         }
     }
@@ -3160,6 +3187,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.receive();
+        self.poll_remote();
         self.poll_dialog();
         self.initialize_confirmation(ctx);
         self.demo_tick();

@@ -94,6 +94,49 @@ CSVを保存する場合は `run(..., output="new_run.csv")` と指定します�
 
 `run()` は同期処理です。並列の測定ジョブは同じクライアント内で直列化します。生の移動命令は `move(...)` の後に `wait_for_finished()` で完了を待ちます。
 
+## 開いているGUIをPythonから制御する / External control of the open GUI
+
+外部制御を使う場合だけ、専用引数でGUIを起動します。通常のGUI起動・表示・設定は変わりません。
+
+```powershell
+# Windows
+& "$env:LOCALAPPDATA\KohdaLab\TRKR\kohdalab-trkr.exe" --gui-api
+```
+
+```sh
+# macOS
+'/Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr' --gui-api
+```
+
+`GuiClient`はGUIを起動せず、機器へ直接接続せず、同じPCで`--gui-api`により起動済みのGUIを探して測定を開始・完了待ち・Stopできます。開始した計画はGUIの通常の入力欄・進捗・プロットに反映されます。複数のGUIが開いている場合は、誤った装置を選ばないようエラーになります。その場合はセッションJSONを`session=`で明示してください。
+
+```python
+from kohdalab_trkr import GuiClient
+
+with GuiClient() as gui:
+    # GUIで現在選ばれているTRKR計画を読み、必要ならPythonで計画だけ変更する。
+    selected = gui.plan("trkr")
+    plan = {**selected["plan"], "interval_s": 2.0}
+
+    # 例: 外部の磁場・温度コントローラーをここで変更して安定を待つ。
+    external_field.set_field(0.50)
+    external_field.wait_stable()
+
+    run = gui.start("trkr", plan=plan, output="trkr_field_0.50T.csv")
+    record = gui.wait(run["id"], timeout=3600)
+    print(record["output"])
+```
+
+外部条件は出力ファイル名など実験側の命名規則で管理してください。明示した相対パスはPythonの作業フォルダー基準です。`output`を省略するとGUIの保存先・ファイル名・Auto設定を使います。`plan()`で変えるのは測定計画だけで、ハードウェア設定・GUIで接続済みの測定源・Demo/GPIB選択・機器設定はGUIの現在のものを使います。
+
+結果の受付記録はGUIの起動中に直近32件を保持します。CSVは従来どおり保存されます。通信エラー時は`status()`で状態を確認してから判断してください。`start(request_id=...)`にUUIDを明示し、同じIDを再送した場合は再測定せず元の受付記録を返します。
+
+Pythonクライアントを閉じても測定は停止しません。停止が必要なときだけ、`gui.stop(run["id"])`またはGUIのStopを使います。`wait()`はGUI Stopによる中断を`GuiRunStopped`として通知し、タイムアウトしてもStopや再開始をしません。
+
+Start the GUI with `--gui-api` only when external control is required: on Windows use `& "$env:LOCALAPPDATA\KohdaLab\TRKR\kohdalab-trkr.exe" --gui-api`; on macOS use `'/Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr' --gui-api`. Ordinary GUI startup, controls, and settings remain unchanged. `GuiClient` neither launches the GUI nor connects to instruments: it finds one GUI already started with this option on the same computer and can start, wait for, or stop its measurement. A remotely started plan updates the normal GUI fields, progress, and plots. Multiple live GUIs are rejected instead of selecting an arbitrary instrument; pass the session JSON as `session=` in that case.
+
+Use the output file name or your experiment naming convention for external conditions. Explicit relative output paths are resolved against Python’s working directory; omit `output` to use the GUI directory, name, and Auto setting. `plan()` changes only the measurement plan. Connected hardware, Demo/GPIB source selection, and current device settings remain those of the GUI. The GUI retains the latest 32 run receipts during its lifetime; CSV storage is unchanged. After a connection error, check `status()` before deciding what to do. An explicit UUID passed to `start(request_id=...)` makes resubmission return the original receipt instead of starting another measurement. Closing a Python client never cancels a measurement; use `gui.stop(run["id"])` or the GUI Stop button deliberately. `wait()` raises `GuiRunStopped` when GUI Stop interrupts the run, and its timeout never stops or restarts a run.
+
 ## English
 
 The GUI, acquisition, and device control run in Rust. This client passes commands and results over JSON; Python device drivers and Qt are not required.
