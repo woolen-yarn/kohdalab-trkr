@@ -286,6 +286,11 @@ impl Bridge {
                         app.config_path = path;
                     }
                     app.hydrate();
+                    app.note(if action == "load_config" {
+                        format!("Loaded configuration: {}", app.config_path)
+                    } else {
+                        "Python configuration applied".into()
+                    });
                 }
                 if source && app.snapshot.devices.iter().any(|d| *d) {
                     return Err("Disconnect hardware before selecting Demo".into());
@@ -561,6 +566,8 @@ impl App {
         self.settings = settings;
         self.config_path = path.display().to_string();
         self.hydrate();
+        self.log.clear();
+        self.note(format!("Loaded configuration: {}", self.config_path));
     }
 }
 #[cfg(test)]
@@ -607,6 +614,14 @@ mod tests {
     }
     const A: &str = "10000000-0000-4000-8000-000000000001";
     const B: &str = "20000000-0000-4000-8000-000000000002";
+    #[test]
+    fn startup_profile_reports_the_explicit_file_instead_of_the_default() {
+        let mut app = demo_app();
+        app.load_startup_profile(Settings::default(), PathBuf::from("selected-profile.json"));
+        assert_eq!(app.config_path, "selected-profile.json");
+        assert_eq!(app.log.len(), 1);
+        assert_eq!(app.status, "Loaded configuration: selected-profile.json");
+    }
     #[test]
     fn unavailable_api_keeps_normal_gui_usable() {
         let mut app = demo_app();
