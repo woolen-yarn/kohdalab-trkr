@@ -6,6 +6,7 @@ All measurement, hardware, and safety logic stays in the native process.
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import shutil
@@ -30,8 +31,60 @@ JSON_LINES_API_REVISION = 1
 RECORDING_COMPATIBILITY_REVISION = 5
 
 
-class GuiRunStopped(RuntimeError):
+class GuiError(RuntimeError):
+    """GUI API failure with a stable code and optional last job receipt."""
+    def __init__(self, message: str, code: str | None = None,
+                 receipt: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.code = code
+        self.receipt = receipt
+        self.stop_error: Exception | None = None
+
+
+class GuiTransportError(GuiError):
+    """Communication failed; the outcome of an action may be unknown."""
+
+
+class GuiOwnershipError(GuiError):
+    """Exclusive control is absent, expired, or revoked."""
+
+
+class GuiDeviceError(GuiError):
+    """A device operation failed."""
+
+
+class GuiProtectionError(GuiDeviceError):
+    """An explicit device protection condition prevented an operation."""
+
+
+class GuiSaveError(GuiError):
+    """Recording creation, writing, or finalization failed."""
+
+
+class GuiInitializationError(GuiDeviceError):
+    """Device initialization failed."""
+
+
+class GuiRunStopped(GuiError):
     """Raised when a GUI-managed run was stopped before completion."""
+
+
+class GuiTimeoutError(GuiError, TimeoutError):
+    """The wait expired; receipt describes the last observed state only."""
+
+
+_ERROR_TYPES = {
+    "transport": GuiTransportError, "protocol": GuiTransportError,
+    "ownership_lost": GuiOwnershipError,
+    "device_error": GuiDeviceError, "protection": GuiProtectionError,
+    "save_failed": GuiSaveError, "initialization_failed": GuiInitializationError,
+    "stopped": GuiRunStopped, "timeout": GuiTimeoutError,
+}
+
+
+def _gui_error(message: str, code: str | None = None,
+               receipt: dict[str, Any] | None = None) -> GuiError:
+    return _ERROR_TYPES.get(code, GuiError)(message, code, receipt)
 
 
 class GuiClient:
@@ -39,8 +92,8 @@ class GuiClient:
 
     Hardware, profiles, and measurements remain owned by the GUI.  A short
     lease prevents a notebook and a person from changing that shared state at
-    the same time.  Closing this object only releases its lease; it never
-    stops a measurement or closes the GUI.
+    the same time. By default closing releases control and lets work continue.
+    Optional stop conditions never close the GUI.
     """
 
     _RUN_STATES = {"running", "completed", "stopped", "error"}
@@ -51,9 +104,20 @@ class GuiClient:
         session: str | Path | None = None,
         *,
         timeout: float = 5.0,
+        stop_on_disconnect: bool = False,
+        stop_on_error: bool = False,
+        stop_on_timeout: bool = False,
     ) -> None:
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("timeout must be greater than zero")
+        self._stop_policy = {
+            "stop_on_disconnect": stop_on_disconnect,
+            "stop_on_error": stop_on_error,
+            "stop_on_timeout": stop_on_timeout,
+        }
+        for name, value in self._stop_policy.items():
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be bool")
         self._session_path = None if session is None else Path(session).expanduser()
         self._timeout = float(timeout)
         self._descriptor: dict[str, Any] | None = None
@@ -113,22 +177,22 @@ class GuiClient:
                 while b"\n" not in response:
                     chunk = connection.recv(4096)
                     if not chunk:
-                        raise RuntimeError("GUI API closed before returning a response")
+                        raise GuiTransportError("GUI API closed before returning a response", "transport")
                     response.extend(chunk)
                     if len(response) > self._MAX_RESPONSE_BYTES:
-                        raise RuntimeError("GUI API response is too large")
+                        raise GuiTransportError("GUI API response is too large", "protocol")
         except OSError as exc:
-            raise RuntimeError("Could not connect to the running TRKR GUI") from exc
+            raise GuiTransportError("Could not connect to the running TRKR GUI", "transport") from exc
         try:
             decoded = json.loads(response.split(b"\n", 1)[0].decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Invalid JSON response from TRKR GUI") from exc
+            raise GuiTransportError("Invalid JSON response from TRKR GUI", "protocol") from exc
         if not isinstance(decoded, dict) or not isinstance(decoded.get("ok"), bool):
-            raise RuntimeError("Invalid response envelope from TRKR GUI")
+            raise GuiTransportError("Invalid response envelope from TRKR GUI", "protocol")
         if not decoded["ok"]:
-            raise RuntimeError(str(decoded.get("error", "TRKR GUI rejected request")))
+            raise _gui_error(str(decoded.get("error", "TRKR GUI rejected request")), decoded.get("error_code"))
         if "result" not in decoded:
-            raise RuntimeError("TRKR GUI response omitted result")
+            raise GuiTransportError("TRKR GUI response omitted result", "protocol")
         return decoded["result"]
 
     def _discover(self) -> dict[str, Any]:
@@ -146,7 +210,7 @@ class GuiClient:
                 continue
             candidates.append(descriptor)
         if not candidates:
-            raise RuntimeError("No running TRKR GUI API session was found")
+            raise GuiTransportError("No running TRKR GUI API session was found", "transport")
         if len(candidates) != 1:
             raise RuntimeError("Multiple running TRKR GUI API sessions were found; pass session=")
         return candidates[0]
@@ -237,11 +301,16 @@ class GuiClient:
         if label is not None and (not isinstance(label, str) or len(label) > 48):
             raise ValueError("label must be a string of at most 48 characters or None")
         if self._ownership_lost:
-            raise RuntimeError("GUI control was revoked; create a new GuiClient to retry")
+            raise GuiOwnershipError("GUI control was revoked; create a new GuiClient to retry", "ownership_lost")
         payload = {} if label is None else {"label": label}
-        result = self._control(self._request("acquire", **payload))
+        result = self._control(self._request("acquire", **payload, **self._stop_policy))
         self._acquire_attempted = True
         self._owns = result["owned"]
+        if self._owns and any(self._stop_policy.values()) and result.get("stop_policy") != self._stop_policy:
+            try:
+                self.release()
+            finally:
+                raise GuiError("This GUI does not confirm the requested stop policy; update the GUI before starting", "unsupported_policy")
         if self._owns:
             self._start_heartbeat()
         return result
@@ -259,27 +328,27 @@ class GuiClient:
             self._ownership_lost = True
         return result
 
-    def release(self) -> dict[str, Any] | None:
-        """Release this client's lease without stopping a running job."""
+    def release(self, *, _reason: str = "disconnect") -> dict[str, Any] | None:
+        """Release control; apply the explicitly selected stop conditions."""
         if not self._owns:
             return None
         self._stop_heartbeat()
         try:
-            result = self._control(self._request("release"))
+            result = self._control(self._request("release", reason=_reason))
         finally:
             self._owns = False
         return result
 
     def _ensure_control(self) -> None:
         if self._ownership_lost:
-            raise RuntimeError("GUI control was revoked; refusing to change shared state")
+            raise GuiOwnershipError("GUI control was revoked; refusing to change shared state", "ownership_lost")
         if self._owns:
             return
         if self._acquire_attempted:
-            raise RuntimeError("GUI control is not held")
+            raise GuiOwnershipError("GUI control is not held", "ownership_lost")
         result = self.acquire()
         if not result["owned"]:
-            raise RuntimeError("TRKR GUI is controlled by another client")
+            raise GuiOwnershipError("TRKR GUI is controlled by another client", "ownership_lost")
 
     def _job(self, operation: str, **payload: Any) -> dict[str, Any]:
         self._ensure_control()
@@ -387,7 +456,7 @@ class GuiClient:
         return self._receipt(self._request("result", run_id=run_id))
 
     def stop(self, run_id: str) -> dict[str, Any]:
-        """Ask the GUI to stop its matching active run; this is never implicit."""
+        """Request Stop; use stop_and_wait to verify the terminal outcome."""
         if not isinstance(run_id, str) or not run_id:
             raise ValueError("run_id must be a non-empty string")
         return self._job("stop", run_id=run_id)
@@ -445,65 +514,105 @@ class GuiClient:
             raise ValueError("action must be a non-empty string")
         return self._job("auto_lockin", auto_action=action, request_id=request_id)
 
-    def wait(
-        self,
-        run_id: str,
-        *,
-        timeout: float | None = None,
-        poll_interval: float = 0.1,
-    ) -> dict[str, Any]:
-        if timeout is not None and timeout < 0:
-            raise ValueError("timeout must be non-negative or None")
-        if poll_interval <= 0:
-            raise ValueError("poll_interval must be greater than zero")
+    @staticmethod
+    def _validate_wait(timeout: float | None, poll_interval: float) -> None:
+        if timeout is not None and (not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be non-negative and finite or None")
+        if not math.isfinite(poll_interval) or poll_interval <= 0:
+            raise ValueError("poll_interval must be positive and finite")
+
+    def _wait(self, run_id: str, *, timeout: float | None, poll_interval: float,
+              accept_stopped: bool, stop_on_timeout: bool) -> dict[str, Any]:
+        self._validate_wait(timeout, poll_interval)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             record = self.result(run_id)
-            if record["status"] == "completed":
+            if record["status"] == "completed" or (accept_stopped and record["status"] == "stopped"):
                 return record
             if record["status"] == "stopped":
-                raise GuiRunStopped(f"GUI run {run_id} was stopped")
+                raise GuiRunStopped(f"GUI run {run_id} was stopped", "stopped", record)
             if record["status"] == "error":
-                raise RuntimeError(str(record.get("error") or f"GUI run {run_id} failed"))
+                raise _gui_error(str(record.get("error") or f"GUI run {run_id} failed"),
+                                 record.get("error_code") or "job_failed", record)
             if deadline is not None and time.monotonic() >= deadline:
-                raise TimeoutError(f"GUI run {run_id} did not finish before timeout")
+                error = GuiTimeoutError(f"GUI run {run_id} did not finish before timeout; stop is not confirmed",
+                                        "timeout", record)
+                if stop_on_timeout:
+                    try:
+                        self.stop(run_id)
+                    except Exception as stop_error:
+                        error.stop_error = stop_error
+                raise error
             sleep_for = poll_interval if deadline is None else min(poll_interval, deadline - time.monotonic())
             if sleep_for > 0:
                 time.sleep(sleep_for)
+
+    def wait(self, run_id: str, *, timeout: float | None = None,
+             poll_interval: float = 0.1) -> dict[str, Any]:
+        """Wait for completion. A timeout requests Stop only when opted in."""
+        return self._wait(run_id, timeout=timeout, poll_interval=poll_interval,
+                          accept_stopped=False, stop_on_timeout=self._stop_policy["stop_on_timeout"])
+
+    def stop_and_wait(self, run_id: str, *, timeout: float | None = 40.0,
+                      poll_interval: float = 0.1) -> dict[str, Any]:
+        """Request Stop and return a completed/stopped receipt after cleanup.
+
+        A timeout is not proof of stopped hardware. Errors preserve their code.
+        """
+        self._validate_wait(timeout, poll_interval)
+        record = self.result(run_id)
+        if record["status"] == "running":
+            self.stop(run_id)
+        return self._wait(run_id, timeout=timeout, poll_interval=poll_interval,
+                          accept_stopped=True, stop_on_timeout=False)
 
     def run(self, workflow: str | None = None, **kwargs: Any) -> dict[str, Any]:
         """Start one GUI measurement and wait for its terminal record."""
         timeout = kwargs.pop("timeout", None)
         poll_interval = kwargs.pop("poll_interval", 0.1)
+        self._validate_wait(timeout, poll_interval)
         record = self.start(workflow, **kwargs)
         return self.wait(record["id"], timeout=timeout, poll_interval=poll_interval)
 
-    def close(self) -> None:
-        """Release this client only; it never sends Stop or closes the GUI."""
+    def close(self, *, _reason: str = "disconnect") -> None:
+        """Release this client, applying its policy; never close the GUI."""
         if self._closed:
             return
-        self._stop_heartbeat()
-        if self._owns:
-            try:
-                self._control(self._request("release"))
-            except RuntimeError:
-                pass
-            self._owns = False
-        self._closed = True
+        try:
+            self.release(_reason=_reason)
+        finally:
+            self._stop_heartbeat()
+            self._closed = True
 
     def __enter__(self) -> "GuiClient":
         self.acquire()
         return self
 
-    def __exit__(self, *_: object) -> None:
-        self.close()
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        try:
+            self.close(_reason="python_error" if exc_type is not None else "disconnect")
+        except Exception as cleanup_error:
+            if exc is None:
+                raise
+            # Keep the experiment's original Python exception visible.
+            if isinstance(exc, BaseException):
+                if hasattr(exc, "add_note"):
+                    exc.add_note(f"GUI control release failed: {cleanup_error}")
+                else:
+                    exc.gui_cleanup_error = cleanup_error
 
     @classmethod
     def launch(cls, profile: str | Path | None = None, *, binary: str | Path | None = None,
-               timeout: float = 15.0) -> "GuiClient":
+               timeout: float = 15.0, stop_on_disconnect: bool = False,
+               stop_on_error: bool = False, stop_on_timeout: bool = False) -> "GuiClient":
         """Launch a GUI API process and attach only to that process's descriptor."""
-        if timeout <= 0:
-            raise ValueError("timeout must be greater than zero")
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be greater than zero and finite")
+        policy = dict(stop_on_disconnect=stop_on_disconnect, stop_on_error=stop_on_error,
+                      stop_on_timeout=stop_on_timeout)
+        for name, value in policy.items():
+            if not isinstance(value, bool):
+                raise TypeError(f"{name} must be bool")
         executable = _explicit_file(binary, "TRKR binary", command=True) if binary else find_binary()
         command = [str(executable), "--gui-api"]
         if profile is not None:
@@ -527,7 +636,7 @@ class GuiClient:
                 except ValueError:
                     continue
                 if found["pid"] == process.pid:
-                    client = cls(path, timeout=min(5.0, timeout))
+                    client = cls(path, timeout=min(5.0, timeout), **policy)
                     client._descriptor = found
                     try:
                         client.status()

@@ -321,3 +321,116 @@ def test_invalid_descriptor_rejects_non_loopback_and_bad_port(api_module, tmp_pa
     path.write_text(json.dumps({"revision": 1, "host": "127.0.0.1", "port": 0, "token": "x", "instance_id": "x", "pid": 1}))
     with pytest.raises(ValueError, match="port"):
         api_module.GuiClient(path).status()
+
+
+def policy_server(server, tmp_path):
+    state = {"status": "running", "error_code": None}
+    def handler(request):
+        action = request["action"]
+        if action in {"acquire", "heartbeat", "release"}:
+            result = {"owned": action != "release", "client_id": request["client_id"],
+                      "status": "idle" if action == "release" else "python", "active_run": None,
+                      "stop_policy": {k: request.get(k, False) for k in
+                                      ("stop_on_disconnect", "stop_on_error", "stop_on_timeout")}}
+        else:
+            result = {"id": request.get("run_id", "job"), "status": state["status"],
+                      "rows": 2, "output": "test.csv", "error": "failed" if state["status"] == "error" else None,
+                      "error_code": state["error_code"], "kind": "start"}
+        return {"ok": True, "result": result}
+    rpc = server(handler)
+    return rpc, descriptor(tmp_path / "policy.json", rpc.port), state
+
+
+def test_stop_conditions_are_independent_and_transmitted(api_module, server, tmp_path):
+    rpc, path, _ = policy_server(server, tmp_path)
+    with api_module.GuiClient(path, stop_on_error=True) as client:
+        client.start()
+    acquire = next(r for r in rpc.requests if r["action"] == "acquire")
+    assert {key: acquire[key] for key in ("stop_on_disconnect", "stop_on_error", "stop_on_timeout")} == {
+        "stop_on_disconnect": False, "stop_on_error": True, "stop_on_timeout": False}
+    assert rpc.requests[-1]["reason"] == "disconnect"
+    with pytest.raises(ValueError, match="experiment failure"):
+        with api_module.GuiClient(path, stop_on_error=True):
+            raise ValueError("experiment failure")
+    assert rpc.requests[-1]["reason"] == "python_error"
+
+
+def test_wait_timeout_opt_in_reports_last_receipt_and_requests_stop_once(api_module, server, tmp_path):
+    rpc, path, state = policy_server(server, tmp_path)
+    with api_module.GuiClient(path, stop_on_timeout=True) as client:
+        with pytest.raises(api_module.GuiTimeoutError) as caught:
+            client.wait("job", timeout=0)
+        assert isinstance(caught.value, TimeoutError)
+        assert caught.value.receipt["status"] == "running"
+        assert caught.value.code == "timeout"
+        assert caught.value.stop_error is None
+    assert len([r for r in rpc.requests if r["action"] == "stop"]) == 1
+
+
+def test_stop_and_wait_handles_stop_completion_race_and_timeout(api_module, server, tmp_path):
+    rpc, path, state = policy_server(server, tmp_path)
+    with api_module.GuiClient(path, stop_on_timeout=True) as client:
+        with pytest.raises(api_module.GuiTimeoutError):
+            client.stop_and_wait("job", timeout=0)
+        # A bounded confirmation wait does not issue a second timeout Stop.
+        assert len([r for r in rpc.requests if r["action"] == "stop"]) == 1
+        state["status"] = "stopped"
+        assert client.stop_and_wait("job", timeout=0)["status"] == "stopped"
+        state["status"] = "completed"
+        assert client.stop_and_wait("job", timeout=0)["status"] == "completed"
+        assert len([r for r in rpc.requests if r["action"] == "stop"]) == 1
+        state.update(status="error", error_code="save_failed")
+        with pytest.raises(api_module.GuiSaveError) as caught:
+            client.stop_and_wait("job", timeout=0)
+        assert caught.value.receipt["rows"] == 2
+
+
+@pytest.mark.parametrize("code,name", [("transport", "GuiTransportError"),
+    ("ownership_lost", "GuiOwnershipError"), ("device_error", "GuiDeviceError"),
+    ("protection", "GuiProtectionError"), ("save_failed", "GuiSaveError"),
+    ("initialization_failed", "GuiInitializationError"), ("job_failed", "GuiError")])
+def test_machine_codes_determine_exception_types(api_module, server, tmp_path, code, name):
+    rpc, path, state = policy_server(server, tmp_path)
+    state.update(status="error", error_code=code)
+    with pytest.raises(getattr(api_module, name)) as caught:
+        api_module.GuiClient(path).wait("job", timeout=0)
+    assert caught.value.code == code and caught.value.receipt["status"] == "error"
+
+
+def test_stop_wait_validates_before_any_mutation(api_module, server, tmp_path):
+    rpc, path, _ = policy_server(server, tmp_path)
+    client = api_module.GuiClient(path)
+    with pytest.raises(ValueError):
+        client.stop_and_wait("job", timeout=float("nan"))
+    with pytest.raises(ValueError):
+        client.run(timeout=-1)
+    assert not rpc.requests
+    with pytest.raises(TypeError):
+        api_module.GuiClient(path, stop_on_disconnect="yes")
+
+
+def test_old_gui_cannot_silently_ignore_opted_in_policy(api_module, server, tmp_path):
+    def handler(request):
+        return {"ok": True, "result": {"owned": request["action"] != "release",
+            "client_id": request["client_id"], "status": "python" if request["action"] != "release" else "idle",
+            "active_run": None}}
+    rpc = server(handler)
+    client = api_module.GuiClient(descriptor(tmp_path / "old.json", rpc.port), stop_on_disconnect=True)
+    with pytest.raises(api_module.GuiError) as caught:
+        client.start()
+    assert caught.value.code == "unsupported_policy"
+    assert [r["action"] for r in rpc.requests] == ["acquire", "release"]
+    client.close()
+
+
+def test_failed_timeout_stop_is_exposed_without_masking_timeout(api_module, server, tmp_path, monkeypatch):
+    rpc, path, _ = policy_server(server, tmp_path)
+    client = api_module.GuiClient(path, stop_on_timeout=True)
+    def failed_stop(_):
+        raise api_module.GuiTransportError("socket lost", "transport")
+    monkeypatch.setattr(client, "stop", failed_stop)
+    with pytest.raises(api_module.GuiTimeoutError) as caught:
+        client.wait("job", timeout=0)
+    assert isinstance(caught.value.stop_error, api_module.GuiTransportError)
+    assert caught.value.receipt["status"] == "running"
+    assert not [r for r in rpc.requests if r["action"] == "start"]

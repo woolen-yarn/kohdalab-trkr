@@ -48,6 +48,20 @@ pub(super) struct Recording {
     csv: csv::Writer<File>,
     audit: RawWriter,
     metadata_path: PathBuf,
+    save_failed: bool,
+}
+
+impl Recording {
+    fn mark_save<T>(&mut self, result: Result<T, String>) -> Result<T, String> {
+        if result.is_err() {
+            self.save_failed = true;
+        }
+        result
+    }
+
+    pub(super) fn save_failed(&self) -> bool {
+        self.save_failed
+    }
 }
 
 impl Recording {
@@ -69,7 +83,8 @@ impl Recording {
     /// Append one flushed raw CSV provenance event.  Each row is flushed so a
     /// completed acquisition point never relies on a later buffer flush.
     pub(super) fn append_audit(&mut self, value: &Value) -> Result<(), String> {
-        self.audit.append(value)
+        let result = self.audit.append(value);
+        self.mark_save(result)
     }
 
     /// Count a flushed CSV row before persisting its later completion event.
@@ -87,6 +102,7 @@ impl Recording {
                 .map_err(|error| error.to_string())?;
             self.flush().map_err(|error| error.to_string())
         });
+        let result = self.mark_save(result);
         if result.is_ok() {
             *rows += 1;
         }
@@ -105,14 +121,19 @@ impl Recording {
 
     /// Attach immutable run context without rewriting the audit history.
     pub(super) fn set_context(&mut self, context: &Value) -> Result<(), String> {
-        let mut metadata: Value =
-            serde_json::from_slice(&std::fs::read(&self.metadata_path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        let object = metadata
-            .as_object_mut()
-            .ok_or_else(|| "Run metadata must be a JSON object".to_string())?;
-        object.insert("context".into(), context.clone());
-        replace_json_atomically(&self.metadata_path, &metadata)?;
+        let result = (|| {
+            let mut metadata: Value = serde_json::from_slice(
+                &std::fs::read(&self.metadata_path).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            let object = metadata
+                .as_object_mut()
+                .ok_or_else(|| "Run metadata must be a JSON object".to_string())?;
+            object.insert("context".into(), context.clone());
+            replace_json_atomically(&self.metadata_path, &metadata)?;
+            Ok(())
+        })();
+        self.mark_save(result)?;
         self.append_audit(&serde_json::json!({"event": "context", "context": context}))
     }
 
@@ -121,22 +142,29 @@ impl Recording {
         position: &trkr_motion::Position,
         phase: &str,
     ) -> Result<(), String> {
-        let mut metadata: Value =
-            serde_json::from_slice(&std::fs::read(&self.metadata_path).map_err(|e| e.to_string())?)
-                .map_err(|e| e.to_string())?;
-        metadata["last_observed_position"] = serde_json::json!(position);
-        metadata["last_phase"] = serde_json::json!(phase);
-        metadata["position_qualification"] =
-            serde_json::json!("last_reported_position_no_extra_final_query");
-        replace_json_atomically(&self.metadata_path, &metadata)
+        let result = (|| {
+            let mut metadata: Value = serde_json::from_slice(
+                &std::fs::read(&self.metadata_path).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+            metadata["last_observed_position"] = serde_json::json!(position);
+            metadata["last_phase"] = serde_json::json!(phase);
+            metadata["position_qualification"] =
+                serde_json::json!("last_reported_position_no_extra_final_query");
+            replace_json_atomically(&self.metadata_path, &metadata)
+        })();
+        self.mark_save(result)
     }
 
     /// Durably finish both output streams once an acquisition is complete.
     /// Per-point audit writes intentionally flush but do not issue `sync_all`.
     pub(super) fn finish(&mut self) -> Result<(), String> {
-        self.csv.flush().map_err(|e| e.to_string())?;
-        self.csv.get_ref().sync_all().map_err(|e| e.to_string())?;
-        self.audit.finish()
+        let result = (|| {
+            self.csv.flush().map_err(|e| e.to_string())?;
+            self.csv.get_ref().sync_all().map_err(|e| e.to_string())?;
+            self.audit.finish()
+        })();
+        self.mark_save(result)
     }
 }
 
@@ -231,6 +259,7 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
             csv: writer,
             audit,
             metadata_path: metadata_path.clone(),
+            save_failed: false,
         })
     })();
     if result.is_err() {
@@ -570,6 +599,7 @@ mod tests {
                 .is_err()
         );
         assert_eq!(rows, 1);
+        assert!(recording.save_failed());
         let mut reader = csv::Reader::from_path(path).unwrap();
         let record = reader.records().next().unwrap().unwrap();
         assert_eq!(

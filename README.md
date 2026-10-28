@@ -28,7 +28,7 @@ Synthetic TRKR data; no instruments connected. The same interface is used on Win
 
 | Channel / 配布区分 | Version / バージョン | Platforms / 対応環境 |
 | --- | --- | --- |
-| Stable / 安定版 | [0.4.2](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.2) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
+| Stable / 安定版 | [0.4.3](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.3) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
 
 Rust and Python are not required to run the packaged application. Current Windows
 artifacts are unsigned; download packages and checksums together from Releases.
@@ -114,3 +114,9 @@ dependencies retain their own licenses; keep the accompanying notices and source
 See [redistribution terms](REDISTRIBUTION.md), [code signing](CODE_SIGNING_POLICY.md), and [privacy](PRIVACY.md).
 
 独自コードは[MITライセンス](LICENSE)です。ネイティブhelperと再配布する依存物にはそれぞれのライセンスが適用されます。権利表記と対応するソースを保持してください。[再配布条件](REDISTRIBUTION.md)・[コード署名](CODE_SIGNING_POLICY.md)・[プライバシー](PRIVACY.md)も参照してください。
+
+### Python GUI stop policies / Python GUIの停止条件
+
+GUI automation supports independent `stop_on_disconnect`, `stop_on_error` (exception escaping `with`), and `stop_on_timeout` options. TRKR defaults to continuing the active job. `stop_and_wait()` verifies its terminal receipt; typed errors distinguish transport, ownership, device, initialization, and saving failures. See [Python usage and stop conditions](bindings/python/README.md#stop-conditions--停止条件).
+
+GUI外部制御では通信失効・`with`内のPython例外・待機タイムアウトの停止条件を個別指定できます。TRKRの既定は継続です。停止完了待ちと例外分類を含む[英日APIガイド](bindings/python/README.md#stop-conditions--停止条件)を参照してください。

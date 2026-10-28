@@ -7,7 +7,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
     thread,
@@ -15,6 +15,7 @@ use std::{
 };
 
 const MAX_REQUEST: u64 = 1024 * 1024;
+const MAX_CONNECTIONS: usize = 8;
 const TIMEOUT: Duration = Duration::from_secs(2);
 pub struct Request {
     pub body: Value,
@@ -54,11 +55,22 @@ impl Server {
         let (send, requests) = mpsc::sync_channel(8);
         let stopped = Arc::new(AtomicBool::new(false));
         let stop = stopped.clone();
+        let active = Arc::new(AtomicUsize::new(0));
         thread::spawn(move || {
             while !stop.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, peer)) if peer.ip().is_loopback() => {
-                        let _ = serve(stream, &token, &send);
+                        // Bound socket work, while all GUI/device actions remain serialized.
+                        if let Some(permit) = ConnectionPermit::acquire(&active) {
+                            let token = token.clone();
+                            let send = send.clone();
+                            let _ = thread::Builder::new().name("trkr-api-peer".into()).spawn(
+                                move || {
+                                    let _permit = permit;
+                                    let _ = serve(stream, &token, &send);
+                                },
+                            );
+                        } // At capacity, close this socket immediately; never queue peers.
                     }
                     Ok(_) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -84,11 +96,37 @@ impl Drop for Server {
         // dropping the request receiver prevents any late command dispatch.
     }
 }
+struct ConnectionPermit(Arc<AtomicUsize>);
+impl ConnectionPermit {
+    fn acquire(active: &Arc<AtomicUsize>) -> Option<Self> {
+        let mut count = active.load(Ordering::Acquire);
+        while count < MAX_CONNECTIONS {
+            match active.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self(active.clone())),
+                Err(current) => count = current,
+            }
+        }
+        None
+    }
+}
+impl Drop for ConnectionPermit {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
 fn serve(
     mut stream: TcpStream,
     token: &str,
     send: &mpsc::SyncSender<Request>,
 ) -> Result<(), String> {
+    // macOS may inherit O_NONBLOCK from the accepting listener. Workers use
+    // bounded blocking reads, so normalize the accepted socket explicitly.
+    stream.set_nonblocking(false).map_err(|e| e.to_string())?;
     stream
         .set_read_timeout(Some(TIMEOUT))
         .map_err(|e| e.to_string())?;
@@ -117,7 +155,8 @@ fn serve(
                     .map_err(|_| "GUI request timed out; check status before retrying".to_owned())
             })
     };
-    let response = result.unwrap_or_else(|error| json!({"ok":false,"error":error}));
+    let response =
+        result.unwrap_or_else(|error| json!({"ok":false,"error":error,"error_code":"transport"}));
     serde_json::to_writer(&mut stream, &response).map_err(|e| e.to_string())?;
     stream.write_all(b"\n").map_err(|e| e.to_string())
 }
@@ -163,6 +202,36 @@ mod tests {
         let mut response = String::new();
         BufReader::new(socket).read_line(&mut response).unwrap();
         serde_json::from_str(&response).unwrap()
+    }
+    #[test]
+    fn idle_peer_does_not_block_authenticated_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let server = Server::in_directory(dir.path().into()).unwrap();
+        let descriptor: Value =
+            serde_json::from_slice(&std::fs::read(&server.descriptor).unwrap()).unwrap();
+        let _idle =
+            TcpStream::connect(("127.0.0.1", descriptor["port"].as_u64().unwrap() as u16)).unwrap();
+        let copy = descriptor.clone();
+        let client = thread::spawn(move || request(&copy, copy["token"].as_str().unwrap()));
+        // Read timeout on the idle peer is 2 s; this request must bypass it.
+        let job = server
+            .requests
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        job.reply.send(json!({"ok":true,"result":{}})).unwrap();
+        assert_eq!(client.join().unwrap()["ok"], true);
+    }
+    #[test]
+    fn connection_admission_is_bounded_and_permits_are_reusable() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let permits: Vec<_> = (0..MAX_CONNECTIONS)
+            .map(|_| ConnectionPermit::acquire(&active).unwrap())
+            .collect();
+        assert!(ConnectionPermit::acquire(&active).is_none());
+        assert_eq!(active.load(Ordering::Acquire), MAX_CONNECTIONS);
+        drop(permits);
+        assert_eq!(active.load(Ordering::Acquire), 0);
+        assert!(ConnectionPermit::acquire(&active).is_some());
     }
     #[test]
     fn authenticates_before_dispatch_and_cleans_discovery() {
