@@ -428,9 +428,21 @@ def test_failed_timeout_stop_is_exposed_without_masking_timeout(api_module, serv
     client = api_module.GuiClient(path, stop_on_timeout=True)
     def failed_stop(_):
         raise api_module.GuiTransportError("socket lost", "transport")
+    client.acquire()
     monkeypatch.setattr(client, "stop", failed_stop)
     with pytest.raises(api_module.GuiTimeoutError) as caught:
         client.wait("job", timeout=0)
     assert isinstance(caught.value.stop_error, api_module.GuiTransportError)
     assert caught.value.receipt["status"] == "running"
     assert not [r for r in rpc.requests if r["action"] == "start"]
+
+
+
+def test_observer_timeout_does_not_acquire_control_or_interrupt_any_run(api_module, server, tmp_path):
+    rpc, path, _ = policy_server(server, tmp_path)
+    client = api_module.GuiClient(path, stop_on_timeout=True)
+    with pytest.raises(api_module.GuiTimeoutError) as caught:
+        client.wait("job", timeout=0)
+    assert isinstance(caught.value.stop_error, api_module.GuiOwnershipError)
+    assert [r["action"] for r in rpc.requests] == ["result"]
+    client.close()

@@ -538,10 +538,13 @@ class GuiClient:
                 error = GuiTimeoutError(f"GUI run {run_id} did not finish before timeout; stop is not confirmed",
                                         "timeout", record)
                 if stop_on_timeout:
-                    try:
-                        self.stop(run_id)
-                    except Exception as stop_error:
-                        error.stop_error = stop_error
+                    if not self._owns or self._ownership_lost:
+                        error.stop_error = GuiOwnershipError("Cannot automatically stop without existing GUI control", "ownership_lost")
+                    else:
+                        try:
+                            self.stop(run_id)
+                        except Exception as stop_error:
+                            error.stop_error = stop_error
                 raise error
             sleep_for = poll_interval if deadline is None else min(poll_interval, deadline - time.monotonic())
             if sleep_for > 0:
