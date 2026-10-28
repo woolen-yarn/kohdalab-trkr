@@ -81,10 +81,10 @@ def server():
         item.close()
 
 
-def descriptor(path: Path, port: int, *, host: str = "127.0.0.1") -> Path:
+def descriptor(path: Path, port: int, *, host: str = "127.0.0.1", pid: int = 4321) -> Path:
     path.write_text(json.dumps({
         "revision": 1, "host": host, "port": port, "token": "secret",
-        "instance_id": "gui-1", "pid": 4321,
+        "instance_id": "gui-1", "pid": pid,
     }), encoding="utf-8")
     return path
 
@@ -266,7 +266,7 @@ def test_launch_attaches_only_to_its_own_descriptor(api_module, server, tmp_path
     binary = tmp_path / "kohdalab-trkr"
     binary.write_text("binary", encoding="utf-8")
     ready = server(lambda request: {"ok": True, "result": {"snapshot": {}, "active_run": None}})
-    descriptor(run_dir / "trkr-gui-other.json", ready.port)
+    other = descriptor(run_dir / "trkr-gui-other.json", ready.port, pid=9999)
     launched = descriptor(run_dir / "trkr-gui-own.json", ready.port)
     monkeypatch.setattr(api_module.Path, "home", classmethod(lambda cls: home))
     calls = []
@@ -283,6 +283,12 @@ def test_launch_attaches_only_to_its_own_descriptor(api_module, server, tmp_path
         return Process()
 
     monkeypatch.setattr(api_module.subprocess, "Popen", popen)
+    # Always enumerate the unrelated process first: filesystem order differs
+    # between Windows/macOS and must never select the GUI to control.
+    original_glob = api_module.Path.glob
+    monkeypatch.setattr(api_module.Path, "glob", lambda directory, pattern:
+                        iter([other, launched]) if directory == run_dir
+                        else original_glob(directory, pattern))
     client = api_module.GuiClient.launch(profile="kim.json", binary=binary)
     assert client._session_path == launched
     assert calls[0][0] == [str(binary), "--gui-api", "--config", str(Path("kim.json").resolve())]
