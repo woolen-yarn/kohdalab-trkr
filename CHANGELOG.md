@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.3 — 2026-10-28
+
+- Add GUI-owned Python automation with exclusive control, profile launch/attach, device operations and measurement receipts. / GUI所有のPython外部制御、排他制御、設定指定起動・既存GUI接続、装置操作と処理結果を追加。
+- Keep continuation as the default; independently select disconnect, Python context exception and wait-timeout Stop conditions. Add confirmed `stop_and_wait()` and typed errors. / 継続を既定とし、通信断・Python例外・待機時間切れの停止条件、停止完了待ち、例外分類を追加。
+- Bound concurrent network requests while preserving serialized device operations; keep CSV formats and existing device protection unchanged. / 通信受付を上限付き並行処理にし、装置操作の直列処理・CSV形式・既存保護を維持。
+
 ## 0.4.2 — 2026-10-23
 
 - Include the 0.4.1 protection fixes with a GUI Skip HOME option for already referenced CONEX-CC axes. / 0.4.1の保護修正に、参照済みCONEX-CC向けのGUI「Skip HOME」を追加。

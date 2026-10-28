@@ -46,10 +46,13 @@ impl Default for Settings {
 }
 impl Settings {
     pub fn load(path: &Path) -> Result<Self, String> {
-        let mut raw: Value = serde_json::from_slice(
+        let raw: Value = serde_json::from_slice(
             &std::fs::read(path).map_err(|e| format!("Load {}: {e}", path.display()))?,
         )
         .map_err(|e| e.to_string())?;
+        Self::from_value(raw)
+    }
+    pub fn from_value(mut raw: Value) -> Result<Self, String> {
         if !raw.is_object() {
             return Err("Configuration must be a JSON object".into());
         }

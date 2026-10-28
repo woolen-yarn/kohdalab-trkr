@@ -12,7 +12,7 @@ pub use recording::FIELDS;
 #[cfg(test)]
 pub(crate) use recording::csv_float;
 pub(crate) use recording::row;
-use recording::{create_csv, finish_metadata};
+use recording::{Recording, create_csv, finish_metadata};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use status::{MotionAction, OperationError, Phase};
@@ -20,7 +20,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender, SyncSender},
     },
     thread,
@@ -285,6 +285,17 @@ pub enum Event {
     Phase(String),
     Finished(Result<(usize, Option<PathBuf>), String>),
     Error(String),
+    /// Correlated completion for GUI-owned external operations only. Untagged
+    /// GUI/stdio commands retain their existing event stream.
+    RemoteFinished {
+        id: String,
+        phase: String,
+        result: Result<(usize, Option<PathBuf>), String>,
+        /// Stable category selected from the originating command. Error
+        /// strings are intentionally never parsed for classification.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_code: Option<String>,
+    },
 }
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
@@ -342,16 +353,48 @@ impl Command {
         )
     }
 }
+
+/// Classify only what the worker knows structurally at the command boundary.
+/// Lower layers override this fallback when a recording or validation branch
+/// identifies the origin. Never infer a category from the displayed text.
+fn remote_failure_code(command: &Command) -> Option<&'static str> {
+    Some(match command {
+        Command::Initialize { .. } => "initialization_failed",
+        Command::Connect { .. }
+        | Command::Disconnect { .. }
+        | Command::Read
+        | Command::Move { .. }
+        | Command::LockinSettings
+        | Command::SetLockin { .. }
+        | Command::AutoLockin { .. } => "device_error",
+        Command::Run { .. } | Command::Replay { .. } => "job_failed",
+        Command::Stop | Command::Shutdown => return None,
+    })
+}
+
 pub struct Controller {
     pub events: Receiver<Event>,
-    commands: Sender<Command>,
+    commands: Sender<(Command, Option<String>)>,
     cancel: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
+    pending: Arc<AtomicUsize>,
     read_only: bool,
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Controller {
     pub fn send(&self, command: Command) -> Result<(), String> {
+        self.enqueue(command, None)
+    }
+    pub(crate) fn send_remote(&self, id: String, command: Command) -> Result<(), String> {
+        if matches!(command, Command::Stop | Command::Shutdown) {
+            return Err("Stop/shutdown cannot be queued as an external job".into());
+        }
+        self.enqueue(command, Some(id))
+    }
+    pub(crate) fn has_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) > 0
+    }
+    fn enqueue(&self, command: Command, remote_id: Option<String>) -> Result<(), String> {
         if self.read_only && !matches!(command, Command::Stop | Command::Shutdown) {
             return Err(OperationError::ReadOnly.into());
         }
@@ -366,7 +409,9 @@ impl Controller {
             }
             self.cancel.store(false, Ordering::Release);
         }
-        if self.commands.send(command).is_err() {
+        self.pending.fetch_add(1, Ordering::AcqRel);
+        if self.commands.send((command, remote_id)).is_err() {
+            self.pending.fetch_sub(1, Ordering::AcqRel);
             if job {
                 self.busy.store(false, Ordering::Release);
             }
@@ -381,7 +426,7 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.stop();
-        let _ = self.commands.send(Command::Shutdown);
+        let _ = self.commands.send((Command::Shutdown, None));
         if let Some(handle) = self.thread.take() {
             while !handle.is_finished() {
                 let _ = self.events.recv_timeout(Duration::from_millis(20));
@@ -404,12 +449,14 @@ pub fn controller_read_only() -> Controller {
 }
 
 fn controller_with_mode(read_only: bool) -> Controller {
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = mpsc::channel::<(Command, Option<String>)>();
     let (send, events) = mpsc::sync_channel(2048);
     let cancel = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
     let token = cancel.clone();
     let working = busy.clone();
+    let pending = Arc::new(AtomicUsize::new(0));
+    let pending_worker = pending.clone();
     let handle = thread::spawn(move || {
         let mut session = Session::default();
         let mut last_position = Instant::now() - Duration::from_millis(500);
@@ -424,7 +471,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 position_due,
                 now,
             );
-            let cmd = match rx.recv_timeout(timeout) {
+            let (cmd, remote_id) = match rx.recv_timeout(timeout) {
                 Ok(c) => c,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -471,6 +518,8 @@ fn controller_with_mode(read_only: bool) -> Controller {
             }
             let job = cmd.is_job();
             let acquisition = matches!(cmd, Command::Run { .. } | Command::Replay { .. });
+            let remote_failure_code = remote_failure_code(&cmd);
+            session.failure_code = None;
             if job {
                 session.state.running = true;
                 session.state.phase = Phase::Preparing.into();
@@ -478,7 +527,15 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 session.state.total = 0;
                 let _ = send.send(Event::State(Box::new(session.state.clone())));
             }
-            let mut result = session.execute(cmd, &token, &send);
+            let mut result = if remote_id.is_some() {
+                session.execute_remote(cmd, &token, &send)
+            } else {
+                session.execute(cmd, &token, &send)
+            };
+            let remote_failure_code = session
+                .failure_code
+                .clone()
+                .or_else(|| remote_failure_code.map(str::to_owned));
             // Jobs own motion cleanup and its audit. Do not issue another
             // unrecorded STOP after their finalized result/metadata.
             if !job
@@ -534,9 +591,32 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 .into();
                 working.store(false, Ordering::Release);
             }
+            pending_worker.fetch_sub(1, Ordering::AcqRel);
             let _ = send.send(Event::State(Box::new(session.state.clone())));
             if acquisition {
-                let _ = send.send(Event::Finished(result.map(|out| (session.state.rows, out))));
+                let _ = send.send(Event::Finished(
+                    result.clone().map(|out| (session.state.rows, out)),
+                ));
+            }
+            if let Some(id) = remote_id {
+                let error_code = result
+                    .as_ref()
+                    .err()
+                    .and(remote_failure_code.as_deref())
+                    .map(str::to_owned);
+                let _ = send.send(Event::RemoteFinished {
+                    id,
+                    phase: if job {
+                        session.state.phase.clone()
+                    } else if result.is_ok() {
+                        "Complete".into()
+                    } else {
+                        "Error".into()
+                    },
+                    result: result
+                        .map(|out| (if acquisition { session.state.rows } else { 0 }, out)),
+                    error_code,
+                });
             }
         }
         if let Some(rig) = &mut session.rig {
@@ -548,6 +628,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
         commands: tx,
         cancel,
         busy,
+        pending,
         read_only,
         thread: Some(handle),
     }
@@ -560,6 +641,9 @@ struct Session {
     config: Option<HardwareConfig>,
     lockin_context: Option<Value>,
     state: Snapshot,
+    /// Origin of the current command's failure, if a lower layer exposed one.
+    /// This is per-worker state; it is never shared globally.
+    failure_code: Option<String>,
 }
 impl Session {
     fn clear_failed_lockin(&mut self) -> bool {
@@ -667,6 +751,25 @@ impl Session {
         }
         Ok(())
     }
+    fn execute_remote(
+        &mut self,
+        command: Command,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<Option<PathBuf>, String> {
+        let refresh = matches!(
+            command,
+            Command::SetLockin { .. } | Command::AutoLockin { .. }
+        );
+        let result = self.execute(command, cancel, send)?;
+        if refresh {
+            self.execute(Command::LockinSettings, cancel, send)
+                .map_err(|error| {
+                    format!("Lock-in setting was sent, but readback failed: {error}")
+                })?;
+        }
+        Ok(result)
+    }
     fn execute(
         &mut self,
         cmd: Command,
@@ -725,7 +828,8 @@ impl Session {
                 self.connect(config, devices_for_targets(targets))?;
                 let rig = self.rig.as_mut().ok_or("No motion devices selected")?;
                 let physical = rig.to_physical(targets, coordinate_name(coordinate), zero)?;
-                rig.validate_moves(&[(physical, approach)])?;
+                rig.validate_moves(&[(physical, approach)])
+                    .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                 self.state.phase = Phase::motion(MotionAction::Moving, targets).into();
                 let _ = send.send(Event::State(Box::new(self.state.clone())));
                 self.move_live(physical, approach, cancel, send)?;
@@ -1005,14 +1109,21 @@ impl Session {
             }
             // Validate static bounds before opening any devices.
             if plan.coordinate == Coordinate::Measurement {
-                config.motion.validate_targets(&physical)?;
+                config
+                    .motion
+                    .validate_targets(&physical)
+                    .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                 if let Some(r) = returns {
-                    config.motion.validate_targets(&[std::array::from_fn(|i| {
-                        r[i].map(|v| v + plan.zero[i])
-                    })])?;
+                    config
+                        .motion
+                        .validate_targets(&[std::array::from_fn(|i| {
+                            r[i].map(|v| v + plan.zero[i])
+                        })])
+                        .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                 }
             }
-            self.connect(config, devices)?;
+            self.connect(config, devices)
+                .inspect_err(|_| self.failure_code = Some("device_error".into()))?;
             if plan.workflow != Workflow::SignalMonitor {
                 let rig = self.rig.as_mut().ok_or("Motion not connected")?;
                 for (p, t) in physical.iter_mut().zip(&targets) {
@@ -1027,9 +1138,11 @@ impl Session {
                     // scans whose input range uses mm, degrees or pulses.
                     *r = rig.to_physical(*r, "measurement", plan.zero)?;
                 }
-                rig.validate_targets(&physical)?;
+                rig.validate_targets(&physical)
+                    .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                 if let Some(r) = returns {
-                    rig.validate_targets(&[r])?;
+                    rig.validate_targets(&[r])
+                        .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                 }
                 let mut moves = Vec::with_capacity(targets.len());
                 for (index, target) in targets.iter().enumerate() {
@@ -1048,13 +1161,21 @@ impl Session {
                 }
                 if let Some(r) = returns {
                     for target in return_moves(plan, r) {
-                        rig.validate_return(target)?;
+                        rig.validate_return(target)
+                            .inspect_err(|_| self.failure_code = Some("protection".into()))?;
                     }
                 }
-                rig.validate_moves(&moves)?;
+                rig.validate_moves(&moves)
+                    .inspect_err(|_| self.failure_code = Some("protection".into()))?;
             }
         }
-        let mut csv = output.map(|p| create_csv(p, source, plan)).transpose()?;
+        let mut csv = match output.map(|p| create_csv(p, source, plan)).transpose() {
+            Ok(csv) => csv,
+            Err(error) => {
+                self.failure_code = Some("save_failed".into());
+                return Err(error);
+            }
+        };
         let mut preparation_error = None;
         // Snapshot read-only settings before acquisition. Failure stays explicit;
         // do not guess units/status or change the instrument configuration.
@@ -1073,7 +1194,7 @@ impl Session {
             if let Some(recording) = &mut csv {
                 recording.append_audit(&serde_json::json!({"event":"settings_snapshot", "device_role":"lockin", "observed_at":observed_at,
                     "result":if snapshot.result.is_ok() { "ok" } else { "error" }, "exchanges":snapshot.exchanges,
-                    "settings":snapshot.result.as_ref().ok(), "error":snapshot.result.as_ref().err()}))?;
+                    "settings":snapshot.result.as_ref().ok(), "error":snapshot.result.as_ref().err()})).inspect_err(|_| self.failure_code = Some("save_failed".into()))?;
             }
             let fatal_snapshot =
                 self.gpib.as_ref().is_some_and(Gpib::is_poisoned) || cancel.load(Ordering::Acquire);
@@ -1151,13 +1272,13 @@ impl Session {
                                 coordinate_name(plan.coordinate),
                                 plan.zero,
                             )?;
-                            rig.validate_targets(&[reset])?;
+                            rig.validate_targets(&[reset]).inspect_err(|_| self.failure_code = Some("protection".into()))?;
                             let (result,window,_) = timing::observe(start, || self.move_live(reset,[false;3],cancel,send));
                             if let Some(recording)=&mut csv {
                                 let event=serde_json::json!({"event":"line_reset","point_index":index+1,"device_role":"motion","target":reset,"timing":window,"last_observed_position":self.state.position,"error":result.as_ref().err()});
                                 if let Err(error)=recording.append_audit(&event) { return Err(match result {Err(original)=>format!("{original}; raw line reset: {error}"),Ok(())=>error}); }
                             }
-                            result?;
+                            result.inspect_err(|_| self.failure_code = Some("device_error".into()))?;
                         }
                         let first = index == 0 || target.line != targets[index - 1].line;
                         for movement in scan_moves(plan, physical[index], first, index == 0) {
@@ -1168,7 +1289,7 @@ impl Session {
                                     "approach":movement.approach,"timing":window,"final_position":self.state.position,"error":movement_result.as_ref().err()});
                                 if let Err(error)=recording.append_audit(&event) { return Err(match movement_result { Err(original)=>format!("{original}; raw movement audit: {error}"),Ok(())=>error }); }
                             }
-                            movement_result?;
+                            movement_result.inspect_err(|_| self.failure_code = Some("device_error".into()))?;
                         }
                     } else if plan.workflow != Workflow::SignalMonitor {
                         self.state.position.physical = physical[index];
@@ -1186,7 +1307,7 @@ impl Session {
                         Instant::now() + Duration::from_secs_f64(plan.interval_s)
                     };
                     self.set_phase(Phase::Waiting, send);
-                    if !self.wait_live(due, source, cancel, send)? {
+                    if !self.wait_live(due, source, cancel, send).inspect_err(|_| self.failure_code = Some("device_error".into()))? {
                         return Ok(());
                     }
                     self.set_phase(Phase::Reading, send);
@@ -1209,6 +1330,7 @@ impl Session {
                                                 "event":"reading", "point_index":index+1, "status":"error",
                                                 "failed_phase":"position_read", "error":error, "timing":point_timing,
                                             })) { return Err(format!("{error}; record position timing: {audit_error}")); }
+                                        self.failure_code = Some("device_error".into());
                                         return Err(error);
                                     }
                                 }
@@ -1240,6 +1362,7 @@ impl Session {
                                             ));
                                         }
                                     }
+                                    self.failure_code = Some("device_error".into());
                                     return Err(error);
                                 }
                             }
@@ -1329,7 +1452,7 @@ impl Session {
                         _ => ReadingOrigin::Hardware,
                     });
                     let _ = send.try_send(Event::Sample(sample));
-                    if let Some(error) = status_failure { return Err(format!("Lock-in status: {error}")); }
+                    if let Some(error) = status_failure { self.failure_code = Some("device_error".into()); return Err(format!("Lock-in status: {error}")); }
                 }
                 if !cancel.load(Ordering::Acquire)
                     && matches!(source, Source::Gpib { .. })
@@ -1438,11 +1561,15 @@ impl Session {
             let metadata_result =
                 finish_metadata(path, self.state.rows, status, result.as_ref().err());
             if let Err(error) = metadata_result {
+                self.failure_code = Some("save_failed".into());
                 Self::append_recording_error(&mut result, "finish run metadata", error);
                 if let Some(recording) = &mut csv {
                     let _ = recording.append_audit(&serde_json::json!({"event":"finalization_error", "status":"error", "error":result.as_ref().err()}));
                 }
             }
+        }
+        if csv.as_ref().is_some_and(Recording::save_failed) {
+            self.failure_code = Some("save_failed".into());
         }
         result
     }
@@ -1724,5 +1851,40 @@ mod recording_integration_tests {
         );
         assert_eq!(events[3]["event"], "finished");
         assert_eq!(events[3]["status"], "complete");
+    }
+}
+
+#[cfg(test)]
+mod remote_failure_tests {
+    use super::*;
+
+    #[test]
+    fn remote_failure_categories_follow_command_origin() {
+        let config = HardwareConfig {
+            model: Model::Sr7265,
+            address: 0,
+            motion: MotionConfig::default(),
+        };
+        let initialize = Command::Initialize {
+            config: config.clone(),
+            axis: 0,
+            home: false,
+            move_to_origin: false,
+        };
+        assert_eq!(
+            remote_failure_code(&initialize),
+            Some("initialization_failed")
+        );
+        assert_eq!(remote_failure_code(&Command::Read), Some("device_error"));
+        assert_eq!(
+            remote_failure_code(&Command::Run {
+                source: Source::Demo,
+                config,
+                plan: Default::default(),
+                output: None,
+            }),
+            Some("job_failed")
+        );
+        assert_eq!(remote_failure_code(&Command::Stop), None);
     }
 }
