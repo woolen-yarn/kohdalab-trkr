@@ -16,7 +16,7 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 
 ## 最初の準備
 
-WindowsではTRKRのSetupを実行、Macでは **KohdaLab TRKR.app** を `/Applications` または `~/Applications` に配置してください。portable版はフォルダー全体を展開します。
+WindowsではTRKRのSetupを実行して`C:\\Program Files\\Kohdalab\\KohdaLab TRKR`へ導入し、Macでは **KohdaLab TRKR.app** を `/Applications` に配置してください。portable版はフォルダー全体を展開します。
 
 ソースからクライアントを使う場合は、Notebookと同じPython環境へインストールします。
 
@@ -53,16 +53,16 @@ Rust本体は次の順に探します。探索自体はファイルの存在確�
 1. `Client(binary=...)` などの明示指定、次に `TRKR_BINARY`
 2. 作業フォルダーと近くのportable版・ソースビルド・Macアプリ
 3. `PATH` 上の `kohdalab-trkr`
-4. Windows: インストーラーが記録したユーザーの保存先、次に `%LOCALAPPDATA%\KohdaLab\TRKR`
-5. Mac: `~/Applications/KohdaLab TRKR.app`、次に `/Applications/KohdaLab TRKR.app`
+4. Windows: `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`
+5. Mac: `/Applications/KohdaLab TRKR.app`、次に `~/Applications/KohdaLab TRKR.app`
 
-設定は明示指定／`TRKR_PROFILE`、近くの `config/default.json`、ユーザーの `~/.kohdalab/trkr/config.json`、旧`~/.kohdalab/config/trkr-next.json`・`default.json`、ソースの既定設定、検出したアプリの同梱設定の順に探します。GUIは初回起動時に有効な旧`trkr-next.json`または`default.json`をTRKR専用パスへコピーし、元ファイルは変更しません。
+設定は明示指定／`TRKR_PROFILE`、またはユーザーの `~/.kohdalab/trkr/config.json` だけを使用します。サンプルや同梱の `default.json` を暗黙に測定設定として選ぶことはありません。
 
-**使用する設定の表示を確認してください。** portable版の近くに設定がある場合は、その設定を優先します。ソースの既定設定より、GUIで保存したユーザー設定を優先します。特定の実験設定を使う場合は明示指定できます。
+**使用する設定の表示を確認してください。** 特定の実験設定を使う場合は明示指定できます。
 
 ```python
-prepared = prepare_profile("C:/Users/me/.kohdalab/config/kim.json")
-# Mac/Linux: prepare_profile("~/.kohdalab/config/kim.json")
+prepared = prepare_profile("C:/Users/me/.kohdalab/trkr/kim.json")
+# Mac/Linux: prepare_profile("~/.kohdalab/trkr/kim.json")
 ```
 
 特殊な保存先では、Notebookの最初で指定します。指定先が存在しない場合はエラーになり、別のアプリや設定へ勝手に切り替えません。
@@ -213,7 +213,7 @@ From 0.3.6, available fixed-axis readings are saved and commanded U/V is separat
 
 ### Setup
 
-On Windows, run TRKR Setup. On macOS, place **KohdaLab TRKR.app** in `/Applications` or `~/Applications`. Extract the complete portable folder. To use the source client, install it into the Notebook's Python environment using `python -m pip install .`.
+On Windows, run TRKR Setup to install at `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`. On macOS, place **KohdaLab TRKR.app** in `/Applications`. Extract the complete portable folder. To use the source client, install it into the Notebook's Python environment using `python -m pip install .`.
 
 The six bundled notebooks load their adjacent client, `notebook-client/`, or the source `bindings/python/` automatically, preferring the bundled client over an older pip installation.
 
@@ -230,12 +230,12 @@ Executable discovery only checks whether files exist, in this order:
 1. An explicit argument such as `Client(binary=...)`, then `TRKR_BINARY`.
 2. The working directory and nearby portable distributions, source builds, or Mac apps.
 3. `kohdalab-trkr` on `PATH`.
-4. Windows: the per-user location recorded by Setup, then `%LOCALAPPDATA%\KohdaLab\TRKR`.
-5. macOS: `~/Applications/KohdaLab TRKR.app`, then `/Applications/KohdaLab TRKR.app`.
+4. Windows: `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`.
+5. macOS: `/Applications/KohdaLab TRKR.app`, then `~/Applications/KohdaLab TRKR.app`.
 
-Profile discovery uses an explicit argument or `TRKR_PROFILE`, nearby `config/default.json`, user `~/.kohdalab/trkr/config.json`, legacy `~/.kohdalab/config/trkr-next.json` or `default.json`, source defaults, then bundled defaults from the discovered app. The GUI migrates a valid legacy `trkr-next.json` or `default.json` to the dedicated TRKR path without modifying the legacy file.
+Profile discovery uses only an explicit argument or `TRKR_PROFILE`, then the dedicated user profile `~/.kohdalab/trkr/config.json`.
 
-**Check the displayed selected profile.** A nearby portable profile wins, and GUI-saved user settings win over source defaults. To choose an experiment explicitly, use `prepare_profile("C:/Users/me/.kohdalab/config/kim.json")`, or `prepare_profile("~/.kohdalab/config/kim.json")` on Mac/Linux.
+**Check the displayed selected profile.** To choose an experiment explicitly, use `prepare_profile("C:/Users/me/.kohdalab/trkr/kim.json")`, or `prepare_profile("~/.kohdalab/trkr/kim.json")` on Mac/Linux.
 
 For custom locations, set `TRKR_BINARY` and `TRKR_PROFILE` at the start of the Notebook, as in the example above. A missing explicit path is an error; the client does not silently switch to another application or profile.
 

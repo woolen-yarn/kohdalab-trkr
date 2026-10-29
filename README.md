@@ -59,7 +59,7 @@ Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings
 
 Python can attach to the desktop GUI or launch it with a JSON profile, then exclusively control measurements, motion, and output settings while keeping the live plots and Stop available. / Pythonから既存GUIへ接続、またはJSON設定で新規起動し、ライブプロット・Stopを使いながら測定・移動・保存先を排他制御できます。
 
-TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\\.kohdalab\\trkr\\config.json` on Windows). Demo settings use the separate `demo.json`; valid legacy `~/.kohdalab/config/trkr-next.json`, `default.json`, and `default_demo.json` are copied once to their TRKR-specific destinations and left unchanged. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\\.kohdalab\\trkr\\config.json`）に保存されます。Demo設定は別の`demo.json`を使用し、有効な旧`trkr-next.json`・`default.json`・`default_demo.json`は初回起動時にTRKR専用の保存先へコピーされ、元ファイルは変更しません。
+TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\\.kohdalab\\trkr\\config.json` on Windows). Demo settings use the separate `demo.json`. The standard installed locations are `C:\\Program Files\\Kohdalab\\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\\.kohdalab\\trkr\\config.json`）に保存されます。Demo設定は別の`demo.json`を使用します。標準のインストール先は`C:\\Program Files\\Kohdalab\\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
 
 ## Development / 開発
 

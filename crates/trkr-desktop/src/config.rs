@@ -64,18 +64,6 @@ impl UserConfigPaths {
     pub fn demo(&self) -> PathBuf {
         self.kohdalab_dir.join("trkr/demo.json")
     }
-
-    pub fn legacy_trkr(&self) -> PathBuf {
-        self.kohdalab_dir.join("config/trkr-next.json")
-    }
-
-    pub fn legacy_default(&self) -> PathBuf {
-        self.kohdalab_dir.join("config/default.json")
-    }
-
-    pub fn legacy_demo(&self) -> PathBuf {
-        self.kohdalab_dir.join("config/default_demo.json")
-    }
 }
 
 #[derive(Debug)]
@@ -84,8 +72,7 @@ pub enum StartupSettings {
     Missing,
 }
 
-/// Load normal TRKR settings without connecting any hardware.  A valid legacy
-/// profile is copied to TRKR's dedicated path; the legacy file is untouched.
+/// Load normal TRKR settings without connecting any hardware.
 pub fn load_startup(paths: &UserConfigPaths) -> Result<StartupSettings, String> {
     let production = paths.production();
     if regular_file_exists(&production, "Configuration")? {
@@ -102,75 +89,18 @@ pub fn load_startup(paths: &UserConfigPaths) -> Result<StartupSettings, String> 
             });
     }
 
-    let legacy = paths.legacy_trkr();
-    if regular_file_exists(&legacy, "Legacy configuration")? {
-        let settings = Settings::load(&legacy).map_err(|error| {
-            format!(
-                "Legacy configuration is invalid ({}): {error}",
-                legacy.display()
-            )
-        })?;
-        return migrate_startup_settings(settings, &production);
-    }
-
-    let fallback = paths.legacy_default();
-    if regular_file_exists(&fallback, "Default configuration")? {
-        let settings = Settings::load(&fallback).map_err(|error| {
-            format!(
-                "Default configuration is invalid ({}): {error}",
-                fallback.display()
-            )
-        })?;
-        return migrate_startup_settings(settings, &production);
-    }
     Ok(StartupSettings::Missing)
 }
 
-fn migrate_startup_settings(
-    settings: Settings,
-    production: &Path,
-) -> Result<StartupSettings, String> {
-    if settings.save_noclobber(production)? {
-        return Ok(StartupSettings::Loaded {
-            settings,
-            path: production.to_path_buf(),
-        });
-    }
-    // Another instance completed first. Its saved configuration takes priority.
-    Settings::load(production)
-        .map(|settings| StartupSettings::Loaded {
-            settings,
-            path: production.to_path_buf(),
-        })
-        .map_err(|error| {
-            format!(
-                "Configuration created during migration is invalid ({}): {error}",
-                production.display()
-            )
-        })
-}
-
-/// Copy the previous demo profile into the separate TRKR demo location without
-/// making it a production profile.  Demo profiles need only be JSON objects:
-/// bundled replay presets deliberately omit hardware configuration.
-pub fn migrate_demo_startup(paths: &UserConfigPaths) -> Result<Option<PathBuf>, String> {
+/// Load the optional, separate Demo profile. Demo profiles need only be JSON
+/// objects because bundled replay presets deliberately omit hardware fields.
+pub fn load_demo_startup(paths: &UserConfigPaths) -> Result<Option<PathBuf>, String> {
     let demo = paths.demo();
     if regular_file_exists(&demo, "Demo configuration")? {
         validate_demo_file(&demo)?;
         return Ok(Some(demo));
     }
-    let legacy = paths.legacy_demo();
-    if !regular_file_exists(&legacy, "Legacy demo configuration")? {
-        return Ok(None);
-    }
-    let mut raw = read_config_value(&legacy, "Legacy demo configuration")?;
-    validate_demo_value(&raw)?;
-    raw["application"] = json!(APPLICATION);
-    if persist_value_noclobber(&demo, &raw)? {
-        return Ok(Some(demo));
-    }
-    validate_demo_file(&demo)?;
-    Ok(Some(demo))
+    Ok(None)
 }
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -237,16 +167,6 @@ impl Settings {
         persist_value(path, &raw)
     }
 
-    /// Initial migrations must not replace a profile another process created
-    /// after startup checked its absence.
-    fn save_noclobber(&self, path: &Path) -> Result<bool, String> {
-        validate_application(&self.raw)?;
-        self.hardware()?;
-        let mut raw = self.raw.clone();
-        raw["application"] = json!(APPLICATION);
-        Self::from_value(raw.clone())?;
-        persist_value_noclobber(path, &raw)
-    }
     pub fn hardware(&self) -> Result<HardwareConfig, String> {
         validate_measurement_device_selections(&self.raw)?;
         let instruments = &self.raw["instruments"];
@@ -494,14 +414,6 @@ fn persist_value(path: &Path, raw: &Value) -> Result<(), String> {
         .persist(path)
         .map_err(|error| format!("Save {}: {}", path.display(), error.error))?;
     Ok(())
-}
-
-fn persist_value_noclobber(path: &Path, raw: &Value) -> Result<bool, String> {
-    match stage_value(path, raw)?.persist_noclobber(path) {
-        Ok(_) => Ok(true),
-        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(format!("Save {}: {}", path.display(), error.error)),
-    }
 }
 
 fn validate_application(raw: &Value) -> Result<(), String> {

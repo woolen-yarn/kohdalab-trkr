@@ -329,8 +329,8 @@ impl App {
             app.source_demo = true;
             app.workflow = Workflow::Trkr;
             app.active_workflow = Workflow::Trkr;
-            let migrated = config::migrate_demo_startup(&app.config_paths);
-            let demo_config = migrated
+            let configured_demo = config::load_demo_startup(&app.config_paths);
+            let demo_config = configured_demo
                 .as_ref()
                 .ok()
                 .and_then(|path| path.clone())
@@ -350,7 +350,7 @@ impl App {
             for plan in &mut app.plans {
                 plan.interval_s = 0.1;
             }
-            let message = match migrated {
+            let message = match configured_demo {
                 Err(error) => format!("DEMO MODE — configuration error: {error}"),
                 _ => "DEMO MODE — NO HARDWARE · Choose CSV → Load → Connect All → Start".into(),
             };

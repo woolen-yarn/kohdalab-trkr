@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Create a per-user NSIS installer from the Rust portable TRKR payload.
+"""Create a system-wide NSIS installer from the Rust portable TRKR payload.
 
-The installer deliberately uses ``$LOCALAPPDATA\\KohdaLab\\TRKR`` and
-its own registry key.  It therefore cannot replace the legacy Python TRKR
-installation or its configuration.  Pass ``--makensis`` (or have makensis on
-PATH) to build Setup.exe; otherwise this writes inspectable NSIS source.
+The installer uses ``C:\\Program Files\\Kohdalab\\KohdaLab TRKR`` and its
+own machine registry key. Pass ``--makensis`` (or have makensis on PATH) to
+build Setup.exe; otherwise this writes inspectable NSIS source.
 """
 
 from __future__ import annotations
@@ -126,12 +125,13 @@ def nsis_source(payload: Path, output: Path, version: str) -> str:
 SetCompressor /SOLID zlib
 SetDatablockOptimize on
 !include "MUI2.nsh"
+!include "x64.nsh"
+!include "LogicLib.nsh"
 
 Name "KohdaLab TRKR {version}"
 OutFile "{output_text}"
-InstallDir "$LOCALAPPDATA\\KohdaLab\\TRKR"
-InstallDirRegKey HKCU "Software\\KohdaLab\\TRKR" "InstallLocation"
-RequestExecutionLevel user
+InstallDir "$PROGRAMFILES64\\Kohdalab\\KohdaLab TRKR"
+RequestExecutionLevel admin
 ShowInstDetails show
 ShowUninstDetails show
 BrandingText "KohdaLab TRKR"
@@ -145,21 +145,49 @@ VIAddVersionKey "LegalCopyright" "Copyright KohdaLab contributors"
 
 {icon_defines}!define MUI_ABORTWARNING
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !insertmacro MUI_PAGE_FINISH
 !insertmacro MUI_UNPAGE_CONFIRM
 !insertmacro MUI_UNPAGE_INSTFILES
 !insertmacro MUI_LANGUAGE "English"
 
+Function .onInit
+  ${{IfNot}} ${{RunningX64}}
+    MessageBox MB_ICONSTOP|MB_OK "KohdaLab TRKR requires 64-bit Windows."
+    SetErrorLevel 1
+    Abort
+  ${{EndIf}}
+  SetRegView 64
+  ; Do not accept a registry value or /D override for this application.
+  StrCpy $INSTDIR "$PROGRAMFILES64\\Kohdalab\\KohdaLab TRKR"
+  SetShellVarContext all
+FunctionEnd
+
+Function un.onInit
+  SetRegView 64
+  ; NSIS may launch a temporary uninstaller copy, but retains the original
+  ; install path in $INSTDIR. Refuse caller-supplied removal paths.
+  StrCpy $0 $INSTDIR
+  StrCpy $INSTDIR "$PROGRAMFILES64\\Kohdalab\\KohdaLab TRKR"
+  SetShellVarContext all
+  ${{If}} $0 != ""
+  ${{AndIf}} $0 != $INSTDIR
+    IfSilent reject
+    MessageBox MB_ICONSTOP|MB_OK "KohdaLab TRKR can only be removed from its installed location."
+reject:
+    SetErrorLevel 1
+    Abort
+  ${{EndIf}}
+FunctionEnd
+
 Section "KohdaLab TRKR" SecMain
   SetOutPath "$INSTDIR"
   File /r "{payload_text}\\*.*"
   WriteUninstaller "$INSTDIR\\Uninstall.exe"
-  WriteRegStr HKCU "Software\\KohdaLab\\TRKR" "InstallLocation" "$INSTDIR"
-  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "DisplayName" "KohdaLab TRKR"
-  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "DisplayVersion" "{version}"
-  WriteRegStr HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
+  WriteRegStr HKLM "Software\\Kohdalab\\KohdaLab TRKR" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "DisplayName" "KohdaLab TRKR"
+  WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "DisplayVersion" "{version}"
+  WriteRegStr HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR" "UninstallString" '"$INSTDIR\\Uninstall.exe"'
   CreateDirectory "$SMPROGRAMS\\KohdaLab"
   CreateShortcut "$SMPROGRAMS\\KohdaLab\\TRKR.lnk" "$INSTDIR\\{APP_EXE}"{shortcut_icon}
 {demo_shortcuts}
@@ -170,8 +198,8 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\\KohdaLab\\TRKR.lnk"
 {demo_uninstall}
   Delete "$DESKTOP\\KohdaLab TRKR.lnk"
-  DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR"
-  DeleteRegKey HKCU "Software\\KohdaLab\\TRKR"
+  DeleteRegKey HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\KohdaLab TRKR"
+  DeleteRegKey HKLM "Software\\Kohdalab\\KohdaLab TRKR"
 {deletes}
   Delete /REBOOTOK "$INSTDIR\\Uninstall.exe"
 {remove_empty}

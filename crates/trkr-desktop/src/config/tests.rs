@@ -356,7 +356,7 @@ fn experiment_metadata_survives_profile_plan_roundtrip() {
 }
 
 #[test]
-fn user_config_paths_keep_production_demo_and_legacy_profiles_separate() {
+fn user_config_paths_keep_production_and_demo_profiles_separate() {
     let root = tempfile::tempdir().unwrap();
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
     assert_eq!(
@@ -364,35 +364,24 @@ fn user_config_paths_keep_production_demo_and_legacy_profiles_separate() {
         root.path().join(".kohdalab/trkr/config.json")
     );
     assert_eq!(paths.demo(), root.path().join(".kohdalab/trkr/demo.json"));
-    assert_eq!(
-        paths.legacy_trkr(),
-        root.path().join(".kohdalab/config/trkr-next.json")
-    );
-    assert_eq!(
-        paths.legacy_demo(),
-        root.path().join(".kohdalab/config/default_demo.json")
-    );
     assert_ne!(paths.production(), paths.demo());
 }
 
 #[test]
-fn startup_migrates_valid_legacy_profile_without_touching_it() {
+fn startup_uses_only_the_trkr_specific_profile() {
     let root = tempfile::tempdir().unwrap();
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
-    let legacy = paths.legacy_trkr();
-    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-    let legacy_bytes = serde_json::to_vec_pretty(&Settings::default().raw).unwrap();
-    std::fs::write(&legacy, &legacy_bytes).unwrap();
-
+    assert!(matches!(
+        load_startup(&paths).unwrap(),
+        StartupSettings::Missing
+    ));
+    let production = paths.production();
+    Settings::default().save(&production).unwrap();
     let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
-        panic!("legacy profile was not migrated");
+        panic!("TRKR profile was not loaded");
     };
-    assert_eq!(path, paths.production());
+    assert_eq!(path, production);
     assert!(settings.hardware().is_ok());
-    assert_eq!(std::fs::read(&legacy).unwrap(), legacy_bytes);
-    let migrated: Value =
-        serde_json::from_slice(&std::fs::read(paths.production()).unwrap()).unwrap();
-    assert_eq!(migrated["application"], APPLICATION);
 }
 
 #[test]
@@ -404,12 +393,6 @@ fn startup_prefers_existing_new_profile_and_reports_invalid_files() {
     let mut current = Settings::default();
     current.raw["experiment"] = json!({"profile":"new"});
     current.save(&production).unwrap();
-    let legacy = paths.legacy_trkr();
-    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-    let mut old = Settings::default();
-    old.raw["experiment"] = json!({"profile":"legacy"});
-    std::fs::write(&legacy, serde_json::to_vec(&old.raw).unwrap()).unwrap();
-
     let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
         panic!("new profile was not loaded");
     };
@@ -422,57 +405,19 @@ fn startup_prefers_existing_new_profile_and_reports_invalid_files() {
     assert!(error.contains("config.json"));
 
     std::fs::remove_file(paths.production()).unwrap();
-    std::fs::write(&legacy, b"not json").unwrap();
-    let error = load_startup(&paths).unwrap_err();
-    assert!(error.contains("Legacy configuration is invalid"));
-
-    std::fs::remove_file(&legacy).unwrap();
     std::fs::create_dir_all(paths.production()).unwrap();
     let error = load_startup(&paths).unwrap_err();
     assert!(error.contains("not a regular file"));
 }
 
 #[test]
-fn startup_migrates_valid_default_without_touching_it_or_clobbering_new_settings() {
+fn demo_startup_uses_only_the_trkr_specific_demo_profile() {
     let root = tempfile::tempdir().unwrap();
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
-    let fallback = paths.legacy_default();
-    std::fs::create_dir_all(fallback.parent().unwrap()).unwrap();
-    let fallback_bytes = serde_json::to_vec_pretty(&Settings::default().raw).unwrap();
-    std::fs::write(&fallback, &fallback_bytes).unwrap();
-
-    let StartupSettings::Loaded { path, .. } = load_startup(&paths).unwrap() else {
-        panic!("default profile was not migrated");
-    };
-    assert_eq!(path, paths.production());
-    assert_eq!(std::fs::read(&fallback).unwrap(), fallback_bytes);
-
-    let mut first = Settings::default();
-    first.raw["experiment"] = json!({"writer":"first"});
-    let mut second = Settings::default();
-    second.raw["experiment"] = json!({"writer":"second"});
-    let target = root.path().join("concurrent.json");
-    first.save(&target).unwrap();
-    assert!(!second.save_noclobber(&target).unwrap());
-    assert_eq!(
-        Settings::load(&target).unwrap().raw["experiment"]["writer"],
-        "first"
-    );
-}
-
-#[test]
-fn demo_migration_is_separate_from_production_and_preserves_legacy() {
-    let root = tempfile::tempdir().unwrap();
-    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
-    let legacy = paths.legacy_demo();
-    std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
-    let bytes = br#"{"profile":{"name":"demo"}}"#;
-    std::fs::write(&legacy, bytes).unwrap();
-
-    assert_eq!(migrate_demo_startup(&paths).unwrap(), Some(paths.demo()));
-    assert_eq!(std::fs::read(&legacy).unwrap(), bytes);
-    let migrated: Value = serde_json::from_slice(&std::fs::read(paths.demo()).unwrap()).unwrap();
-    assert_eq!(migrated["application"], APPLICATION);
+    assert_eq!(load_demo_startup(&paths).unwrap(), None);
+    std::fs::create_dir_all(paths.demo().parent().unwrap()).unwrap();
+    std::fs::write(paths.demo(), br#"{"profile":{"name":"demo"}}"#).unwrap();
+    assert_eq!(load_demo_startup(&paths).unwrap(), Some(paths.demo()));
     assert!(!paths.production().exists());
 }
 

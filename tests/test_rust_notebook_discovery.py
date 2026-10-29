@@ -50,11 +50,11 @@ def test_explicit_paths_take_precedence_and_invalid_overrides_do_not_fall_back(c
     assert client.find_profile(local_profile, search_from=tmp_path) == local_profile
 
 
-def test_windows_per_user_install_and_saved_gui_profile(client, tmp_path, monkeypatch):
+def test_windows_system_install_and_saved_gui_profile(client, tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_PLATFORM", "win32")
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local AppData"))
-    monkeypatch.setattr(client, "_windows_install_directories", lambda: [tmp_path / "custom install", tmp_path / "Local AppData/KohdaLab/TRKR"])
-    binary = touch(tmp_path / "Local AppData/KohdaLab/TRKR/kohdalab-trkr.exe")
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    monkeypatch.setattr(client, "_windows_install_directories", lambda: [tmp_path / "custom install", tmp_path / "Program Files/Kohdalab/KohdaLab TRKR"])
+    binary = touch(tmp_path / "Program Files/Kohdalab/KohdaLab TRKR/kohdalab-trkr.exe")
     profile = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_binary(search_from=tmp_path / "unrelated") == binary
     assert client.find_profile(binary=binary, search_from=tmp_path / "unrelated") == profile
@@ -63,15 +63,16 @@ def test_windows_per_user_install_and_saved_gui_profile(client, tmp_path, monkey
 
 
 def test_windows_default_directory_without_registry(client, tmp_path, monkeypatch):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
-    assert tmp_path / "local/KohdaLab/TRKR" in client._windows_install_directories()
+    monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
+    assert tmp_path / "Program Files/Kohdalab/KohdaLab TRKR" in client._windows_install_directories()
 
 
-def test_macos_user_install_and_embedded_notebook(client, tmp_path, monkeypatch):
+def test_macos_user_install_uses_saved_trkr_profile_only(client, tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_PLATFORM", "darwin")
     app = Path.home() / "Applications/KohdaLab TRKR.app"
     binary = touch(app / "Contents/MacOS/kohdalab-trkr")
-    profile = touch(app / "Contents/Resources/config/default.json")
+    touch(app / "Contents/Resources/config/default.json")
+    profile = touch(Path.home() / ".kohdalab/trkr/config.json")
     unrelated = tmp_path / "unrelated notebook"
     assert client.find_binary(search_from=unrelated) == binary
     assert client.find_profile(binary=binary, search_from=unrelated) == profile
@@ -81,13 +82,14 @@ def test_macos_user_install_and_embedded_notebook(client, tmp_path, monkeypatch)
     assert client.find_profile(binary=binary, search_from=embedded) == profile
 
 
-def test_portable_package_wins_over_path_and_uses_its_own_profile(client, tmp_path, monkeypatch):
+def test_portable_package_binary_does_not_supply_a_profile(client, tmp_path, monkeypatch):
     portable = tmp_path / "portable"
     binary = touch(portable / "kohdalab-trkr")
-    profile = touch(portable / "config/default.json")
+    touch(portable / "config/default.json")
     monkeypatch.setattr(client.shutil, "which", lambda _: str(tmp_path / "old on PATH"))
     assert client.find_binary(search_from=portable / "notebook") == binary
-    assert client.find_profile(binary=binary, search_from=portable / "notebook") == profile
+    with pytest.raises(FileNotFoundError, match="TRKR user profile"):
+        client.find_profile(binary=binary, search_from=portable / "notebook")
 
 
 def test_prepare_profile_uses_rust_validation_in_utf8(client, tmp_path, monkeypatch):
@@ -104,35 +106,29 @@ def test_prepare_profile_uses_rust_validation_in_utf8(client, tmp_path, monkeypa
     assert calls[0][1]["encoding"] == "utf-8"
 
 
-def test_saved_gui_profile_precedes_source_example_defaults(client, tmp_path):
-    source = touch(tmp_path / "crates/trkr-desktop/assets/default.json")
+def test_profile_discovery_does_not_fall_back_to_source_defaults(client, tmp_path):
+    touch(tmp_path / "crates/trkr-desktop/assets/default.json")
     saved = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_profile(search_from=tmp_path) == saved
     saved.unlink()
-    legacy = touch(Path.home() / ".kohdalab/config/trkr-next.json")
-    assert client.find_profile(search_from=tmp_path) == legacy
-    legacy.unlink()
-    assert client.find_profile(search_from=tmp_path) == source
+    with pytest.raises(FileNotFoundError, match="TRKR user profile"):
+        client.find_profile(search_from=tmp_path)
 
 
-def test_saved_gui_profile_precedes_nearby_app_bundled_defaults(client, tmp_path, monkeypatch):
+def test_profile_discovery_does_not_fall_back_to_bundled_defaults(client, tmp_path, monkeypatch):
     monkeypatch.setattr(client, "_PLATFORM", "darwin")
     binary = touch(tmp_path / "KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr")
-    bundled = touch(tmp_path / "KohdaLab TRKR.app/Contents/Resources/config/default.json")
+    touch(tmp_path / "KohdaLab TRKR.app/Contents/Resources/config/default.json")
     saved = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == saved
     saved.unlink()
-    assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == bundled
+    with pytest.raises(FileNotFoundError, match="TRKR user profile"):
+        client.find_profile(binary=binary, search_from=tmp_path / "notebook")
 
 
-def test_root_workspace_precedes_legacy_source_layout_and_keeps_fallback(client, tmp_path):
-    legacy = touch(tmp_path / "next/target/debug/kohdalab-trkr")
+def test_root_workspace_uses_current_source_layout(client, tmp_path):
     current = touch(tmp_path / "target/debug/kohdalab-trkr")
     assert client.find_binary(search_from=tmp_path) == current
-    current.unlink()
-    assert client.find_binary(search_from=tmp_path) == legacy
-    legacy_profile = touch(tmp_path / "next/crates/trkr-desktop/assets/default.json")
-    current_profile = touch(tmp_path / "crates/trkr-desktop/assets/default.json")
-    assert client.find_profile(search_from=tmp_path) == current_profile
-    current_profile.unlink()
-    assert client.find_profile(search_from=tmp_path) == legacy_profile
+    touch(tmp_path / "crates/trkr-desktop/assets/default.json")
+    with pytest.raises(FileNotFoundError, match="TRKR user profile"):
+        client.find_profile(search_from=tmp_path)

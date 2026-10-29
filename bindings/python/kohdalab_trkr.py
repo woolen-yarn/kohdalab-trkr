@@ -677,7 +677,7 @@ def _windows_install_directories() -> list[Path]:
     directories: list[Path] = []
     try:
         import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\KohdaLab\TRKR") as key:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"Software\Kohdalab\KohdaLab TRKR") as key:
             location, kind = winreg.QueryValueEx(key, "InstallLocation")
             if isinstance(location, str) and location:
                 if kind == winreg.REG_EXPAND_SZ:
@@ -685,9 +685,11 @@ def _windows_install_directories() -> list[Path]:
                 directories.append(Path(location))
     except (ImportError, OSError):
         pass
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        directories.append(Path(local) / "KohdaLab" / "TRKR")
+    for variable in ("ProgramW6432", "ProgramFiles"):
+        if root := os.environ.get(variable):
+            candidate = Path(root) / "Kohdalab" / "KohdaLab TRKR"
+            if candidate not in directories:
+                directories.append(candidate)
     return directories
 
 
@@ -710,9 +712,6 @@ def find_binary(
             root / "target/release" / executable,
             root / "target/debug" / executable,
             root / "target/x86_64-pc-windows-msvc/release" / executable,
-            root / "next/target/release" / executable,
-            root / "next/target/debug" / executable,
-            root / "next/target/x86_64-pc-windows-msvc/release" / executable,
             root / "Contents/MacOS" / executable,
             root / "KohdaLab TRKR.app/Contents/MacOS" / executable,
         ))
@@ -725,8 +724,10 @@ def find_binary(
     if _PLATFORM == "win32":
         candidates = [directory / executable for directory in _windows_install_directories()]
     elif _PLATFORM == "darwin":
-        candidates = [directory / "KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr"
-                      for directory in (Path.home() / "Applications", Path("/Applications"))]
+        candidates = [
+            Path("/Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr"),
+            Path.home() / "Applications/KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr",
+        ]
     else:
         candidates = []
     found = _first_file(candidates)
@@ -742,38 +743,16 @@ def find_profile(
     profile: str | Path | None = None, *, binary: str | Path | None = None,
     search_from: str | Path | None = None,
 ) -> Path:
-    """Find a profile without changing it; TRKR_PROFILE overrides auto discovery."""
+    """Return an explicit profile or the TRKR-specific saved GUI profile."""
     override = profile if profile is not None else (os.environ.get("TRKR_PROFILE") or None)
     if override is not None:
         return _explicit_file(override, "profile / TRKR_PROFILE")
-    candidates: list[Path] = []
-    roots = _roots(search_from)
-    for root in roots:
-        candidates.extend((
-            root / "config/default.json",
-        ))
-    user_config = Path.home() / ".kohdalab"
-    candidates.extend((
-        user_config / "trkr/config.json",
-        # Read-only compatibility with profiles saved by pre-separation builds.
-        user_config / "config/trkr-next.json",
-        user_config / "config/default.json",
-    ))
-    candidates.extend(root / "crates/trkr-desktop/assets/default.json" for root in roots)
-    candidates.extend(root / "next/crates/trkr-desktop/assets/default.json" for root in roots)
-    found = _first_file(candidates)
-    if found:
-        return found
-    executable = find_binary(binary, search_from=search_from)
-    found = _first_file([
-        executable.parent / "config/default.json",
-        executable.parent / "../Resources/config/default.json",
-    ])
-    if found:
-        return found
+    saved = Path.home() / ".kohdalab/trkr/config.json"
+    if saved.is_file():
+        return saved.resolve()
     raise FileNotFoundError(
-        "Could not find a TRKR profile. Save one in the GUI or set TRKR_PROFILE "
-        "to your reviewed JSON profile."
+        "Could not find the TRKR user profile. Save settings in the GUI or set "
+        "TRKR_PROFILE to your reviewed JSON profile."
     )
 
 

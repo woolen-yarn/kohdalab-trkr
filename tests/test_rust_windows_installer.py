@@ -23,17 +23,24 @@ def payload(tmp_path: Path) -> Path:
     return result
 
 
-def test_nsis_source_is_current_user_and_keeps_python_install_separate(
+def test_nsis_source_uses_the_standard_system_install_location(
     tmp_path: Path,
 ) -> None:
     source = installer.nsis_source(
         payload(tmp_path), tmp_path / "Setup.exe", "0.3.0-alpha.2"
     )
-    assert 'InstallDir "$LOCALAPPDATA\\KohdaLab\\TRKR"' in source
-    assert "RequestExecutionLevel user" in source
+    assert 'InstallDir "$PROGRAMFILES64\\Kohdalab\\KohdaLab TRKR"' in source
+    assert "RequestExecutionLevel admin" in source
+    assert 'StrCpy $INSTDIR "$PROGRAMFILES64\\Kohdalab\\KohdaLab TRKR"' in source
+    assert "Function .onInit" in source
+    assert "Function un.onInit" in source
+    assert "SetShellVarContext all" in source
+    assert "InstallDirRegKey" not in source
+    assert "MUI_PAGE_DIRECTORY" not in source
+    assert "can only be removed from its installed location" in source
     assert "KohdaLab TRKR.lnk" in source
     assert "Uninstall.exe" in source
-    assert "HKLM" not in source
+    assert 'HKLM "Software\\Kohdalab\\KohdaLab TRKR"' in source
     assert "KohdaLab TRKR" in source
     assert "RMDir /r" not in source
     assert 'Delete "$INSTDIR\\support\\kohdalab-gpib-helper.exe"' in source
