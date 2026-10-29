@@ -105,6 +105,18 @@ impl Bridge {
         json!({"owned":self.locked(),"client_id":self.owner.as_ref().map(|o|&o.id),"label":self.owner.as_ref().map(|o|&o.label),
             "status": if self.owner.as_ref().is_some_and(|o|o.released || Instant::now()>=o.until) {"detached"} else if self.locked() {"python"} else {"idle"},"active_run":self.active.as_ref().and_then(|id|self.run(id).ok()),"stop_policy":self.owner.as_ref().map(|o|o.policy)})
     }
+
+    fn common_existing_receipt(action: &str, native: Value) -> Value {
+        let id = native["id"].as_str().unwrap_or_default().to_owned();
+        let kind = native["kind"].as_str().unwrap_or(action).to_owned();
+        let state = native["status"].as_str().unwrap_or("error").to_owned();
+        let cleanup = match state.as_str() {
+            "completed" | "stopped" => "verified",
+            "error" => "unknown",
+            _ => "pending",
+        };
+        kohdalab_control_protocol::receipt(&id, &kind, &state, cleanup, None, native)
+    }
     pub(super) fn observe(&mut self, event: &Event) {
         let Some(id) = &self.active else {
             return;
@@ -355,7 +367,13 @@ impl Bridge {
             let id = body["run_id"].as_str().ok_or("Missing run_id")?;
             let result = self.run(id)?;
             if self.active.as_deref() != Some(id) {
-                return Ok(result); // Stopping a terminal receipt is idempotent.
+                return if common {
+                    Ok(
+                        json!({"requested":false,"job_id":id,"cleanup":if result["status"] == "error" {"unknown"} else {"verified"},"native":result}),
+                    )
+                } else {
+                    Ok(result) // Stopping a terminal receipt is idempotent.
+                };
             }
             self.request_stop(app, "requested");
             return if common {
@@ -383,7 +401,11 @@ impl Bridge {
                 .ok_or("Operation requires request_id")?;
             uuid::Uuid::parse_str(id).map_err(|_| "request_id must be a UUID")?;
             if let Ok(existing) = self.run(id) {
-                return Ok(existing);
+                return if common {
+                    Ok(Self::common_existing_receipt(action, existing))
+                } else {
+                    Ok(existing)
+                };
             }
             if self.used_ids.contains(id) {
                 return Err("Run receipt expired; this request_id cannot be reused".into());
@@ -910,6 +932,40 @@ mod tests {
         assert_eq!(result["job_id"], id);
         assert_eq!(result["terminal"], true);
         assert_eq!(result["cleanup"], "verified");
+    }
+
+    #[test]
+    fn common_duplicate_start_and_terminal_stop_keep_envelopes() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let request = json!({"action":"start","_control_method":"start","client_id":A,
+            "lease":acquired["lease"],"workflow":"signal_monitor",
+            "request_id":request_id,"output":output.path().join("demo.csv")});
+        let start = bridge.handle(&mut app, &request).unwrap();
+        let duplicate = bridge.handle(&mut app, &request).unwrap();
+        assert_eq!(duplicate["job_id"], start["job_id"]);
+        assert_eq!(duplicate["terminal"], false);
+        let id = start["job_id"].as_str().unwrap().to_owned();
+        finish(&mut app, &mut bridge);
+        let stop = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"stop","_control_method":"stop","client_id":A,
+                    "lease":acquired["lease"],"run_id":id}),
+            )
+            .unwrap();
+        assert_eq!(stop["requested"], false);
+        assert_eq!(stop["job_id"], id);
+        assert_eq!(stop["cleanup"], "verified");
+        assert_eq!(stop["native"]["status"], "completed");
     }
     #[test]
     fn common_describe_advertises_existing_configuration_and_device_actions() {

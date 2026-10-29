@@ -53,7 +53,17 @@ def main() -> None:
                 workflow="signal_monitor",
                 output=str((a.output / "run.csv").resolve()),
             )
+            duplicate = client.invoke(
+                "start",
+                workflow="signal_monitor",
+                output=str((a.output / "run.csv").resolve()),
+                request_id=receipt["job_id"],
+            )
+            assert duplicate["job_id"] == receipt["job_id"]
             result = client.wait(receipt["job_id"], timeout=20)
+            terminal_stop = client.stop(job_id=receipt["job_id"])
+            assert terminal_stop["requested"] is False
+            assert terminal_stop["job_id"] == receipt["job_id"]
             released = client.release()
             (a.output / "evidence.json").write_text(
                 json.dumps(

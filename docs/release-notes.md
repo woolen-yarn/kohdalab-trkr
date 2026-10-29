@@ -16,7 +16,7 @@ Windows x64 Setup/portable ZIP; macOS Apple-silicon ZIP/DMG; source/build kit an
 
 ## Validation and provenance / 検証と出所
 
-Local Rust workspace: 273 passed; strict clippy passed. Actual Demo GUI completed 360 synthetic points via the shared SDK. Windows/macOS/Linux tests and package/install checks are recorded in the matching CI.
+Local Rust workspace: 274 passed; strict clippy passed. Actual Demo GUI completed 360 synthetic points via the shared SDK. Windows/macOS/Linux tests and package/install checks are recorded in the matching CI.
 
 The common Python SDK has nine device-free tests. Source/build identifiers, package manifests and SHA-256 evidence accompany the release. These checks do not newly qualify physical instruments, optical closure, camera calibration or scientific accuracy.
 
