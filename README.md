@@ -28,7 +28,7 @@ Synthetic TRKR data; no instruments connected. The same interface is used on Win
 
 | Channel / 配布区分 | Version / バージョン | Platforms / 対応環境 |
 | --- | --- | --- |
-| Stable / 安定版 | [0.4.3](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.3) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
+| Stable / 安定版 | [0.4.4](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.4) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
 
 Rust and Python are not required to run the packaged application. Current Windows
 artifacts are unsigned; download packages and checksums together from Releases.
@@ -59,11 +59,11 @@ Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings
 
 Python can attach to the desktop GUI or launch it with a JSON profile, then exclusively control measurements, motion, and output settings while keeping the live plots and Stop available. / Pythonから既存GUIへ接続、またはJSON設定で新規起動し、ライブプロット・Stopを使いながら測定・移動・保存先を排他制御できます。
 
-TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\\.kohdalab\\trkr\\config.json` on Windows). Demo settings use the separate `demo.json`. The standard installed locations are `C:\\Program Files\\Kohdalab\\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\\.kohdalab\\trkr\\config.json`）に保存されます。Demo設定は別の`demo.json`を使用します。標準のインストール先は`C:\\Program Files\\Kohdalab\\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
+TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\.kohdalab\trkr\config.json` on Windows). Demo settings use the separate `demo.json`. The standard installed locations are `C:\Program Files\Kohdalab\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\.kohdalab\trkr\config.json`）に保存されます。Demo設定は別の`demo.json`を使用します。標準のインストール先は`C:\Program Files\Kohdalab\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
 
 ## Development / 開発
 
-[Shared GPIB development mode / 複数アプリのGPIB共有・開発版](docs/development/shared-instruments.md) is opt-in and is not included in existing releases.
+[Shared GPIB development mode / 複数アプリのGPIB共有・開発版](docs/development/shared-instruments.md) is opt-in; the separate hub executable is not bundled. / 任意の開発用接続であり、共有サービスの実行ファイルは同梱しません。
 
 Run commands from the repository root. The root `Cargo.toml` and `Cargo.lock`
 are the workspace entry point; product packages live under `crates/`.

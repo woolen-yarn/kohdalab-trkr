@@ -187,11 +187,7 @@ impl Gpib {
         Self::spawn_process(helper, address, args, backend, lease)
     }
 
-    fn spawn_hub_proxy(
-        address: u8,
-        config: &Path,
-        native: Option<&Path>,
-    ) -> Result<Self, String> {
+    fn spawn_hub_proxy(address: u8, config: &Path, native: Option<&Path>) -> Result<Self, String> {
         let hub = hub_client(native)?;
         let args = vec![
             "--client".to_owned(),
@@ -584,16 +580,13 @@ fn resource_list(helper: &Path, args: &[String], backend: &str) -> Result<Vec<St
     let mut child = command
         .spawn()
         .map_err(|e| format!("Start {backend} discovery: {e}"))?;
-    let output = child
-        .stdout
-        .take()
-        .ok_or_else(|| {
-            if official_visa {
-                String::from(TransportError::VisaHelperStdoutUnavailable)
-            } else {
-                format!("{backend} discovery stdout was unavailable")
-            }
-        })?;
+    let output = child.stdout.take().ok_or_else(|| {
+        if official_visa {
+            String::from(TransportError::VisaHelperStdoutUnavailable)
+        } else {
+            format!("{backend} discovery stdout was unavailable")
+        }
+    })?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let reader_backend = backend.clone();
     thread::spawn(move || {
@@ -610,7 +603,9 @@ fn resource_list(helper: &Path, args: &[String], backend: &str) -> Result<Vec<St
             Ok(_) if reader_backend == "official VISA" => {
                 Err(TransportError::VisaDiscoveryNoBoundedFrame.into())
             }
-            Ok(_) => Err(format!("{reader_backend} discovery returned no bounded KIV frame")),
+            Ok(_) => Err(format!(
+                "{reader_backend} discovery returned no bounded KIV frame"
+            )),
             Err(error) if reader_backend == "official VISA" => {
                 Err(format!("Read official VISA helper discovery: {error}"))
             }
@@ -652,7 +647,10 @@ fn resource_list(helper: &Path, args: &[String], backend: &str) -> Result<Vec<St
                 String::from_utf8_lossy(&payload)
             )
         } else {
-            format!("{backend} discovery failed: {}", String::from_utf8_lossy(&payload))
+            format!(
+                "{backend} discovery failed: {}",
+                String::from_utf8_lossy(&payload)
+            )
         });
     }
     let listing = String::from_utf8(payload).map_err(|error| {
@@ -1128,5 +1126,148 @@ mod tests {
         };
         assert!(error.contains("GPIB0::7::INSTR"));
         assert!(!marker.exists());
+    }
+    #[test]
+    fn opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries() {
+        const CHILD_CASE: &str = "KOHDALAB_TRKR_HUB_TEST_CASE";
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            let helper = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_DIRECT").unwrap());
+            let marker = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_MARKER").unwrap());
+            if case != "healthy" {
+                assert!(Gpib::open(&helper, 12).is_err());
+                assert!(Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper)).is_err());
+                assert!(available_gpib_resources().is_err());
+                assert!(
+                    !marker.exists(),
+                    "a selected hub must never open native/VISA as fallback"
+                );
+                return;
+            }
+            for direct in [true, false] {
+                let mut gpib = if direct {
+                    Gpib::open(&helper, 12).unwrap()
+                } else {
+                    Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper.clone()))
+                        .unwrap()
+                };
+                assert_eq!(gpib.backend_name(), "instrument hub");
+                assert_eq!(gpib.query("second").unwrap(), "fresh");
+            }
+            assert_eq!(
+                available_gpib_resources().unwrap(),
+                vec!["GPIB0::12::INSTR"]
+            );
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            let seen = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_QUERY").unwrap());
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let stopper = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !seen.exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                token.store(true, Ordering::Release);
+            });
+            assert!(
+                gpib.query_cancellable("first", &cancel)
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
+            stopper.join().unwrap();
+            assert!(gpib.query("not sent").unwrap_err().contains("pending"));
+            gpib.finish_cancelled_request().unwrap();
+            cancel.store(false, Ordering::Release);
+            assert_eq!(gpib.query_cancellable("second", &cancel).unwrap(), "fresh");
+            assert!(!gpib.is_poisoned());
+            assert!(!marker.exists());
+            let args =
+                std::fs::read_to_string(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_ARGS").unwrap())
+                    .unwrap();
+            assert!(args.lines().any(|a| a == "KohdaLab TRKR"));
+            assert!(args.lines().any(|a| a == "12"));
+            assert!(
+                args.lines()
+                    .any(|a| a.ends_with("endpoint with spaces.json"))
+            );
+            return;
+        }
+        // Every environment choice is confined to a fresh test process; never
+        // mutate process-global environment while other Rust tests run.
+        for case in ["healthy", "empty_config", "missing_client", "denied_client"] {
+            let dir = tempfile::tempdir().unwrap();
+            let helper = dir.path().join("direct.sh");
+            let hub = dir.path().join("hub.sh");
+            let endpoint = dir.path().join("endpoint with spaces.json");
+            std::fs::write(&endpoint, "{}").unwrap();
+            executable(
+                &helper,
+                "#!/bin/sh\n: > \"$KOHDALAB_TRKR_HUB_TEST_MARKER\"\nprintf 'KIV\\tOK\\t-\\n'\n",
+            );
+            let listing = encode_hex(b"GPIB0::12::INSTR\nUSB0::1::INSTR\nGPIB0::12::INSTR\n");
+            executable(
+                &hub,
+                &format!(
+                    r#"#!/bin/sh
+printf '%s\n' "$@" > "$KOHDALAB_TRKR_HUB_TEST_ARGS"
+if [ "$KOHDALAB_TRKR_HUB_TEST_CASE" = denied_client ]; then
+  printf 'KIV\tERR\t64656e696564\n'; exit 1
+fi
+if [ "$1" = --list ]; then
+  printf 'KIV\tOK\t{listing}\n'; exit 0
+fi
+printf 'KIV\tOK\t-\n'
+while IFS= read -r line; do
+  case "$line" in
+    *6669727374) : > "$KOHDALAB_TRKR_HUB_TEST_QUERY"; sleep 0.2; printf 'KIV\tOK\t6f6c64\n' ;;
+    QUERY*) printf 'KIV\tOK\t6672657368\n' ;;
+    EXIT*) exit 0 ;;
+  esac
+done
+"#
+                ),
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries",
+                    "--nocapture",
+                ])
+                .env(CHILD_CASE, case)
+                .env("KOHDALAB_TRKR_HUB_TEST_DIRECT", &helper)
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_MARKER",
+                    dir.path().join("direct-called"),
+                )
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_QUERY",
+                    dir.path().join("query-seen"),
+                )
+                .env("KOHDALAB_TRKR_HUB_TEST_ARGS", dir.path().join("args"))
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CONFIG",
+                    if case == "empty_config" {
+                        std::ffi::OsStr::new("")
+                    } else {
+                        endpoint.as_os_str()
+                    },
+                )
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CLIENT",
+                    if case == "missing_client" {
+                        dir.path().join("missing-client")
+                    } else {
+                        hub
+                    },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }
