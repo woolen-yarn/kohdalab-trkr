@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn test_apps_use_an_owned_temporary_config_directory() {
+    let app = App::with_context(&egui::Context::default(), false);
+    let root = app
+        ._config_tempdir
+        .as_ref()
+        .expect("test App owns its config directory")
+        .path();
+    assert_eq!(
+        std::path::PathBuf::from(&app.config_path),
+        root.join(".kohdalab/trkr/config.json")
+    );
+    assert!(!std::path::PathBuf::from(&app.config_path).exists());
+}
+
+#[test]
 fn terminal_progress_survives_missed_samples_and_restored_axes_ignore_idle_progress() {
     let mut app = App::with_context(&egui::Context::default(), false);
     app.switch_workflow(Workflow::Srkr);

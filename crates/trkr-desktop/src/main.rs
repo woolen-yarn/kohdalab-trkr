@@ -168,6 +168,9 @@ fn run_gui_with_api(
     remote: Option<Result<remote::Server, String>>,
     profile: Option<(config::Settings, std::path::PathBuf)>,
 ) -> Result<(), String> {
+    // Smoke/layout captures and an explicit profile must not inspect or migrate
+    // an operator's per-user settings before their override is applied.
+    let skip_startup_load = smoke.is_some() || profile.is_some();
     eframe::run_native(
         &format!("KohdaLab TRKR v{}", env!("CARGO_PKG_VERSION")),
         eframe::NativeOptions {
@@ -184,7 +187,11 @@ fn run_gui_with_api(
             ..Default::default()
         },
         Box::new(move |cc| {
-            let mut app = ui::App::new(cc, false);
+            let mut app = if skip_startup_load {
+                ui::App::new_without_startup_load(cc)
+            } else {
+                ui::App::new(cc, false)
+            };
             if let Some((settings, path)) = profile {
                 app.load_startup_profile(settings, path);
             }

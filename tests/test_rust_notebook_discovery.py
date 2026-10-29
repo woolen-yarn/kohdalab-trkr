@@ -55,7 +55,7 @@ def test_windows_per_user_install_and_saved_gui_profile(client, tmp_path, monkey
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local AppData"))
     monkeypatch.setattr(client, "_windows_install_directories", lambda: [tmp_path / "custom install", tmp_path / "Local AppData/KohdaLab/TRKR"])
     binary = touch(tmp_path / "Local AppData/KohdaLab/TRKR/kohdalab-trkr.exe")
-    profile = touch(Path.home() / ".kohdalab/config/trkr-next.json")
+    profile = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_binary(search_from=tmp_path / "unrelated") == binary
     assert client.find_profile(binary=binary, search_from=tmp_path / "unrelated") == profile
     custom = touch(tmp_path / "custom install/kohdalab-trkr.exe")
@@ -106,9 +106,12 @@ def test_prepare_profile_uses_rust_validation_in_utf8(client, tmp_path, monkeypa
 
 def test_saved_gui_profile_precedes_source_example_defaults(client, tmp_path):
     source = touch(tmp_path / "crates/trkr-desktop/assets/default.json")
-    saved = touch(Path.home() / ".kohdalab/config/trkr-next.json")
+    saved = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_profile(search_from=tmp_path) == saved
     saved.unlink()
+    legacy = touch(Path.home() / ".kohdalab/config/trkr-next.json")
+    assert client.find_profile(search_from=tmp_path) == legacy
+    legacy.unlink()
     assert client.find_profile(search_from=tmp_path) == source
 
 
@@ -116,7 +119,7 @@ def test_saved_gui_profile_precedes_nearby_app_bundled_defaults(client, tmp_path
     monkeypatch.setattr(client, "_PLATFORM", "darwin")
     binary = touch(tmp_path / "KohdaLab TRKR.app/Contents/MacOS/kohdalab-trkr")
     bundled = touch(tmp_path / "KohdaLab TRKR.app/Contents/Resources/config/default.json")
-    saved = touch(Path.home() / ".kohdalab/config/trkr-next.json")
+    saved = touch(Path.home() / ".kohdalab/trkr/config.json")
     assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == saved
     saved.unlink()
     assert client.find_profile(binary=binary, search_from=tmp_path / "notebook") == bundled

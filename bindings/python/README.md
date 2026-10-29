@@ -56,7 +56,7 @@ Rust本体は次の順に探します。探索自体はファイルの存在確�
 4. Windows: インストーラーが記録したユーザーの保存先、次に `%LOCALAPPDATA%\KohdaLab\TRKR`
 5. Mac: `~/Applications/KohdaLab TRKR.app`、次に `/Applications/KohdaLab TRKR.app`
 
-設定は明示指定／`TRKR_PROFILE`、近くの `config/default.json`、ユーザーの `~/.kohdalab/config/trkr-next.json`・`default.json`、ソースの既定設定、検出したアプリの同梱設定の順に探します。`trkr-next.json` はRust GUIが保存する既存の設定名です。
+設定は明示指定／`TRKR_PROFILE`、近くの `config/default.json`、ユーザーの `~/.kohdalab/trkr/config.json`、旧`~/.kohdalab/config/trkr-next.json`・`default.json`、ソースの既定設定、検出したアプリの同梱設定の順に探します。GUIは初回起動時に有効な旧`trkr-next.json`または`default.json`をTRKR専用パスへコピーし、元ファイルは変更しません。
 
 **使用する設定の表示を確認してください。** portable版の近くに設定がある場合は、その設定を優先します。ソースの既定設定より、GUIで保存したユーザー設定を優先します。特定の実験設定を使う場合は明示指定できます。
 
@@ -233,7 +233,7 @@ Executable discovery only checks whether files exist, in this order:
 4. Windows: the per-user location recorded by Setup, then `%LOCALAPPDATA%\KohdaLab\TRKR`.
 5. macOS: `~/Applications/KohdaLab TRKR.app`, then `/Applications/KohdaLab TRKR.app`.
 
-Profile discovery uses an explicit argument or `TRKR_PROFILE`, nearby `config/default.json`, user `~/.kohdalab/config/trkr-next.json` or `default.json`, source defaults, then bundled defaults from the discovered app. `trkr-next.json` remains the Rust GUI's existing settings filename.
+Profile discovery uses an explicit argument or `TRKR_PROFILE`, nearby `config/default.json`, user `~/.kohdalab/trkr/config.json`, legacy `~/.kohdalab/config/trkr-next.json` or `default.json`, source defaults, then bundled defaults from the discovered app. The GUI migrates a valid legacy `trkr-next.json` or `default.json` to the dedicated TRKR path without modifying the legacy file.
 
 **Check the displayed selected profile.** A nearby portable profile wins, and GUI-saved user settings win over source defaults. To choose an experiment explicitly, use `prepare_profile("C:/Users/me/.kohdalab/config/kim.json")`, or `prepare_profile("~/.kohdalab/config/kim.json")` on Mac/Linux.
 

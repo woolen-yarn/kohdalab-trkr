@@ -752,8 +752,13 @@ def find_profile(
         candidates.extend((
             root / "config/default.json",
         ))
-    candidates.extend(Path.home() / ".kohdalab/config" / name
-                      for name in ("trkr-next.json", "default.json"))
+    user_config = Path.home() / ".kohdalab"
+    candidates.extend((
+        user_config / "trkr/config.json",
+        # Read-only compatibility with profiles saved by pre-separation builds.
+        user_config / "config/trkr-next.json",
+        user_config / "config/default.json",
+    ))
     candidates.extend(root / "crates/trkr-desktop/assets/default.json" for root in roots)
     candidates.extend(root / "next/crates/trkr-desktop/assets/default.json" for root in roots)
     found = _first_file(candidates)
