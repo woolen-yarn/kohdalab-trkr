@@ -2,8 +2,8 @@
 
 Date: 2026-10-29. Target: 0.4.4. Host: macOS ARM64.
 
-- Device-free Rust tests: 272 passed across the selected application/workspace and common contract suites.
-- Shared Python SDK: 7 tests passed, including authenticated loopback errors, exact job links, ambiguous timeout boundaries and pending cleanup.
+- Device-free Rust tests: 273 passed across the selected application/workspace and common contract suites.
+- Shared Python SDK: 9 tests passed, including authenticated loopback errors, exact job links, ambiguous timeout boundaries and pending cleanup.
 - Actual Demo GUI: 360 synthetic points through shared SDK start/result/wait/release. Common connect rejects hardware connection in Demo, as intended.
 - Physical instruments were not opened or qualified for this change. Windows packaging/CI evidence belongs to the matching PR/release; these local tests are not a Windows hardware pass.
 

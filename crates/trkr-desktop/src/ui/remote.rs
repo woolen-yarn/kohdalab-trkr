@@ -216,7 +216,7 @@ impl Bridge {
                 return Ok(json!({
                     "protocol":"kohdalab-control","control_protocol":1,
                     "application":"kohdalab-trkr","application_version":env!("CARGO_PKG_VERSION"),
-                    "api_version":1,"methods":["control.describe","control.status","control.config","control.acquire","control.heartbeat","control.release","control.result","control.connect","control.disconnect","control.start","control.stop"],
+                    "api_version":1,"methods":["control.describe","control.status","control.plan","control.config","control.output","control.acquire","control.heartbeat","control.release","control.result","control.configure","control.set_plan","control.set_output","control.connect","control.disconnect","control.start","control.stop","control.move","control.initialize","control.read","control.lockin_settings","control.set_lockin","control.auto_lockin"],
                     "safety":{"lease_timeout_seconds":6,"heartbeat_seconds":2,"on_disconnect":"continue","on_release":"continue","stop_requires_lease":true,"stop_policy_defaults":{"stop_on_disconnect":false,"stop_on_error":false,"stop_on_timeout":false}},
                     "native":{"actions":["status","plan","config","output","result","acquire","heartbeat","release","start","stop","connect","disconnect","move","initialize","read","lockin_settings","set_lockin","auto_lockin"]}
                 }));
@@ -910,6 +910,31 @@ mod tests {
         assert_eq!(result["job_id"], id);
         assert_eq!(result["terminal"], true);
         assert_eq!(result["cleanup"], "verified");
+    }
+    #[test]
+    fn common_describe_advertises_existing_configuration_and_device_actions() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let description = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"control_describe","_control_method":"describe"}),
+            )
+            .unwrap();
+        for method in [
+            "control.configure",
+            "control.set_plan",
+            "control.connect",
+            "control.start",
+        ] {
+            assert!(
+                description["methods"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|v| v == method)
+            );
+        }
     }
     #[test]
     fn startup_profile_reports_the_explicit_file_instead_of_the_default() {
