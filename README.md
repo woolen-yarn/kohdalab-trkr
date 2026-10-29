@@ -61,6 +61,8 @@ Python can attach to the desktop GUI or launch it with a JSON profile, then excl
 
 ## Development / 開発
 
+[Shared GPIB development mode / 複数アプリのGPIB共有・開発版](docs/development/shared-instruments.md) is opt-in and is not included in existing releases.
+
 Run commands from the repository root. The root `Cargo.toml` and `Cargo.lock`
 are the workspace entry point; product packages live under `crates/`.
 
