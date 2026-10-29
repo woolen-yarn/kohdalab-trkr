@@ -101,6 +101,7 @@ def build(platform: str, binaries: Path, native: Path, output: Path) -> list[Pat
         make_app(stage,bundle/'KohdaLab TRKR.app','kohdalab-trkr',version,icon)
         make_app(stage,bundle/'KohdaLab TRKR Demo.app','kohdalab-trkr-demo',version,icon)
         shutil.copytree(ROOT/'bindings/python',bundle/'notebook-client',ignore=shutil.ignore_patterns('__pycache__'))
+        shutil.copytree(ROOT/'bindings/control',bundle/'common-sdk'/'control',ignore=shutil.ignore_patterns('__pycache__'))
         shutil.copytree(ROOT/'notebook',bundle/'notebook')
         shutil.copytree(stage/'config',bundle/'config')
         shutil.copy2(ROOT/'README.md',bundle/'README.md')

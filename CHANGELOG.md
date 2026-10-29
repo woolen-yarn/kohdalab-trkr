@@ -2,6 +2,8 @@
 
 ## 0.4.4 — 2026-10-29
 
+- Add the additive Control Protocol 1 GUI API, shared Python SDK, canonical discovery and verified receipt/ownership tests.
+
 - Keep normal and Demo configuration in `~/.kohdalab/trkr/config.json` and `demo.json`; validate application identity and write settings atomically. Import older JSON explicitly with Browse → Load → Save. / 本番・Demo設定をTRKR専用フォルダーに分離し、アプリ識別と安全な保存を追加。旧JSONは明示的に読込・保存。
 - Standardize Windows Setup to `C:\Program Files\Kohdalab\KohdaLab TRKR` (administrator installation), machine registry and shared shortcuts. Match notebook discovery to the installed location. / Windowsの配置先・レジストリ・ショートカット・Notebook検出を統一。
 - Add explicit opt-in development transport for the separate shared instrument service, with no fallback to direct native/VISA access. The service is not bundled or hardware-qualified. / 別途導入する共有GPIBサービスの開発用接続に対応。通常接続への自動フォールバックは行わず、サービス同梱・実機適合確認は対象外。

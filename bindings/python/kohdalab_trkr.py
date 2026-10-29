@@ -198,9 +198,11 @@ class GuiClient:
     def _discover(self) -> dict[str, Any]:
         if self._session_path is not None:
             return self._load_descriptor(self._session_path)
-        directory = Path.home() / ".kohdalab" / "run"
+        directories = [Path.home() / ".kohdalab" / "control", Path.home() / ".kohdalab" / "run"]
         candidates: list[dict[str, Any]] = []
-        for path in sorted(directory.glob("trkr-gui-*.json")) if directory.is_dir() else []:
+        seen: set[tuple[str, str]] = set()
+        paths = [path for directory in directories if directory.is_dir() for path in sorted(directory.glob("trkr-gui-*.json"))]
+        for path in paths:
             try:
                 descriptor = self._load_descriptor(path)
                 self._request_to(descriptor, "status")
@@ -208,7 +210,10 @@ class GuiClient:
                 # A GUI can remove its descriptor between glob and ping.  It is stale,
                 # not a reason to select another running GUI arbitrarily.
                 continue
-            candidates.append(descriptor)
+            key = (str(descriptor.get("application", "kohdalab-trkr")), str(descriptor.get("instance_id", "")))
+            if key not in seen:
+                seen.add(key)
+                candidates.append(descriptor)
         if not candidates:
             raise GuiTransportError("No running TRKR GUI API session was found", "transport")
         if len(candidates) != 1:
@@ -628,12 +633,13 @@ class GuiClient:
             options["start_new_session"] = True
         process = subprocess.Popen(command, **options)
         deadline = time.monotonic() + timeout
-        directory = Path.home() / ".kohdalab" / "run"
+        directories = [Path.home() / ".kohdalab" / "control", Path.home() / ".kohdalab" / "run"]
         while time.monotonic() < deadline:
             exit_code = process.poll()
             if exit_code is not None:
                 raise RuntimeError(f"Launched TRKR GUI exited before its API was ready (exit {exit_code})")
-            for path in directory.glob("trkr-gui-*.json") if directory.is_dir() else []:
+            paths = [path for directory in directories if directory.is_dir() for path in directory.glob("trkr-gui-*.json")]
+            for path in paths:
                 try:
                     found = cls._load_descriptor(path)
                 except ValueError:

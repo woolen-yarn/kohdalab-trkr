@@ -124,3 +124,7 @@ See [redistribution terms](REDISTRIBUTION.md), [code signing](CODE_SIGNING_POLIC
 GUI automation supports independent `stop_on_disconnect`, `stop_on_error` (exception escaping `with`), and `stop_on_timeout` options. TRKR defaults to continuing the active job. `stop_and_wait()` verifies its terminal receipt; typed errors distinguish transport, ownership, device, initialization, and saving failures. See [Python usage and stop conditions](bindings/python/README.md#stop-conditions--停止条件).
 
 GUI外部制御では通信失効・`with`内のPython例外・待機タイムアウトの停止条件を個別指定できます。TRKRの既定は継続です。停止完了待ちと例外分類を含む[英日APIガイド](bindings/python/README.md#stop-conditions--停止条件)を参照してください。
+
+## Common GUI control / 共通GUI制御
+
+[Control Protocol 1 and Python/Notebook examples / 共通APIとPython・Notebook](docs/reference/common-control-api.md). The existing application API remains supported; operation payloads and safety policy are app-specific. Camera is read-only. / 既存APIは維持し、操作引数と安全方針は各アプリに従います。Cameraは読み取り専用です。

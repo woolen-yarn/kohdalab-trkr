@@ -43,6 +43,7 @@ impl StopPolicy {
 }
 struct Owner {
     id: String,
+    lease: String,
     label: String,
     until: Instant,
     released: bool,
@@ -189,6 +190,8 @@ impl Bridge {
             !o.released
                 && Instant::now() < o.until
                 && body["client_id"].as_str() == Some(o.id.as_str())
+                && (!body.get("_control_method").is_some()
+                    || body["lease"].as_str() == Some(o.lease.as_str()))
         }) {
             Ok(())
         } else {
@@ -207,7 +210,36 @@ impl Bridge {
     fn handle(&mut self, app: &mut App, body: &Value) -> Result<Value, ApiError> {
         self.poll_policy(app);
         let action = body["action"].as_str().ok_or("Missing action")?;
+        let common = body.get("_control_method").is_some();
         match action {
+            "control_describe" => {
+                return Ok(json!({
+                    "protocol":"kohdalab-control","control_protocol":1,
+                    "application":"kohdalab-trkr","application_version":env!("CARGO_PKG_VERSION"),
+                    "api_version":1,"methods":["control.describe","control.status","control.config","control.acquire","control.heartbeat","control.release","control.result","control.connect","control.disconnect","control.start","control.stop"],
+                    "safety":{"lease_timeout_seconds":6,"heartbeat_seconds":2,"on_disconnect":"continue","on_release":"continue","stop_requires_lease":true,"stop_policy_defaults":{"stop_on_disconnect":false,"stop_on_error":false,"stop_on_timeout":false}},
+                    "native":{"actions":["status","plan","config","output","result","acquire","heartbeat","release","start","stop","connect","disconnect","move","initialize","read","lockin_settings","set_lockin","auto_lockin"]}
+                }));
+            }
+            "control_status" => {
+                return Ok(
+                    json!({"phase":if self.active.is_some(){"running"}else{"ready"},"busy":self.active.is_some()||app.snapshot.running||app.measurement_pending,"ownership":self.control(),"cleanup":"not_required","native":self.control()}),
+                );
+            }
+            "control_result" => {
+                let id = body["run_id"].as_str().ok_or("Missing run_id")?;
+                let native = self.run(id)?;
+                let state = native["status"].as_str().unwrap_or("error").to_owned();
+                let kind = native["kind"].as_str().unwrap_or("run").to_owned();
+                let cleanup = if state == "completed" {
+                    "verified"
+                } else {
+                    "pending"
+                };
+                return Ok(kohdalab_control_protocol::receipt(
+                    id, &kind, &state, cleanup, None, native,
+                ));
+            }
             "status" => {
                 return Ok(
                     json!({"snapshot":app.snapshot,"active_run":self.active.as_ref().and_then(|id|self.run(id).ok()),"control":self.control()}),
@@ -245,6 +277,14 @@ impl Bridge {
                             "Python control belongs to another client or is finishing",
                         ));
                     }
+                    if common
+                        && body.get("lease").and_then(Value::as_str) != Some(owner.lease.as_str())
+                    {
+                        return Err(ApiError::new(
+                            "invalid_lease",
+                            "Lease does not match the current owner",
+                        ));
+                    }
                     owner.until = Instant::now() + LEASE;
                     owner.policy = policy;
                 } else {
@@ -261,13 +301,23 @@ impl Bridge {
                     }
                     self.owner = Some(Owner {
                         id: id.into(),
+                        lease: uuid::Uuid::new_v4().to_string(),
                         label: label.into(),
                         until: Instant::now() + LEASE,
                         released: false,
                         policy,
                     });
                 }
-                return Ok(self.control());
+                let mut result = self.control();
+                if common {
+                    let native = result.clone();
+                    result["client_id"] = json!(id);
+                    result["lease"] = json!(self.owner.as_ref().map(|o| &o.lease));
+                    result["heartbeat_seconds"] = json!(2);
+                    result["timeout_seconds"] = json!(6);
+                    result["native"] = native;
+                }
+                return Ok(result);
             }
             "heartbeat" => {
                 self.require_owner(body)?;
@@ -289,7 +339,14 @@ impl Bridge {
                 }
                 self.owner.as_mut().unwrap().released = true;
                 self.tick();
-                return Ok(self.control());
+                let native = self.control();
+                return if common {
+                    Ok(
+                        json!({"released":true,"cleanup":if self.active.is_some(){"pending"}else{"verified"},"native":native}),
+                    )
+                } else {
+                    Ok(native)
+                };
             }
             _ => {}
         }
@@ -301,7 +358,11 @@ impl Bridge {
                 return Ok(result); // Stopping a terminal receipt is idempotent.
             }
             self.request_stop(app, "requested");
-            return self.run(id);
+            return if common {
+                Ok(json!({"requested":true,"job_id":id,"cleanup":"pending","native":result}))
+            } else {
+                self.run(id)
+            };
         }
         // A duplicate job returns its original receipt even while that job runs.
         let job = matches!(
@@ -541,7 +602,18 @@ impl Bridge {
         self.runs.push_back(receipt.clone());
         self.used_ids.insert(id.clone());
         self.active = Some(id);
-        Ok(receipt)
+        if common {
+            Ok(kohdalab_control_protocol::receipt(
+                self.active.as_deref().unwrap_or(""),
+                action,
+                "running",
+                "pending",
+                None,
+                receipt,
+            ))
+        } else {
+            Ok(receipt)
+        }
     }
     pub(super) fn take_control(&mut self, app: &App) {
         if let Some(owner) = &mut self.owner {
@@ -786,6 +858,58 @@ mod tests {
                 .is_err()
         );
         assert!(!bridge.locked());
+    }
+    #[test]
+    fn common_reacquire_requires_the_opaque_lease() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let mut missing = json!({"action":"acquire","_control_method":"acquire","client_id":A});
+        assert_eq!(
+            bridge.handle(&mut app, &missing).unwrap_err().code,
+            "invalid_lease"
+        );
+        missing["lease"] = acquired["lease"].clone();
+        assert!(bridge.handle(&mut app, &missing).is_ok());
+    }
+    #[test]
+    fn common_start_and_result_are_canonical_receipts() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let start = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"start","_control_method":"start","client_id":A,
+                    "lease":acquired["lease"],"workflow":"signal_monitor",
+                    "request_id":request_id,"output":output.path().join("demo.csv")}),
+            )
+            .unwrap();
+        assert_eq!(start["terminal"], false);
+        let id = start["job_id"].as_str().unwrap().to_owned();
+        finish(&mut app, &mut bridge);
+        let result = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"control_result","_control_method":"result","client_id":A,
+                    "lease":acquired["lease"],"run_id":id}),
+            )
+            .unwrap();
+        assert_eq!(result["job_id"], id);
+        assert_eq!(result["terminal"], true);
+        assert_eq!(result["cleanup"], "verified");
     }
     #[test]
     fn startup_profile_reports_the_explicit_file_instead_of_the_default() {

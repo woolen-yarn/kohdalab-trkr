@@ -31,7 +31,7 @@ impl Server {
     pub fn start() -> Result<Self, String> {
         let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .ok_or("Cannot locate the user profile for Python API discovery")?;
-        Self::in_directory(PathBuf::from(home).join(".kohdalab/run"))
+        Self::in_directory(PathBuf::from(home).join(kohdalab_control_protocol::DISCOVERY_DIRECTORY))
     }
     pub(crate) fn in_directory(directory: PathBuf) -> Result<Self, String> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -44,12 +44,10 @@ impl Server {
         let descriptor = directory.join(format!("trkr-gui-{}-{instance}.json", std::process::id()));
         // NamedTempFile is private (0600 on Unix); publish only a complete file.
         let mut file = tempfile::NamedTempFile::new_in(&directory).map_err(|e| e.to_string())?;
-        serde_json::to_writer(
-            &mut file,
-            &json!({"revision":1,"host":"127.0.0.1","port":port,
-            "token":token,"instance_id":instance,"pid":std::process::id()}),
-        )
-        .map_err(|e| e.to_string())?;
+        let legacy = json!({"revision":1,"host":"127.0.0.1","port":port,
+            "token":token,"instance_id":instance,"pid":std::process::id()});
+        let descriptor_value = kohdalab_control_protocol::descriptor(legacy, "kohdalab-trkr", 1);
+        serde_json::to_writer(&mut file, &descriptor_value).map_err(|e| e.to_string())?;
         file.persist_noclobber(&descriptor)
             .map_err(|e| e.to_string())?;
         let (send, requests) = mpsc::sync_channel(8);
@@ -134,15 +132,29 @@ fn serve(
         .set_write_timeout(Some(TIMEOUT))
         .map_err(|e| e.to_string())?;
     let line = read_request(&mut stream)?;
+    let mut common_original = None;
     let result = if line.len() as u64 > MAX_REQUEST || !line.ends_with('\n') {
         Err("Request must be one JSON line smaller than 1 MiB".into())
     } else {
         serde_json::from_str::<Value>(&line)
             .map_err(|_| "Invalid JSON request".to_owned())
             .and_then(|body| {
-                if body.get("token").and_then(Value::as_str) != Some(token) {
-                    return Err("Python API authentication failed".into());
+                if kohdalab_control_protocol::is_common(&body) {
+                    common_original = Some(body.clone());
                 }
+                if body.get("token").and_then(Value::as_str) != Some(token) {
+                    let native = json!({"ok":false,"error":"Python API authentication failed","error_code":"authentication"});
+                    return Ok(if kohdalab_control_protocol::is_common(&body) {
+                        kohdalab_control_protocol::response(&body, native)
+                    } else {
+                        native
+                    });
+                }
+                let original = body.clone();
+                let body = match kohdalab_control_protocol::prepare(&body) {
+                    Ok(body) => body,
+                    Err(error) => return Ok(error),
+                };
                 let (reply, receive) = mpsc::sync_channel(1);
                 send.try_send(Request {
                     body,
@@ -150,13 +162,18 @@ fn serve(
                     reply,
                 })
                 .map_err(|_| "GUI request queue unavailable".to_owned())?;
-                receive
-                    .recv_timeout(TIMEOUT)
-                    .map_err(|_| "GUI request timed out; check status before retrying".to_owned())
+                let native = receive.recv_timeout(TIMEOUT).map_err(|_| {
+                    "GUI request timed out; check status before retrying".to_owned()
+                })?;
+                Ok(kohdalab_control_protocol::response(&original, native))
             })
     };
-    let response =
-        result.unwrap_or_else(|error| json!({"ok":false,"error":error,"error_code":"transport"}));
+    let response = result.unwrap_or_else(|error| {
+        let native = json!({"ok":false,"error":error,"error_code":"transport"});
+        common_original.as_ref().map_or(native.clone(), |original| {
+            kohdalab_control_protocol::response(original, native)
+        })
+    });
     serde_json::to_writer(&mut stream, &response).map_err(|e| e.to_string())?;
     stream.write_all(b"\n").map_err(|e| e.to_string())
 }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/trkr-core", "crates/trkr-transport", "crates/trkr-motion", "crates/trkr-desktop"]
+members = ["crates/trkr-core", "crates/trkr-transport", "crates/trkr-motion", "crates/trkr-desktop", "crates/kohdalab-control-protocol"]
 resolver = "3"
 
 [workspace.package]
@@ -14,6 +14,7 @@ serde_json = "1"
 trkr-core = { path = "crates/trkr-core" }
 trkr-transport = { path = "crates/trkr-transport" }
 trkr-motion = { path = "crates/trkr-motion" }
+kohdalab-control-protocol = { path = "crates/kohdalab-control-protocol" }
 
 [profile.release]
 lto = "thin"

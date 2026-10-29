@@ -348,6 +348,15 @@ pub struct Columns {
     pub left_toggle: Rect,
 }
 impl Columns {
+    /// Keep the center panel usable on laptop-sized first launches. Users can
+    /// reopen either rail explicitly; this is only an initial layout choice.
+    pub fn initial_rails(viewport_width: f32) -> (bool, bool) {
+        if viewport_width < Self::minimum_width(false, false) {
+            (true, true)
+        } else {
+            (false, false)
+        }
+    }
     pub const WIDTH: f32 = 850.;
     pub const RIGHT_WIDTH: f32 = 300.;
     pub fn minimum_width(collapsed: bool, left_collapsed: bool) -> f32 {
@@ -552,6 +561,12 @@ mod tests {
             assert_eq!(collapsed.right, expanded.right);
             assert_eq!(collapsed.left_toggle.width(), expanded.left_toggle.width());
         }
+    }
+
+    #[test]
+    fn laptop_initial_layout_collapses_only_the_side_rails() {
+        assert_eq!(Columns::initial_rails(1200.), (true, true));
+        assert_eq!(Columns::initial_rails(1566.), (false, false));
     }
     #[test]
     fn fixed_text_edit_has_exact_requested_outer_rectangle() {
