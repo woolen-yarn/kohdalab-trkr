@@ -1,17 +1,11 @@
 ## Summary / 概要
 
-## Verification / 確認
+Describe the concrete problem and resulting behavior. Link the relevant issue when one exists.
 
-- [ ] `cargo fmt --manifest-path Cargo.toml --all --check`
-- [ ] `cargo clippy --manifest-path Cargo.toml --workspace --all-targets --locked -- -D warnings`
-- [ ] `cargo test --manifest-path Cargo.toml --workspace --locked`
-- [ ] `cargo build --manifest-path Cargo.toml --bin kohdalab-trkr --locked`
-- [ ] `python -m pytest tests`
-- [ ] Release packaging checked when changing distribution files / 配布関連を変更した場合はパッケージ生成を確認
+## Validation / 検証
 
-## Hardware impact / 機器への影響
+Record the commands/checks run and their results. Distinguish simulation, installer lifecycle, desktop runtime, and physical hardware evidence. State anything not tested.
 
-Describe any changes to instrument commands, coordinates, timing, limits or CSV data. / 機器命令・座標・タイミング・制限・CSVの変更を記載してください。
-Use simulation by default; state explicitly if physical hardware was tested. / 原則シミュレーションを使い、実機検証した場合は明記してください。
+## Compatibility and safety / 互換性と安全性
 
-## Notes / 補足
+Explain effects on settings, API/Notebook users, data formats, installation, and device ownership/cleanup when relevant. For changes without such effects, say so briefly. Include screenshots for visible UI changes, with version, OS/scale, and simulation context.

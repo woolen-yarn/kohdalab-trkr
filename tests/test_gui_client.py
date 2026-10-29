@@ -89,6 +89,19 @@ def descriptor(path: Path, port: int, *, host: str = "127.0.0.1", pid: int = 432
     return path
 
 
+def test_native_discovery_searches_control_and_legacy_run_without_duplicates(api_module, server, tmp_path, monkeypatch):
+    rpc = server(lambda payload: {"ok": True, "result": {}})
+    home = tmp_path / "home"
+    control = home / ".kohdalab" / "control"
+    legacy = home / ".kohdalab" / "run"
+    control.mkdir(parents=True); legacy.mkdir(parents=True)
+    for path in (control / "trkr-gui-new.json", legacy / "trkr-gui-old.json"):
+        descriptor(path, rpc.port)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    client = api_module.GuiClient(timeout=1)
+    assert client._discover()["instance_id"] == "gui-1"
+
+
 def test_gui_client_sends_authenticated_one_socket_rpcs(api_module, server, tmp_path):
     records = [{"id": "run-1", "status": "completed", "rows": 3, "output": "run.csv", "error": None, "kind": "trkr"}]
 
@@ -139,7 +152,9 @@ def test_discovery_ignores_stale_session_and_rejects_multiple_live_ones(api_modu
     descriptor(run_dir / "trkr-gui-live.json", live.port)
     assert api_module.GuiClient().status()["active_run"] is None
     other = server(ready)
-    descriptor(run_dir / "trkr-gui-other.json", other.port)
+    other_path = descriptor(run_dir / "trkr-gui-other.json", other.port)
+    other_data = json.loads(other_path.read_text(encoding="utf-8")); other_data["instance_id"] = "gui-2"
+    other_path.write_text(json.dumps(other_data), encoding="utf-8")
     with pytest.raises(RuntimeError, match="Multiple running"):
         api_module.GuiClient().status()
 

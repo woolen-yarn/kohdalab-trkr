@@ -42,7 +42,7 @@ def test_notebook_cells_are_clean_and_syntactically_valid() -> None:
             assert cell["outputs"] == []
 
 
-def test_notebooks_run_in_simulation_against_the_canonical_binary() -> None:
+def test_notebooks_run_in_simulation_against_the_canonical_binary(tmp_path: Path) -> None:
     binary = Path(os.environ.get("TRKR_NATIVE_BINARY", ROOT / "target" / "debug" / (
         "kohdalab-trkr.exe" if sys.platform == "win32" else "kohdalab-trkr"
     )))
@@ -68,7 +68,12 @@ for path in sorted((root / "notebook").glob("*.ipynb")):
         assert namespace["samples"], path
         assert namespace["terminal"]["event"] == "finished", path
 '''
-    env = os.environ | {"TRKR_BINARY": str(binary)}
+    # Follow the dedicated-profile policy, without reading operator settings.
+    home = tmp_path / "home"
+    saved = home / ".kohdalab/trkr/config.json"
+    saved.parent.mkdir(parents=True)
+    shutil.copy2(ROOT / "crates/trkr-desktop/assets/default.json", saved)
+    env = os.environ | {"TRKR_BINARY": str(binary), "HOME": str(home), "USERPROFILE": str(home)}
     env.pop("TRKR_PROFILE", None)
     result = subprocess.run(
         [sys.executable, "-c", code, str(ROOT)],
@@ -110,7 +115,8 @@ def test_notebook_setup_finds_portable_and_macos_app_layouts(tmp_path: Path) -> 
         except OSError:
             shutil.copy2(binary, binary_path)
         shutil.copy2(source_client, client_dir / "kohdalab_trkr.py")
-        shutil.copy2(source_profile, config_dir / "default.json")
+        # A packaged profile must not override the operator's reviewed profile.
+        (config_dir / "default.json").write_text('{"application":"kohdalab-iv"}', encoding="utf-8")
 
         code = r'''
 import json
@@ -125,6 +131,9 @@ print(json.dumps({"binary": str(namespace["binary"]), "profile": str(namespace["
 '''
         isolated_home = tmp_path / "empty-home"
         isolated_home.mkdir(exist_ok=True)
+        saved = isolated_home / ".kohdalab/trkr/config.json"
+        saved.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_profile, saved)
         env = os.environ | {"PATH": "", "HOME": str(isolated_home), "USERPROFILE": str(isolated_home)}
         env.pop("TRKR_BINARY", None)
         env.pop("TRKR_PROFILE", None)
@@ -140,4 +149,12 @@ print(json.dumps({"binary": str(namespace["binary"]), "profile": str(namespace["
         assert result.returncode == 0, result.stdout + result.stderr
         resolved = json.loads(result.stdout.splitlines()[-1])
         assert Path(resolved["binary"]) == binary_path
-        assert Path(resolved["profile"]) == config_dir / "default.json"
+        assert Path(resolved["profile"]) == saved
+        # With no dedicated profile, fail with setup guidance rather than
+        # silently using a bundled configuration (including another app's).
+        saved.unlink()
+        missing = subprocess.run([sys.executable, "-c", code, str(setup_notebook)],
+                                 cwd=notebook_dir, env=env, capture_output=True,
+                                 text=True, timeout=15, check=False)
+        assert missing.returncode != 0
+        assert "Save settings in the GUI" in missing.stderr

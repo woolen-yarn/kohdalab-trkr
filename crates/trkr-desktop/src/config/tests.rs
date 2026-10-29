@@ -354,3 +354,123 @@ fn experiment_metadata_survives_profile_plan_roundtrip() {
     settings.raw["experiment"] = json!("invalid");
     assert!(settings.plan(Workflow::Trkr).is_err());
 }
+
+#[test]
+fn user_config_paths_keep_production_and_demo_profiles_separate() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    assert_eq!(
+        paths.production(),
+        root.path().join(".kohdalab/trkr/config.json")
+    );
+    assert_eq!(paths.demo(), root.path().join(".kohdalab/trkr/demo.json"));
+    assert_ne!(paths.production(), paths.demo());
+}
+
+#[test]
+fn startup_uses_only_the_trkr_specific_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    assert!(matches!(
+        load_startup(&paths).unwrap(),
+        StartupSettings::Missing
+    ));
+    let production = paths.production();
+    Settings::default().save(&production).unwrap();
+    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
+        panic!("TRKR profile was not loaded");
+    };
+    assert_eq!(path, production);
+    assert!(settings.hardware().is_ok());
+}
+
+#[test]
+fn startup_prefers_existing_new_profile_and_reports_invalid_files() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    let production = paths.production();
+    std::fs::create_dir_all(production.parent().unwrap()).unwrap();
+    let mut current = Settings::default();
+    current.raw["experiment"] = json!({"profile":"new"});
+    current.save(&production).unwrap();
+    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
+        panic!("new profile was not loaded");
+    };
+    assert_eq!(path, production);
+    assert_eq!(settings.raw["experiment"]["profile"], "new");
+
+    std::fs::write(paths.production(), b"not json").unwrap();
+    let error = load_startup(&paths).unwrap_err();
+    assert!(error.contains("Configuration is invalid"));
+    assert!(error.contains("config.json"));
+
+    std::fs::remove_file(paths.production()).unwrap();
+    std::fs::create_dir_all(paths.production()).unwrap();
+    let error = load_startup(&paths).unwrap_err();
+    assert!(error.contains("not a regular file"));
+}
+
+#[test]
+fn demo_startup_uses_only_the_trkr_specific_demo_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    assert_eq!(load_demo_startup(&paths).unwrap(), None);
+    std::fs::create_dir_all(paths.demo().parent().unwrap()).unwrap();
+    std::fs::write(paths.demo(), br#"{"profile":{"name":"demo"}}"#).unwrap();
+    assert_eq!(load_demo_startup(&paths).unwrap(), Some(paths.demo()));
+    assert!(!paths.production().exists());
+}
+
+#[test]
+fn rejects_foreign_or_iv_profiles_and_never_overwrites_them() {
+    let root = tempfile::tempdir().unwrap();
+    let foreign = root.path().join("foreign.json");
+    std::fs::write(&foreign, br#"{"application":"kohdalab-iv"}"#).unwrap();
+    let error = Settings::load(&foreign).unwrap_err();
+    assert!(error.contains("belongs to kohdalab-iv"));
+    let error = Settings::default().save(&foreign).unwrap_err();
+    assert!(error.contains("Refusing to overwrite invalid configuration"));
+    assert_eq!(
+        std::fs::read(&foreign).unwrap(),
+        br#"{"application":"kohdalab-iv"}"#
+    );
+
+    let iv = root.path().join("iv-markerless.json");
+    std::fs::write(&iv, br#"{"source_model":"GS210","meter_model":"34411A"}"#).unwrap();
+    assert!(Settings::load(&iv).unwrap_err().contains("KohdaLab IV"));
+    assert!(Settings::default().save(&iv).is_err());
+
+    std::fs::write(&iv, br#"{"instruments":{"source":{},"meter":{}}}"#).unwrap();
+    assert!(Settings::load(&iv).unwrap_err().contains("KohdaLab IV"));
+
+    let mut foreign_settings = Settings::default();
+    foreign_settings.raw["application"] = json!("kohdalab-iv");
+    assert!(
+        foreign_settings
+            .save(&root.path().join("new.json"))
+            .is_err()
+    );
+}
+
+#[test]
+fn save_marks_new_trkr_profiles_without_using_demo_path() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    Settings::default().save(&paths.production()).unwrap();
+    let saved: Value = serde_json::from_slice(&std::fs::read(paths.production()).unwrap()).unwrap();
+    assert_eq!(saved["application"], APPLICATION);
+    assert!(!paths.demo().exists());
+}
+
+#[test]
+fn save_refuses_empty_or_non_file_targets() {
+    let root = tempfile::tempdir().unwrap();
+    let empty = root.path().join("empty.json");
+    std::fs::write(&empty, b"").unwrap();
+    assert!(Settings::default().save(&empty).is_err());
+    assert!(empty.is_file());
+
+    let directory = root.path().join("directory.json");
+    std::fs::create_dir(&directory).unwrap();
+    assert!(Settings::default().save(&directory).is_err());
+}

@@ -6,7 +6,8 @@ use compatibility::{
     normalize_measurement_alias, normalize_profile_aliases, validate_profile_shape,
 };
 use serde_json::{Value, json};
-use std::path::Path;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use trkr_core::{Axis, Coordinate, Plan, Range, Workflow};
 use trkr_motion::MotionConfig;
 
@@ -29,6 +30,77 @@ pub fn application_resources() -> std::path::PathBuf {
         .ok()
         .and_then(|p| p.parent().map(resources_at))
         .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+pub const APPLICATION: &str = "kohdalab-trkr";
+
+/// Per-user paths owned by TRKR.  The constructor accepts the `.kohdalab`
+/// directory rather than reading the process environment so tests and callers
+/// can remain isolated from an operator's home directory.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UserConfigPaths {
+    kohdalab_dir: PathBuf,
+}
+
+impl UserConfigPaths {
+    pub fn from_kohdalab_dir(kohdalab_dir: impl Into<PathBuf>) -> Self {
+        Self {
+            kohdalab_dir: kohdalab_dir.into(),
+        }
+    }
+
+    pub fn for_current_user() -> Self {
+        let home = std::env::var_os("USERPROFILE")
+            .or_else(|| std::env::var_os("HOME"))
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        Self::from_kohdalab_dir(home.join(".kohdalab"))
+    }
+
+    pub fn production(&self) -> PathBuf {
+        self.kohdalab_dir.join("trkr/config.json")
+    }
+
+    pub fn demo(&self) -> PathBuf {
+        self.kohdalab_dir.join("trkr/demo.json")
+    }
+}
+
+#[derive(Debug)]
+pub enum StartupSettings {
+    Loaded { settings: Settings, path: PathBuf },
+    Missing,
+}
+
+/// Load normal TRKR settings without connecting any hardware.
+pub fn load_startup(paths: &UserConfigPaths) -> Result<StartupSettings, String> {
+    let production = paths.production();
+    if regular_file_exists(&production, "Configuration")? {
+        return Settings::load(&production)
+            .map(|settings| StartupSettings::Loaded {
+                settings,
+                path: production.clone(),
+            })
+            .map_err(|error| {
+                format!(
+                    "Configuration is invalid ({}): {error}",
+                    production.display()
+                )
+            });
+    }
+
+    Ok(StartupSettings::Missing)
+}
+
+/// Load the optional, separate Demo profile. Demo profiles need only be JSON
+/// objects because bundled replay presets deliberately omit hardware fields.
+pub fn load_demo_startup(paths: &UserConfigPaths) -> Result<Option<PathBuf>, String> {
+    let demo = paths.demo();
+    if regular_file_exists(&demo, "Demo configuration")? {
+        validate_demo_file(&demo)?;
+        return Ok(Some(demo));
+    }
+    Ok(None)
 }
 #[derive(Clone, Debug)]
 pub struct Settings {
@@ -56,6 +128,7 @@ impl Settings {
         if !raw.is_object() {
             return Err("Configuration must be a JSON object".into());
         }
+        validate_application(&raw)?;
         normalize_measurement_alias(&mut raw);
         validate_profile_shape(&raw)?;
         normalize_profile_aliases(&mut raw);
@@ -72,13 +145,28 @@ impl Settings {
         normalize_profile_aliases(&mut self.raw);
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
+        validate_application(&self.raw)?;
         self.hardware()?;
-        let data = serde_json::to_vec_pretty(&self.raw).map_err(|e| e.to_string())?;
-        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        if regular_file_exists(path, "Configuration")? {
+            let existing = read_config_value(path, "Configuration").map_err(|e| {
+                format!(
+                    "Refusing to overwrite invalid configuration {}: {e}",
+                    path.display()
+                )
+            })?;
+            Self::from_value(existing).map_err(|e| {
+                format!(
+                    "Refusing to overwrite invalid configuration {}: {e}",
+                    path.display()
+                )
+            })?;
         }
-        std::fs::write(path, data).map_err(|e| format!("Save {}: {e}", path.display()))
+        let mut raw = self.raw.clone();
+        raw["application"] = json!(APPLICATION);
+        Self::from_value(raw.clone())?;
+        persist_value(path, &raw)
     }
+
     pub fn hardware(&self) -> Result<HardwareConfig, String> {
         validate_measurement_device_selections(&self.raw)?;
         let instruments = &self.raw["instruments"];
@@ -266,6 +354,100 @@ impl Settings {
         }
         Ok(())
     }
+}
+
+fn regular_file_exists(path: &Path, label: &str) -> Result<bool, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(true),
+        Ok(_) => Err(format!("{label} is not a regular file: {}", path.display())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("Cannot read {label} {}: {error}", path.display())),
+    }
+}
+
+fn read_config_value(path: &Path, label: &str) -> Result<Value, String> {
+    serde_json::from_slice(
+        &std::fs::read(path)
+            .map_err(|error| format!("Read {label} {}: {error}", path.display()))?,
+    )
+    .map_err(|error| format!("Invalid {label} {}: {error}", path.display()))
+}
+
+fn validate_demo_value(raw: &Value) -> Result<(), String> {
+    if !raw.is_object() {
+        return Err("Demo configuration must be a JSON object".into());
+    }
+    validate_application(raw)
+}
+
+fn validate_demo_file(path: &Path) -> Result<(), String> {
+    let raw = read_config_value(path, "Demo configuration")?;
+    validate_demo_value(&raw)
+}
+
+fn stage_value(path: &Path, raw: &Value) -> Result<tempfile::NamedTempFile, String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty());
+    let parent = parent.unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Create configuration directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let data = serde_json::to_vec_pretty(raw).map_err(|error| error.to_string())?;
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Stage configuration {}: {error}", path.display()))?;
+    temporary
+        .write_all(&data)
+        .map_err(|error| format!("Stage configuration {}: {error}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("Stage configuration {}: {error}", path.display()))?;
+    Ok(temporary)
+}
+
+fn persist_value(path: &Path, raw: &Value) -> Result<(), String> {
+    stage_value(path, raw)?
+        .persist(path)
+        .map_err(|error| format!("Save {}: {}", path.display(), error.error))?;
+    Ok(())
+}
+
+fn validate_application(raw: &Value) -> Result<(), String> {
+    if let Some(marker) = raw.get("application") {
+        let marker = marker
+            .as_str()
+            .ok_or("Configuration application marker must be a string")?;
+        if marker != APPLICATION {
+            return Err(format!(
+                "Configuration belongs to {marker}, not {APPLICATION}"
+            ));
+        }
+    } else if looks_like_iv_profile(raw) {
+        return Err(
+            "Configuration appears to be a KohdaLab IV profile, not a KohdaLab TRKR profile".into(),
+        );
+    }
+    Ok(())
+}
+
+fn looks_like_iv_profile(raw: &Value) -> bool {
+    let has_source = raw.get("source").is_some()
+        || raw.get("source_model").is_some()
+        || raw.get("source_resource").is_some();
+    let has_meter = raw.get("meter").is_some()
+        || raw.get("meter_model").is_some()
+        || raw.get("meter_resource").is_some();
+    let paired_instruments = raw
+        .get("instruments")
+        .and_then(Value::as_object)
+        .is_some_and(|instruments| {
+            instruments.contains_key("source") && instruments.contains_key("meter")
+        });
+    (has_source && has_meter) || paired_instruments
 }
 fn device<'a>(v: &'a Value, key: &str) -> Option<&'a Value> {
     v.get(key)

@@ -3,6 +3,10 @@
 //! Instrument/model logic deliberately lives above this crate.  The helper is
 //! an independently licensed executable; this crate only owns framing,
 //! deadlines, and the adapter lease.
+//!
+//! Development shared mode is selected only by KOHDALAB_INSTRUMENT_HUB_CONFIG.
+//! The authenticated hub proxy owns the bus; errors never fall back to a
+//! local native/VISA helper. See docs/development/shared-instruments.md.
 
 use fs2::FileExt;
 use std::fs::{File, OpenOptions};
@@ -97,7 +101,9 @@ pub struct Gpib {
     child: Child,
     input: std::process::ChildStdin,
     lines: Receiver<Result<String, String>>,
-    _lease: File,
+    // The direct helper owns this compatibility lease. The opt-in instrument
+    // hub owns it instead, so clients may share one controller safely.
+    _lease: Option<File>,
     address: u8,
     backend: &'static str,
     poisoned: bool,
@@ -108,6 +114,9 @@ impl Gpib {
     pub fn open(helper: impl AsRef<Path>, address: u8) -> Result<Self, String> {
         validate_address(address)?;
         let helper = helper.as_ref();
+        if let Some(config) = hub_config()? {
+            return Self::spawn_hub_proxy(address, &config, Some(helper));
+        }
         if !helper.is_file() {
             return Err(format!("GPIB helper was not found: {}", helper.display()));
         }
@@ -135,6 +144,11 @@ impl Gpib {
         visa: Option<PathBuf>,
     ) -> Result<Self, String> {
         validate_address(address)?;
+        if let Some(config) = hub_config()? {
+            // Do this before VISA discovery. Once the user selects the shared
+            // service, no local helper or vendor runtime may open the bus.
+            return Self::spawn_hub_proxy(address, &config, native.as_deref());
+        }
         if let Some(visa_helper) = visa {
             let resources = visa_resources(&visa_helper)?;
             let requested = format!("GPIB0::{address}::INSTR");
@@ -169,7 +183,31 @@ impl Gpib {
         if !helper.is_file() {
             return Err(format!("GPIB helper was not found: {}", helper.display()));
         }
-        let lease = acquire_lease()?;
+        let lease = Some(acquire_lease()?);
+        Self::spawn_process(helper, address, args, backend, lease)
+    }
+
+    fn spawn_hub_proxy(address: u8, config: &Path, native: Option<&Path>) -> Result<Self, String> {
+        let hub = hub_client(native)?;
+        let args = vec![
+            "--client".to_owned(),
+            "--config".to_owned(),
+            config.display().to_string(),
+            "--app".to_owned(),
+            "KohdaLab TRKR".to_owned(),
+            "--address".to_owned(),
+            address.to_string(),
+        ];
+        Self::spawn_process(&hub, address, &args, "instrument hub", None)
+    }
+
+    fn spawn_process(
+        helper: &Path,
+        address: u8,
+        args: &[String],
+        backend: &'static str,
+        lease: Option<File>,
+    ) -> Result<Self, String> {
         let mut command = Command::new(helper);
         command.args(args);
         suppress_console_window(&mut command);
@@ -426,9 +464,61 @@ pub fn find_helper() -> Result<PathBuf, String> {
 /// probe addresses through the native adapter: Refresh must not reset or open
 /// a shared GPIB bus.
 pub fn available_gpib_resources() -> Result<Vec<String>, String> {
-    let (_, visa) = helper_paths();
+    let (native, visa) = helper_paths();
+    if let Some(config) = hub_config()? {
+        return hub_resources(&config, native.as_deref());
+    }
     let visa = visa.ok_or_else(|| String::from(TransportError::VisaHelperNotFound))?;
     let mut resources = visa_resources(&visa)?
+        .into_iter()
+        .filter(|resource| is_gpib_resource(resource))
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    Ok(resources)
+}
+
+/// An explicit hub setting is authoritative. Falling back to a direct helper
+/// could reset a controller that a different application is already using.
+fn hub_config() -> Result<Option<PathBuf>, String> {
+    let Some(value) = std::env::var_os("KOHDALAB_INSTRUMENT_HUB_CONFIG") else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err("KOHDALAB_INSTRUMENT_HUB_CONFIG is set but empty.".into());
+    }
+    Ok(Some(PathBuf::from(value)))
+}
+
+fn hub_client(native: Option<&Path>) -> Result<PathBuf, String> {
+    let explicit = std::env::var_os("KOHDALAB_INSTRUMENT_HUB_CLIENT").map(PathBuf::from);
+    let candidate = explicit.or_else(|| {
+        native
+            .and_then(Path::parent)
+            .map(|directory| directory.join(helper_name("kohdalab-instrument-hub")))
+    });
+    let Some(candidate) = candidate else {
+        return Err("Instrument hub is enabled but its client executable was not found. Set KOHDALAB_INSTRUMENT_HUB_CLIENT or install it beside kohdalab-gpib-helper.".into());
+    };
+    if !candidate.is_file() {
+        return Err(format!(
+            "Instrument hub is enabled but its client executable was not found: {}",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+fn hub_resources(config: &Path, native: Option<&Path>) -> Result<Vec<String>, String> {
+    let hub = hub_client(native)?;
+    let args = vec![
+        "--list".to_owned(),
+        "--config".to_owned(),
+        config.display().to_string(),
+        "--app".to_owned(),
+        "KohdaLab TRKR".to_owned(),
+    ];
+    let mut resources = resource_list(&hub, &args, "instrument hub")?
         .into_iter()
         .filter(|resource| is_gpib_resource(resource))
         .collect::<Vec<_>>();
@@ -474,21 +564,31 @@ fn helper_name(stem: &str) -> String {
 }
 
 fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
+    resource_list(helper, &["--list".to_owned()], "official VISA")
+}
+
+fn resource_list(helper: &Path, args: &[String], backend: &str) -> Result<Vec<String>, String> {
+    let backend = backend.to_owned();
+    let official_visa = backend == "official VISA";
     let mut command = Command::new(helper);
     command
-        .arg("--list")
+        .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     suppress_console_window(&mut command);
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Start official VISA helper discovery: {e}"))?;
-    let output = child
-        .stdout
-        .take()
-        .ok_or_else(|| String::from(TransportError::VisaHelperStdoutUnavailable))?;
+        .map_err(|e| format!("Start {backend} discovery: {e}"))?;
+    let output = child.stdout.take().ok_or_else(|| {
+        if official_visa {
+            String::from(TransportError::VisaHelperStdoutUnavailable)
+        } else {
+            format!("{backend} discovery stdout was unavailable")
+        }
+    })?;
     let (sender, receiver) = mpsc::sync_channel(1);
+    let reader_backend = backend.clone();
     thread::spawn(move || {
         let mut reader = BufReader::new(output);
         let mut line = Vec::new();
@@ -500,8 +600,16 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
             Ok(n) if n > 0 && n <= MAX_FRAME && line.last() == Some(&b'\n') => {
                 Ok(String::from_utf8_lossy(&line[..n - 1]).into_owned())
             }
-            Ok(_) => Err(TransportError::VisaDiscoveryNoBoundedFrame.into()),
-            Err(e) => Err(format!("Read official VISA helper discovery: {e}")),
+            Ok(_) if reader_backend == "official VISA" => {
+                Err(TransportError::VisaDiscoveryNoBoundedFrame.into())
+            }
+            Ok(_) => Err(format!(
+                "{reader_backend} discovery returned no bounded KIV frame"
+            )),
+            Err(error) if reader_backend == "official VISA" => {
+                Err(format!("Read official VISA helper discovery: {error}"))
+            }
+            Err(error) => Err(format!("Read {reader_backend} discovery: {error}")),
         };
         let _ = sender.send(reply);
     });
@@ -510,12 +618,20 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
         Err(RecvTimeoutError::Timeout) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(TransportError::VisaDiscoveryTimedOut.into());
+            return Err(if official_visa {
+                TransportError::VisaDiscoveryTimedOut.into()
+            } else {
+                format!("{backend} discovery timed out")
+            });
         }
         Err(RecvTimeoutError::Disconnected) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(TransportError::VisaDiscoveryExited.into());
+            return Err(if official_visa {
+                TransportError::VisaDiscoveryExited.into()
+            } else {
+                format!("{backend} discovery exited unexpectedly")
+            });
         }
     };
     // --list has no further useful output.  Killing after the first complete
@@ -525,13 +641,25 @@ fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
     let reply = reply?;
     let (status, payload) = parse_frame(&reply)?;
     if status != "OK" {
-        return Err(format!(
-            "Official VISA helper discovery failed: {}",
-            String::from_utf8_lossy(&payload)
-        ));
+        return Err(if official_visa {
+            format!(
+                "Official VISA helper discovery failed: {}",
+                String::from_utf8_lossy(&payload)
+            )
+        } else {
+            format!(
+                "{backend} discovery failed: {}",
+                String::from_utf8_lossy(&payload)
+            )
+        });
     }
-    let listing = String::from_utf8(payload)
-        .map_err(|e| format!("Official VISA resource list was not UTF-8: {e}"))?;
+    let listing = String::from_utf8(payload).map_err(|error| {
+        if official_visa {
+            format!("Official VISA resource list was not UTF-8: {error}")
+        } else {
+            format!("{backend} resource list was not UTF-8: {error}")
+        }
+    })?;
     let mut resources = Vec::new();
     for row in listing.lines() {
         let resource = row.split('\t').next().unwrap_or_default();
@@ -998,5 +1126,148 @@ mod tests {
         };
         assert!(error.contains("GPIB0::7::INSTR"));
         assert!(!marker.exists());
+    }
+    #[test]
+    fn opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries() {
+        const CHILD_CASE: &str = "KOHDALAB_TRKR_HUB_TEST_CASE";
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            let helper = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_DIRECT").unwrap());
+            let marker = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_MARKER").unwrap());
+            if case != "healthy" {
+                assert!(Gpib::open(&helper, 12).is_err());
+                assert!(Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper)).is_err());
+                assert!(available_gpib_resources().is_err());
+                assert!(
+                    !marker.exists(),
+                    "a selected hub must never open native/VISA as fallback"
+                );
+                return;
+            }
+            for direct in [true, false] {
+                let mut gpib = if direct {
+                    Gpib::open(&helper, 12).unwrap()
+                } else {
+                    Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper.clone()))
+                        .unwrap()
+                };
+                assert_eq!(gpib.backend_name(), "instrument hub");
+                assert_eq!(gpib.query("second").unwrap(), "fresh");
+            }
+            assert_eq!(
+                available_gpib_resources().unwrap(),
+                vec!["GPIB0::12::INSTR"]
+            );
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            let seen = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_QUERY").unwrap());
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let stopper = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !seen.exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                token.store(true, Ordering::Release);
+            });
+            assert!(
+                gpib.query_cancellable("first", &cancel)
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
+            stopper.join().unwrap();
+            assert!(gpib.query("not sent").unwrap_err().contains("pending"));
+            gpib.finish_cancelled_request().unwrap();
+            cancel.store(false, Ordering::Release);
+            assert_eq!(gpib.query_cancellable("second", &cancel).unwrap(), "fresh");
+            assert!(!gpib.is_poisoned());
+            assert!(!marker.exists());
+            let args =
+                std::fs::read_to_string(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_ARGS").unwrap())
+                    .unwrap();
+            assert!(args.lines().any(|a| a == "KohdaLab TRKR"));
+            assert!(args.lines().any(|a| a == "12"));
+            assert!(
+                args.lines()
+                    .any(|a| a.ends_with("endpoint with spaces.json"))
+            );
+            return;
+        }
+        // Every environment choice is confined to a fresh test process; never
+        // mutate process-global environment while other Rust tests run.
+        for case in ["healthy", "empty_config", "missing_client", "denied_client"] {
+            let dir = tempfile::tempdir().unwrap();
+            let helper = dir.path().join("direct.sh");
+            let hub = dir.path().join("hub.sh");
+            let endpoint = dir.path().join("endpoint with spaces.json");
+            std::fs::write(&endpoint, "{}").unwrap();
+            executable(
+                &helper,
+                "#!/bin/sh\n: > \"$KOHDALAB_TRKR_HUB_TEST_MARKER\"\nprintf 'KIV\\tOK\\t-\\n'\n",
+            );
+            let listing = encode_hex(b"GPIB0::12::INSTR\nUSB0::1::INSTR\nGPIB0::12::INSTR\n");
+            executable(
+                &hub,
+                &format!(
+                    r#"#!/bin/sh
+printf '%s\n' "$@" > "$KOHDALAB_TRKR_HUB_TEST_ARGS"
+if [ "$KOHDALAB_TRKR_HUB_TEST_CASE" = denied_client ]; then
+  printf 'KIV\tERR\t64656e696564\n'; exit 1
+fi
+if [ "$1" = --list ]; then
+  printf 'KIV\tOK\t{listing}\n'; exit 0
+fi
+printf 'KIV\tOK\t-\n'
+while IFS= read -r line; do
+  case "$line" in
+    *6669727374) : > "$KOHDALAB_TRKR_HUB_TEST_QUERY"; sleep 0.2; printf 'KIV\tOK\t6f6c64\n' ;;
+    QUERY*) printf 'KIV\tOK\t6672657368\n' ;;
+    EXIT*) exit 0 ;;
+  esac
+done
+"#
+                ),
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries",
+                    "--nocapture",
+                ])
+                .env(CHILD_CASE, case)
+                .env("KOHDALAB_TRKR_HUB_TEST_DIRECT", &helper)
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_MARKER",
+                    dir.path().join("direct-called"),
+                )
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_QUERY",
+                    dir.path().join("query-seen"),
+                )
+                .env("KOHDALAB_TRKR_HUB_TEST_ARGS", dir.path().join("args"))
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CONFIG",
+                    if case == "empty_config" {
+                        std::ffi::OsStr::new("")
+                    } else {
+                        endpoint.as_os_str()
+                    },
+                )
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CLIENT",
+                    if case == "missing_client" {
+                        dir.path().join("missing-client")
+                    } else {
+                        hub
+                    },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 }

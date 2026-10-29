@@ -1,6 +1,6 @@
 [project]
 name = "kohdalab-trkr-client"
-version = "0.3.4"
+version = "0.4.4"
 description = "Thin Python notebook client for the KohdaLab TRKR Rust engine"
 requires-python = ">=3.11"
 license = "MIT"

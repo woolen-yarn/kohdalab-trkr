@@ -316,6 +316,11 @@ def main() -> None:
         stage / "notebook",
         ignore=shutil.ignore_patterns("__pycache__"),
     )
+    shutil.copytree(
+        ROOT / "bindings" / "control",
+        stage / "common-sdk" / "control",
+        ignore=shutil.ignore_patterns("__pycache__"),
+    )
     for notebook in (ROOT / "notebook").glob("*.ipynb"):
         shutil.copy2(notebook, stage / "notebook" / notebook.name)
     (stage / "config").mkdir()

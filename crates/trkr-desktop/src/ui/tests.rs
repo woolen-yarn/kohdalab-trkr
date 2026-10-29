@@ -1,6 +1,21 @@
 use super::*;
 
 #[test]
+fn test_apps_use_an_owned_temporary_config_directory() {
+    let app = App::with_context(&egui::Context::default(), false);
+    let root = app
+        ._config_tempdir
+        .as_ref()
+        .expect("test App owns its config directory")
+        .path();
+    assert_eq!(
+        std::path::PathBuf::from(&app.config_path),
+        root.join(".kohdalab/trkr/config.json")
+    );
+    assert!(!std::path::PathBuf::from(&app.config_path).exists());
+}
+
+#[test]
 fn terminal_progress_survives_missed_samples_and_restored_axes_ignore_idle_progress() {
     let mut app = App::with_context(&egui::Context::default(), false);
     app.switch_workflow(Workflow::Srkr);
@@ -692,7 +707,7 @@ fn documentation_captures_use_synthetic_settings_without_operator_paths() {
     let success = Arc::new(AtomicBool::new(true));
     let directory = tempfile::tempdir().unwrap();
     app.enable_smoke(directory.path().join("capture"), success.clone());
-    assert_eq!(app.config_path, "config/default.json");
+    assert_eq!(app.config_path, "~/.kohdalab/trkr/config.json");
     assert_eq!(app.settings.raw, Settings::default().raw);
     assert!(app.outputs.iter().all(|output| output.dir == "demo/runs"));
     assert_eq!(app.log.len(), 1);

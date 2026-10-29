@@ -3,7 +3,7 @@ mod eta;
 mod remote;
 use crate::{axis_choices, precision};
 use crate::{
-    config::Settings,
+    config::{self, Settings, StartupSettings, UserConfigPaths},
     engine::{self, Command, Device, Event, Sample, Snapshot, Source},
     lockin::Model,
 };
@@ -145,6 +145,10 @@ pub struct App {
     outputs: [OutputProfile; 5],
     replay_path: String,
     replay_interval_s: f64,
+    config_paths: UserConfigPaths,
+    #[cfg(test)]
+    // Keeps the injected per-test config directory alive for the whole App.
+    _config_tempdir: Option<tempfile::TempDir>,
     config_path: String,
     status: String,
     log: VecDeque<String>,
@@ -177,6 +181,7 @@ pub struct App {
     plot_epoch: u64,
     central_width: f32,
     left_collapsed: bool,
+    rails_initialized: bool,
     devices_scrolled_smoke: bool,
     right_collapsed: bool,
     right_extra_width: f32,
@@ -198,9 +203,35 @@ pub struct App {
 }
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, demo_viewer: bool) -> Self {
-        Self::with_context(&cc.egui_ctx, demo_viewer)
+        Self::with_context_paths(
+            &cc.egui_ctx,
+            demo_viewer,
+            UserConfigPaths::for_current_user(),
+            true,
+        )
     }
+    pub fn new_without_startup_load(cc: &eframe::CreationContext<'_>) -> Self {
+        Self::with_context_paths(
+            &cc.egui_ctx,
+            false,
+            UserConfigPaths::for_current_user(),
+            false,
+        )
+    }
+    #[cfg(test)]
     fn with_context(ctx: &egui::Context, demo_viewer: bool) -> Self {
+        let tempdir = tempfile::tempdir().expect("test config directory");
+        let paths = UserConfigPaths::from_kohdalab_dir(tempdir.path().join(".kohdalab"));
+        let mut app = Self::with_context_paths(ctx, demo_viewer, paths, false);
+        app._config_tempdir = Some(tempdir);
+        app
+    }
+    fn with_context_paths(
+        ctx: &egui::Context,
+        demo_viewer: bool,
+        paths: UserConfigPaths,
+        load_startup: bool,
+    ) -> Self {
         ctx.set_visuals(egui::Visuals::dark());
         precision::configure(ctx);
         let b = Plan::default();
@@ -240,7 +271,10 @@ impl App {
             outputs: std::array::from_fn(|i| default_output(Workflow::ALL[i])),
             replay_path: String::new(),
             replay_interval_s: 0.1,
-            config_path: config_path(),
+            config_paths: paths.clone(),
+            #[cfg(test)]
+            _config_tempdir: None,
+            config_path: paths.production().display().to_string(),
             status: "Ready".into(),
             log: VecDeque::new(),
             stage_model: "SHOT302GS".into(),
@@ -272,6 +306,7 @@ impl App {
             plot_epoch: 0,
             central_width: 0.0,
             left_collapsed: false,
+            rails_initialized: false,
             devices_scrolled_smoke: false,
             right_collapsed: false,
             right_extra_width: precision::Columns::RIGHT_WIDTH - 27.,
@@ -292,16 +327,17 @@ impl App {
             device_expanded: [false; 4],
         };
         if demo_viewer {
-            app.config_path = config_default_path()
-                .with_file_name("default_demo.json")
-                .display()
-                .to_string();
+            app.config_path = app.config_paths.demo().display().to_string();
             app.source_demo = true;
             app.workflow = Workflow::Trkr;
             app.active_workflow = Workflow::Trkr;
-            let demo_config = PathBuf::from(&app.config_path);
-            let bundled =
-                Some(crate::config::application_resources().join("config/default_demo.json"));
+            let configured_demo = config::load_demo_startup(&app.config_paths);
+            let demo_config = configured_demo
+                .as_ref()
+                .ok()
+                .and_then(|path| path.clone())
+                .unwrap_or_else(|| PathBuf::from(&app.config_path));
+            let bundled = Some(config::application_resources().join("config/default_demo.json"));
             let candidate = if demo_config.is_file() {
                 Some(demo_config)
             } else {
@@ -311,39 +347,38 @@ impl App {
                 && let Ok(settings) = Settings::load(&path)
             {
                 app.settings = settings;
-                app.config_path = path.display().to_string();
             }
             app.hydrate();
             for plan in &mut app.plans {
                 plan.interval_s = 0.1;
             }
-            app.note("DEMO MODE — NO HARDWARE · Choose CSV → Load → Connect All → Start");
+            let message = match configured_demo {
+                Err(error) => format!("DEMO MODE — configuration error: {error}"),
+                _ => "DEMO MODE — NO HARDWARE · Choose CSV → Load → Connect All → Start".into(),
+            };
+            app.note(message);
             return app;
         }
-        let dedicated = PathBuf::from(&app.config_path);
-        let fallback = config_default_path();
-        let candidate = dedicated
-            .is_file()
-            .then_some(dedicated.as_path())
-            .or_else(|| fallback.is_file().then_some(fallback.as_path()));
-        if let Some(path) = candidate {
-            match Settings::load(path) {
-                Ok(settings) => {
-                    app.settings = settings;
-                    app.hydrate();
-                    app.note(format!("Loaded configuration: {}", path.display()));
-                }
-                Err(error) => {
-                    app.hydrate();
-                    app.note(format!(
-                        "Configuration is invalid ({}): {error}",
-                        path.display()
-                    ));
-                }
-            }
-        } else {
+        if !load_startup {
             app.hydrate();
-            app.note("No configuration file found; using built-in defaults");
+            return app;
+        }
+        app.config_path = app.config_paths.production().display().to_string();
+        match config::load_startup(&app.config_paths) {
+            Ok(StartupSettings::Loaded { settings, path }) => {
+                app.settings = settings;
+                app.config_path = path.display().to_string();
+                app.hydrate();
+                app.note(format!("Loaded configuration: {}", path.display()));
+            }
+            Ok(StartupSettings::Missing) => {
+                app.hydrate();
+                app.note("No configuration file found; using built-in defaults");
+            }
+            Err(error) => {
+                app.hydrate();
+                app.note(error);
+            }
         }
         app
     }
@@ -351,7 +386,9 @@ impl App {
         // Captures must be reproducible and safe to publish. Use only the
         // bundled synthetic profile; never save or expose the operator's paths.
         self.settings = Settings::default();
-        self.config_path = "config/default.json".into();
+        // Public smoke captures must show the app-owned production location,
+        // never a historical bundle-relative default or an operator path.
+        self.config_path = "~/.kohdalab/trkr/config.json".into();
         self.hydrate();
         for output in &mut self.outputs {
             output.dir = "demo/runs".into();
@@ -3236,6 +3273,11 @@ impl eframe::App for App {
                     ui.disable();
                 }
                 let viewport = ui.max_rect();
+                if !self.rails_initialized {
+                    (self.left_collapsed, self.right_collapsed) =
+                        precision::Columns::initial_rails(viewport.width());
+                    self.rails_initialized = true;
+                }
                 let minimum =
                     precision::Columns::minimum_width(self.right_collapsed, self.left_collapsed);
                 ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(
@@ -3904,23 +3946,6 @@ fn output_dir() -> String {
         .display()
         .to_string()
 }
-fn config_path() -> String {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".kohdalab/config/trkr-next.json")
-        .display()
-        .to_string()
-}
-fn config_default_path() -> PathBuf {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".kohdalab/config/default.json")
-}
-
 #[cfg(test)]
 #[path = "ui/tests.rs"]
 mod ui_tests;
