@@ -181,7 +181,6 @@ pub struct App {
     plot_epoch: u64,
     central_width: f32,
     left_collapsed: bool,
-    rails_initialized: bool,
     devices_scrolled_smoke: bool,
     right_collapsed: bool,
     right_extra_width: f32,
@@ -306,7 +305,6 @@ impl App {
             plot_epoch: 0,
             central_width: 0.0,
             left_collapsed: false,
-            rails_initialized: false,
             devices_scrolled_smoke: false,
             right_collapsed: false,
             right_extra_width: precision::Columns::RIGHT_WIDTH - 27.,
@@ -3269,11 +3267,6 @@ impl eframe::App for App {
                     ui.disable();
                 }
                 let viewport = ui.max_rect();
-                if !self.rails_initialized {
-                    (self.left_collapsed, self.right_collapsed) =
-                        precision::Columns::initial_rails(viewport.width());
-                    self.rails_initialized = true;
-                }
                 let minimum =
                     precision::Columns::minimum_width(self.right_collapsed, self.left_collapsed);
                 ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(Vec2::new(

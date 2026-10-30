@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased / 未公開
+
+- Open both side panels at startup, including on narrower displays; retain manual collapse controls and align the initial window width with the expanded layout. / 狭い画面でも起動時に左右パネルを表示し、手動の収納操作を維持。初期ウィンドウ幅を展開時のレイアウトに統一。
+
 ## 0.4.6
 
 - Use the common app-owned directory layout: config/config.json, run, results and logs beneath ~/.kohdalab/trkr.
