@@ -432,9 +432,11 @@ fn concurrent_first_launches_publish_one_complete_json() {
     let mut workers = Vec::new();
     for _ in 0..8 {
         let path = production.clone();
-        workers.push(std::thread::spawn(move || load_startup(&UserConfigPaths::from_kohdalab_dir(
-            path.parent().unwrap().parent().unwrap().to_path_buf(),
-        ))));
+        workers.push(std::thread::spawn(move || {
+            load_startup(&UserConfigPaths::from_kohdalab_dir(
+                path.parent().unwrap().parent().unwrap().to_path_buf(),
+            ))
+        }));
     }
     for worker in workers {
         assert!(worker.join().unwrap().is_ok());

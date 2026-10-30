@@ -140,7 +140,11 @@ fn create_default_config(path: &Path) -> Result<(), String> {
     match temporary.persist_noclobber(path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(format!("Create default configuration {}: {}", path.display(), error.error)),
+        Err(error) => Err(format!(
+            "Create default configuration {}: {}",
+            path.display(),
+            error.error
+        )),
     }
 }
 
