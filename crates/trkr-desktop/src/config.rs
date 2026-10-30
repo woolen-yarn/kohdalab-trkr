@@ -56,12 +56,22 @@ impl UserConfigPaths {
         Self::from_kohdalab_dir(home.join(".kohdalab"))
     }
 
-    pub fn production(&self) -> PathBuf {
-        self.kohdalab_dir.join("trkr/config.json")
+    fn layout(&self) -> kohdalab_control_protocol::paths::AppPaths {
+        kohdalab_control_protocol::paths::AppPaths::from_root(&self.kohdalab_dir, "trkr")
+            .expect("known TRKR application")
     }
 
+    pub fn production(&self) -> PathBuf {
+        self.layout().config_file()
+    }
     pub fn demo(&self) -> PathBuf {
-        self.kohdalab_dir.join("trkr/demo.json")
+        self.layout().demo_config_file()
+    }
+    pub fn run_dir(&self) -> PathBuf {
+        self.layout().run_dir()
+    }
+    pub fn results_dir(&self) -> PathBuf {
+        self.layout().results_dir()
     }
 }
 

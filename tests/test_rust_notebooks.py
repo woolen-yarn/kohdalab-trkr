@@ -70,7 +70,7 @@ for path in sorted((root / "notebook").glob("*.ipynb")):
 '''
     # Follow the dedicated-profile policy, without reading operator settings.
     home = tmp_path / "home"
-    saved = home / ".kohdalab/trkr/config.json"
+    saved = home / ".kohdalab/trkr/config/config.json"
     saved.parent.mkdir(parents=True)
     shutil.copy2(ROOT / "crates/trkr-desktop/assets/default.json", saved)
     env = os.environ | {"TRKR_BINARY": str(binary), "HOME": str(home), "USERPROFILE": str(home)}
@@ -131,7 +131,7 @@ print(json.dumps({"binary": str(namespace["binary"]), "profile": str(namespace["
 '''
         isolated_home = tmp_path / "empty-home"
         isolated_home.mkdir(exist_ok=True)
-        saved = isolated_home / ".kohdalab/trkr/config.json"
+        saved = isolated_home / ".kohdalab/trkr/config/config.json"
         saved.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source_profile, saved)
         env = os.environ | {"PATH": "", "HOME": str(isolated_home), "USERPROFILE": str(isolated_home)}

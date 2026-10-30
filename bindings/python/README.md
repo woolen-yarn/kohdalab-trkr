@@ -56,7 +56,7 @@ Rust本体は次の順に探します。探索自体はファイルの存在確�
 4. Windows: `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`
 5. Mac: `/Applications/KohdaLab TRKR.app`、次に `~/Applications/KohdaLab TRKR.app`
 
-設定は明示指定／`TRKR_PROFILE`、またはユーザーの `~/.kohdalab/trkr/config.json` だけを使用します。サンプルや同梱の `default.json` を暗黙に測定設定として選ぶことはありません。
+設定は明示指定／`TRKR_PROFILE`、またはユーザーの `~/.kohdalab/trkr/config/config.json` だけを使用します。サンプルや同梱の `default.json` を暗黙に測定設定として選ぶことはありません。
 
 **使用する設定の表示を確認してください。** 特定の実験設定を使う場合は明示指定できます。
 
@@ -233,7 +233,7 @@ Executable discovery only checks whether files exist, in this order:
 4. Windows: `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`.
 5. macOS: `/Applications/KohdaLab TRKR.app`, then `~/Applications/KohdaLab TRKR.app`.
 
-Profile discovery uses only an explicit argument or `TRKR_PROFILE`, then the dedicated user profile `~/.kohdalab/trkr/config.json`.
+Profile discovery uses only an explicit argument or `TRKR_PROFILE`, then the dedicated user profile `~/.kohdalab/trkr/config/config.json`.
 
 **Check the displayed selected profile.** To choose an experiment explicitly, use `prepare_profile("C:/Users/me/.kohdalab/trkr/kim.json")`, or `prepare_profile("~/.kohdalab/trkr/kim.json")` on Mac/Linux.
 

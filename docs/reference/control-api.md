@@ -2,7 +2,7 @@
 
 TRKR exposes an opt-in, loopback-only JSON-lines control endpoint when launched
 with its GUI API option. The descriptor is published atomically in
-`~/.kohdalab/control`; it contains a per-instance token and must never be
+`~/.kohdalab/trkr/run`; it contains a per-instance token and must never be
 shared outside the local user account.
 
 The additive `control.*` namespace follows **KohdaLab Control Protocol 1**.

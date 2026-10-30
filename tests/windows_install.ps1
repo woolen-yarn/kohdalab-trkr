@@ -10,7 +10,7 @@ $install = Join-Path $env:ProgramFiles 'Kohdalab\KohdaLab TRKR'
 $registry = 'HKLM:\Software\Kohdalab\KohdaLab TRKR'
 $uninstallRegistry = 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\KohdaLab TRKR'
 if (Test-Path $install) { throw 'Refusing to overwrite a pre-existing installation.' }
-$profile = Join-Path $env:USERPROFILE '.kohdalab\trkr\config.json'
+$profile = Join-Path $env:USERPROFILE '.kohdalab\trkr\config\config.json'
 $legacy = Join-Path $env:USERPROFILE '.kohdalab\config\trkr-next.json'
 $marker = '{"lifecycle_test":"preserve user configuration"}'
 foreach ($path in @($profile,$legacy)) {

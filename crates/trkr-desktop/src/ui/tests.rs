@@ -10,7 +10,7 @@ fn test_apps_use_an_owned_temporary_config_directory() {
         .path();
     assert_eq!(
         std::path::PathBuf::from(&app.config_path),
-        root.join(".kohdalab/trkr/config.json")
+        root.join(".kohdalab/trkr/config/config.json")
     );
     assert!(!std::path::PathBuf::from(&app.config_path).exists());
 }
@@ -707,7 +707,7 @@ fn documentation_captures_use_synthetic_settings_without_operator_paths() {
     let success = Arc::new(AtomicBool::new(true));
     let directory = tempfile::tempdir().unwrap();
     app.enable_smoke(directory.path().join("capture"), success.clone());
-    assert_eq!(app.config_path, "~/.kohdalab/trkr/config.json");
+    assert_eq!(app.config_path, "~/.kohdalab/trkr/config/config.json");
     assert_eq!(app.settings.raw, Settings::default().raw);
     assert!(app.outputs.iter().all(|output| output.dir == "demo/runs"));
     assert_eq!(app.log.len(), 1);
