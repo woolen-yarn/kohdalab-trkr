@@ -32,7 +32,14 @@ fn main() -> eframe::Result {
     let result = match args.as_slice() {
         [flag] if flag == "--stdio" => stdio(),
         [flag] if flag == "--gui-api" => remote::Server::start().and_then(|server| {
-            run_gui_with_api(None, [1512., 900.], false, "", Some(Ok(server)), None)
+            run_gui_with_api(
+                None,
+                [precision::Columns::minimum_width(false, false), 900.],
+                false,
+                "",
+                Some(Ok(server)),
+                None,
+            )
         }),
         [flag, option, path] if flag == "--gui-api" && option == "--config" => {
             run_gui_profile(path, true)
@@ -127,11 +134,16 @@ fn layout_capture(
 }
 fn run_gui(smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>) -> Result<(), String> {
     if smoke.is_some() {
-        run_gui_at(smoke, [1512., 900.], false, "")
+        run_gui_at(
+            smoke,
+            [precision::Columns::minimum_width(false, false), 900.],
+            false,
+            "",
+        )
     } else {
         run_gui_with_api(
             None,
-            [1512., 900.],
+            [precision::Columns::minimum_width(false, false), 900.],
             false,
             "",
             Some(remote::Server::start()),
@@ -145,7 +157,7 @@ fn run_gui_profile(path: &str, strict: bool) -> Result<(), String> {
     let server = if strict { Ok(server?) } else { server };
     run_gui_with_api(
         None,
-        [1512., 900.],
+        [precision::Columns::minimum_width(false, false), 900.],
         false,
         "",
         Some(server),
@@ -348,7 +360,7 @@ fn run_demo(
         eframe::NativeOptions {
             viewport: eframe::egui::ViewportBuilder::default()
                 .with_icon(app_icon())
-                .with_inner_size([1512., 900.])
+                .with_inner_size([precision::Columns::minimum_width(false, false), 900.])
                 .with_min_inner_size([precision::Columns::minimum_width(false, false), 700.]),
             ..Default::default()
         },

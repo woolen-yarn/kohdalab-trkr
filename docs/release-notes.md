@@ -1,19 +1,21 @@
-# KohdaLab TRKR 0.4.6
+# KohdaLab TRKR 0.4.7
 
-## Changes
+## Changes / 変更点
 
-The canonical configuration is `~/.kohdalab/trkr/config/config.json` (Windows: `%USERPROFILE%\.kohdalab\trkr\config\config.json`). Runtime API descriptors use `trkr/run`; default measurements and application logs use sibling `results` and `logs` where applicable. Camera exports continue to honor the user-selected folder. The shared path definition is vendored identically in all five applications.
+Both side panels now open at startup. In 0.4.6, the requested initial width (1512 logical pixels) was narrower than the expanded layout minimum (1566), so first-frame detection automatically collapsed both panels. This automatic collapse is removed, and normal, profile/API and Demo launch widths now use the expanded layout minimum. The existing buttons still collapse or expand either panel manually.
 
-## Compatibility and safety
+起動時に左右のパネルを表示します。0.4.6では初期幅1512論理ピクセルが展開時の最小幅1566を下回り、初回描画の判定で両側が自動収納されていました。自動収納を取り除き、通常・設定指定/API・Demoの起動幅を展開時の最小幅に揃えました。既存のボタンによる手動の収納・展開は維持します。
 
-A missing default is created atomically on the first normal GUI launch. Existing settings, including invalid/foreign/unsupported files, are preserved with visible errors. Old direct-child, shared, preview and AppData profiles are not imported or removed automatically; use Browse/Load after reviewing an existing profile. Explicit profile and output paths remain respected. No device connection, source output, capture or shutter movement is added. Scientific file formats and control ownership/cleanup policies are unchanged.
+## Compatibility / 互換性
 
-Update the bundled Python clients/common SDK (1.0.1) with the GUI. They discover the new app-owned run directory; legacy discovery is read-only. The wire protocol stays at version 1. Existing cross-process recovery interlocks and OS driver caches retain their safety/OS-managed namespaces rather than being mistaken for GUI configuration.
+Existing JSON settings and measurement files remain compatible; no setting migration is required for this fix. Configuration stays at `~/.kohdalab/trkr/config/config.json` (Windows: `%USERPROFILE%\.kohdalab\trkr\config\config.json`). Device control, acquisition, CSV schemas and external-control/Stop policies are unchanged.
 
-## Downloads and validation
+既存JSON設定・測定ファイルは引き続き利用でき、この修正に伴う設定の移行は不要です。設定場所はTRKR専用の `config/config.json` のままです。装置制御・測定・CSV形式・外部制御と停止条件は変更していません。
 
-Windows Setup/portable, supported Mac distribution and corresponding source/build kit are attached. Windows artifacts remain unsigned; supported Mac applications are ad hoc signed and not notarized. Normal GUI startup is tested in isolated user homes, including restart/invalid-file preservation and canonical config/run paths. Platform tests, installer evidence and artifact/source hashes qualify the attached builds; no new physical-device qualification is claimed.
+## Validation and downloads / 検証・配布
 
-## 日本語
+Desktop Rust tests and actual GUI simulation captures cover all five workflows, with both panels open and with either panel explicitly collapsed. Release CI runs Linux, macOS and Windows tests, packages Windows x64 Setup/portable ZIP and macOS Apple silicon DMG/ZIP, and verifies the Windows installer/uninstaller lifecycle. Corresponding source/build kits and SHA-256 manifests accompany the packages. No physical-device qualification is claimed for this UI fix.
 
-設定は `trkr/config/config.json`、実行時APIファイルは同じアプリ配下の `run` に統一します。結果・アプリログもアプリ配下の `results`・`logs` を使います（明示した保存先は保持）。初回は標準設定を自動作成します。旧設定は削除・自動移行せず、不正な設定は上書きせずエラーを表示します。装置への自動接続・出力ONや、測定・データ形式・安全動作の変更はありません。Pythonクライアントも同梱版へ更新してください。
+デスクトップのRustテストと実GUIのシミュレーションで、全5測定画面の左右表示・片側収納を確認しました。リリースCIはLinux・macOS・Windowsでテストし、Windowsのインストーラー／portable ZIPとmacOS Apple siliconのDMG／ZIPを作成し、Windowsのインストール・削除も検証します。対応ソースとSHA-256一覧を同梱します。このUI修正では実機測定を行っていません。
+
+Windows artifacts remain unsigned; macOS bundles use ad hoc signing and are not notarized. / Windows版は未署名、macOS版はアドホック署名で公証はありません。

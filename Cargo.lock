@@ -1595,7 +1595,7 @@ dependencies = [
 
 [[package]]
 name = "kohdalab-trkr"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "csv",
  "eframe",
@@ -2948,7 +2948,7 @@ dependencies = [
 
 [[package]]
 name = "trkr-core"
-version = "0.4.6"
+version = "0.4.7"
 dependencies = [
  "serde",
  "serde_json",
