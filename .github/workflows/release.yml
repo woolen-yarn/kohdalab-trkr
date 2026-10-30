@@ -15,8 +15,6 @@ concurrency:
 
 jobs:
   verify:
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
     name: Verify ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
@@ -25,6 +23,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
@@ -67,9 +68,11 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 55
     env:
-      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
@@ -185,13 +188,14 @@ jobs:
             dist/SHA256SUMS-*.txt
 
   macos:
-    env:
-      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
     name: macOS arm64 release build
     needs: verify
     runs-on: macos-15
     timeout-minutes: 45
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
