@@ -50,10 +50,9 @@ impl UserConfigPaths {
     }
 
     pub fn for_current_user() -> Self {
-        let home = std::env::var_os("USERPROFILE")
-            .or_else(|| std::env::var_os("HOME"))
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir);
+        let userprofile = std::env::var_os("USERPROFILE");
+        let home = std::env::var_os("HOME");
+        let home = home_from_environment(userprofile.as_deref(), home.as_deref(), cfg!(windows));
         Self::from_kohdalab_dir(home.join(".kohdalab"))
     }
 
@@ -66,10 +65,24 @@ impl UserConfigPaths {
     }
 }
 
+fn home_from_environment(
+    userprofile: Option<&std::ffi::OsStr>,
+    home: Option<&std::ffi::OsStr>,
+    windows: bool,
+) -> PathBuf {
+    let selected = if windows {
+        userprofile.or(home)
+    } else {
+        home.or(userprofile)
+    };
+    selected
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 #[derive(Debug)]
 pub enum StartupSettings {
     Loaded { settings: Settings, path: PathBuf },
-    Missing,
 }
 
 /// Load normal TRKR settings without connecting any hardware.
@@ -89,7 +102,50 @@ pub fn load_startup(paths: &UserConfigPaths) -> Result<StartupSettings, String> 
             });
     }
 
-    Ok(StartupSettings::Missing)
+    // Materialize the embedded safe profile on the first normal launch.  The
+    // create-new link keeps this race-safe: another process may win, but an
+    // existing operator file is never replaced by defaults.
+    create_default_config(&production)?;
+    let display = production.display().to_string();
+    Settings::load(&production)
+        .map(|settings| StartupSettings::Loaded {
+            settings,
+            path: production,
+        })
+        .map_err(|error| format!("Configuration is invalid ({display}): {error}"))
+}
+
+fn create_default_config(path: &Path) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "Create configuration directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut raw = Settings::default().raw;
+    raw["application"] = json!(APPLICATION);
+    let data = serde_json::to_vec_pretty(&raw).map_err(|error| error.to_string())?;
+    let temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("Stage default configuration {}: {error}", path.display()))?;
+    std::fs::write(temporary.path(), &data)
+        .map_err(|error| format!("Stage default configuration {}: {error}", path.display()))?;
+    temporary
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("Stage default configuration {}: {error}", path.display()))?;
+    match temporary.persist_noclobber(path) {
+        Ok(_) => Ok(()),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(format!(
+            "Create default configuration {}: {}",
+            path.display(),
+            error.error
+        )),
+    }
 }
 
 /// Load the optional, separate Demo profile. Demo profiles need only be JSON
