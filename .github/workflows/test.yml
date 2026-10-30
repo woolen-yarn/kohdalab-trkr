@@ -15,6 +15,8 @@ concurrency:
 
 jobs:
   test:
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35

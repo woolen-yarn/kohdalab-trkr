@@ -15,6 +15,8 @@ concurrency:
 
 jobs:
   verify:
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
     name: Verify ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
@@ -65,6 +67,7 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 55
     env:
+      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
       - name: Check out source
@@ -182,6 +185,8 @@ jobs:
             dist/SHA256SUMS-*.txt
 
   macos:
+    env:
+      RUSTUP_HOME: ${{ runner.temp }}/kohdalab-rustup
     name: macOS arm64 release build
     needs: verify
     runs-on: macos-15
