@@ -384,7 +384,7 @@ impl App {
         self.settings = Settings::default();
         // Public smoke captures must show the app-owned production location,
         // never a historical bundle-relative default or an operator path.
-        self.config_path = "~/.kohdalab/trkr/config.json".into();
+        self.config_path = "~/.kohdalab/trkr/config/config.json".into();
         self.hydrate();
         for output in &mut self.outputs {
             output.dir = "demo/runs".into();
@@ -3934,11 +3934,8 @@ fn sync_shared_coordinates(plans: &mut [Plan; 5], selected: Workflow) {
     }
 }
 fn output_dir() -> String {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-        .map(|home| home.join("Documents/KohdaLab TRKR/runs"))
-        .unwrap_or_else(|| PathBuf::from("runs"))
+    UserConfigPaths::for_current_user()
+        .results_dir()
         .display()
         .to_string()
 }

@@ -1,5 +1,6 @@
 //! Opt-in loopback bridge. Requests are executed on the GUI thread, never on a
 //! second hardware controller. No instrument I/O occurs in the network thread.
+use crate::config::UserConfigPaths;
 use serde_json::{Value, json};
 use std::{
     io::Write,
@@ -29,9 +30,7 @@ pub struct Server {
 }
 impl Server {
     pub fn start() -> Result<Self, String> {
-        let home = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .ok_or("Cannot locate the user profile for Python API discovery")?;
-        Self::in_directory(PathBuf::from(home).join(kohdalab_control_protocol::DISCOVERY_DIRECTORY))
+        Self::in_directory(UserConfigPaths::for_current_user().run_dir())
     }
     pub(crate) fn in_directory(directory: PathBuf) -> Result<Self, String> {
         let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))

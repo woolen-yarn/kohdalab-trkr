@@ -361,9 +361,21 @@ fn user_config_paths_keep_production_and_demo_profiles_separate() {
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
     assert_eq!(
         paths.production(),
-        root.path().join(".kohdalab/trkr/config.json")
+        root.path().join(".kohdalab/trkr/config/config.json")
     );
-    assert_eq!(paths.demo(), root.path().join(".kohdalab/trkr/demo.json"));
+    assert_eq!(
+        paths.demo(),
+        root.path().join(".kohdalab/trkr/config/demo.json")
+    );
+    assert_eq!(paths.run_dir(), root.path().join(".kohdalab/trkr/run"));
+    assert_eq!(
+        paths.results_dir(),
+        root.path().join(".kohdalab/trkr/results")
+    );
+    assert_eq!(
+        paths.layout().logs_dir(),
+        root.path().join(".kohdalab/trkr/logs")
+    );
     assert_ne!(paths.production(), paths.demo());
 }
 
@@ -431,11 +443,9 @@ fn concurrent_first_launches_publish_one_complete_json() {
     let production = paths.production();
     let mut workers = Vec::new();
     for _ in 0..8 {
-        let path = production.clone();
+        let suite_root = root.path().join(".kohdalab");
         workers.push(std::thread::spawn(move || {
-            load_startup(&UserConfigPaths::from_kohdalab_dir(
-                path.parent().unwrap().parent().unwrap().to_path_buf(),
-            ))
+            load_startup(&UserConfigPaths::from_kohdalab_dir(suite_root))
         }));
     }
     for worker in workers {
@@ -452,7 +462,12 @@ fn unusable_profile_parent_is_reported_without_creating_partial_data() {
     let paths = UserConfigPaths::from_kohdalab_dir(parent);
     let error = load_startup(&paths).unwrap_err();
     assert!(!error.is_empty());
-    assert!(!root.path().join(".kohdalab/trkr/config.json").exists());
+    assert!(
+        !root
+            .path()
+            .join(".kohdalab/trkr/config/config.json")
+            .exists()
+    );
 }
 
 #[test]

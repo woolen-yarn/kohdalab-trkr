@@ -198,7 +198,13 @@ class GuiClient:
     def _discover(self) -> dict[str, Any]:
         if self._session_path is not None:
             return self._load_descriptor(self._session_path)
-        directories = [Path.home() / ".kohdalab" / "control", Path.home() / ".kohdalab" / "run"]
+        # The app-owned run directory is canonical. Keep the historical shared
+        # directories as read-only discovery fallbacks for already-running GUIs.
+        directories = [
+            Path.home() / ".kohdalab" / "trkr" / "run",
+            Path.home() / ".kohdalab" / "control",
+            Path.home() / ".kohdalab" / "run",
+        ]
         candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, str]] = set()
         paths = [path for directory in directories if directory.is_dir() for path in sorted(directory.glob("trkr-gui-*.json"))]
@@ -633,7 +639,11 @@ class GuiClient:
             options["start_new_session"] = True
         process = subprocess.Popen(command, **options)
         deadline = time.monotonic() + timeout
-        directories = [Path.home() / ".kohdalab" / "control", Path.home() / ".kohdalab" / "run"]
+        directories = [
+            Path.home() / ".kohdalab" / "trkr" / "run",
+            Path.home() / ".kohdalab" / "control",
+            Path.home() / ".kohdalab" / "run",
+        ]
         while time.monotonic() < deadline:
             exit_code = process.poll()
             if exit_code is not None:
@@ -753,7 +763,7 @@ def find_profile(
     override = profile if profile is not None else (os.environ.get("TRKR_PROFILE") or None)
     if override is not None:
         return _explicit_file(override, "profile / TRKR_PROFILE")
-    saved = Path.home() / ".kohdalab/trkr/config.json"
+    saved = Path.home() / ".kohdalab/trkr/config/config.json"
     if saved.is_file():
         return saved.resolve()
     raise FileNotFoundError(

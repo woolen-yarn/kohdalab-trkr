@@ -32,7 +32,7 @@ def main() -> None:
             stderr=subprocess.STDOUT,
         )
         try:
-            directory = Path(home) / ".kohdalab" / "control"
+            directory = Path(home) / ".kohdalab" / "trkr" / "run"
             deadline = time.monotonic() + 10
             while time.monotonic() < deadline and not list(directory.glob("*.json")):
                 time.sleep(0.05)

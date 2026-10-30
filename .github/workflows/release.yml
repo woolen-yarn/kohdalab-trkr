@@ -23,6 +23,9 @@ jobs:
       matrix:
         os: [ubuntu-24.04, macos-15, windows-2025]
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
@@ -67,6 +70,9 @@ jobs:
     env:
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: "-C target-feature=+crt-static"
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
@@ -187,6 +193,9 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: echo "RUSTUP_HOME=$RUNNER_TEMP/kohdalab-rustup" >> "$GITHUB_ENV"
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
         with:
