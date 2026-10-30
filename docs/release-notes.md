@@ -1,25 +1,17 @@
-# KohdaLab TRKR 0.4.4
+# KohdaLab TRKR 0.4.5
 
-## Changes / 変更内容
+## Changes
 
-Add Control Protocol 1 and the common Python SDK. Publish the pending application-specific settings, standard Windows installation and explicit development shared-instrument transport. Refresh synthetic screenshots and collapse the optional rail initially on narrow screens.
+On first normal GUI launch, a missing `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\.kohdalab\trkr\config.json` on Windows) is automatically created from safe built-in defaults. No manual JSON preparation is needed.
 
-## Compatibility and migration / 互換性と移行
+## Compatibility and safety
 
-Config is `~/.kohdalab/trkr/config.json`; Windows Setup uses `C:\Program Files\Kohdalab\KohdaLab TRKR`. Import older profiles explicitly; measurements/CSV and native continuation defaults remain. The shared instrument service is development-only, separately installed and not hardware-qualified.
+Initialization publishes a complete file atomically without replacing an existing profile. Existing invalid, foreign or unsupported profiles remain intact and errors are reported. Explicit profiles and Demo/smoke launches do not initialize production defaults. Creating/loading settings does not connect hardware, enable outputs, acquire images or move shutters. Existing acquisition, data formats, native/common APIs and cleanup policies are unchanged.
 
-## Downloads / ダウンロード
+## Downloads and validation
 
-Windows x64 Setup/portable ZIP; macOS Apple-silicon ZIP/DMG; source/build kit and checksums. Windows is unsigned; macOS uses ad hoc signing, not notarization.
-
-[Release packages](https://github.com/woolen-yarn/kohdalab-trkr/releases). Existing older releases remain available.
-
-## Validation and provenance / 検証と出所
-
-Local Rust workspace: 274 passed; strict clippy passed. Actual Demo GUI completed 360 synthetic points via the shared SDK. Windows/macOS/Linux tests and package/install checks are recorded in the matching CI.
-
-The common Python SDK has nine device-free tests. Source/build identifiers, package manifests and SHA-256 evidence accompany the release. These checks do not newly qualify physical instruments, optical closure, camera calibration or scientific accuracy.
+Use the installer, portable package and corresponding source/build kit attached to this release. Platform tests and artifact provenance qualify the exact packaged source; first-launch regression checks include concurrent creation, preservation and unusable directories. No new physical-device qualification is claimed. Windows executables remain unsigned; supported Mac packages use ad hoc signing and are not notarized.
 
 ## 日本語
 
-設定とインストール先をアプリ専用に統一し、共通GUI APIを追加しました。既存CSV・測定・停止方針は維持します。共有機器サービスは別途導入する開発機能で、実機適合確認は対象外です。
+初回の通常GUI起動時に、アプリ専用の標準設定を自動作成します。既存・不正・未対応の設定は保持し、エラーを表示します。設定作成・読込による装置接続・出力ON・撮影・シャッター移動は行いません。従来の測定・保存形式・API・終了処理は変更しません。

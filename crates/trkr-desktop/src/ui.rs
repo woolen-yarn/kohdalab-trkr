@@ -371,10 +371,6 @@ impl App {
                 app.hydrate();
                 app.note(format!("Loaded configuration: {}", path.display()));
             }
-            Ok(StartupSettings::Missing) => {
-                app.hydrate();
-                app.note("No configuration file found; using built-in defaults");
-            }
             Err(error) => {
                 app.hydrate();
                 app.note(error);

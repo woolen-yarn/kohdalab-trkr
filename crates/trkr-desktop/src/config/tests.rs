@@ -368,20 +368,102 @@ fn user_config_paths_keep_production_and_demo_profiles_separate() {
 }
 
 #[test]
+fn config_home_selection_prefers_platform_native_environment() {
+    use std::ffi::OsStr;
+    assert_eq!(
+        super::home_from_environment(
+            Some(OsStr::new("C:/Users/operator")),
+            Some(OsStr::new("/Users/operator")),
+            true,
+        ),
+        std::path::PathBuf::from("C:/Users/operator")
+    );
+    assert_eq!(
+        super::home_from_environment(
+            Some(OsStr::new("C:/Users/operator")),
+            Some(OsStr::new("/Users/operator")),
+            false,
+        ),
+        std::path::PathBuf::from("/Users/operator")
+    );
+    assert_eq!(
+        super::home_from_environment(None, Some(OsStr::new("/Users/operator")), true),
+        std::path::PathBuf::from("/Users/operator")
+    );
+}
+
+#[test]
 fn startup_uses_only_the_trkr_specific_profile() {
     let root = tempfile::tempdir().unwrap();
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
-    assert!(matches!(
-        load_startup(&paths).unwrap(),
-        StartupSettings::Missing
-    ));
+    let StartupSettings::Loaded { path, .. } = load_startup(&paths).unwrap();
+    assert_eq!(path, paths.production());
+    assert!(paths.production().is_file());
+    let raw: Value = serde_json::from_slice(&std::fs::read(paths.production()).unwrap()).unwrap();
+    assert_eq!(raw["application"], APPLICATION);
+    let first_bytes = std::fs::read(paths.production()).unwrap();
+    let _ = load_startup(&paths).unwrap();
+    assert_eq!(first_bytes, std::fs::read(paths.production()).unwrap());
     let production = paths.production();
     Settings::default().save(&production).unwrap();
-    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
-        panic!("TRKR profile was not loaded");
-    };
+    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap();
     assert_eq!(path, production);
     assert!(settings.hardware().is_ok());
+}
+
+#[test]
+fn first_launch_does_not_replace_a_racing_or_invalid_profile() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    let production = paths.production();
+    std::fs::create_dir_all(production.parent().unwrap()).unwrap();
+    let foreign = br#"{"application":"kohdalab-iv","operator":"keep"}"#;
+    std::fs::write(&production, foreign).unwrap();
+    let error = load_startup(&paths).unwrap_err();
+    assert!(error.contains("belongs to kohdalab-iv"));
+    assert_eq!(std::fs::read(&production).unwrap(), foreign);
+}
+
+#[test]
+fn concurrent_first_launches_publish_one_complete_json() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    let production = paths.production();
+    let mut workers = Vec::new();
+    for _ in 0..8 {
+        let path = production.clone();
+        workers.push(std::thread::spawn(move || load_startup(&UserConfigPaths::from_kohdalab_dir(
+            path.parent().unwrap().parent().unwrap().to_path_buf(),
+        ))));
+    }
+    for worker in workers {
+        assert!(worker.join().unwrap().is_ok());
+    }
+    assert!(Settings::load(&production).is_ok());
+}
+
+#[test]
+fn unusable_profile_parent_is_reported_without_creating_partial_data() {
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().join(".kohdalab");
+    std::fs::write(&parent, b"occupied").unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(parent);
+    let error = load_startup(&paths).unwrap_err();
+    assert!(!error.is_empty());
+    assert!(!root.path().join(".kohdalab/trkr/config.json").exists());
+}
+
+#[test]
+fn future_profile_is_preserved_and_reported() {
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    let production = paths.production();
+    std::fs::create_dir_all(production.parent().unwrap()).unwrap();
+    let bytes = br#"{"application":"kohdalab-trkr","schema_version":999}"#;
+    std::fs::write(&production, bytes).unwrap();
+    let error = load_startup(&paths).unwrap_err();
+    assert!(error.contains("Configuration is invalid"));
+    assert_eq!(std::fs::read(production).unwrap(), bytes);
 }
 
 #[test]
@@ -393,9 +475,7 @@ fn startup_prefers_existing_new_profile_and_reports_invalid_files() {
     let mut current = Settings::default();
     current.raw["experiment"] = json!({"profile":"new"});
     current.save(&production).unwrap();
-    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap() else {
-        panic!("new profile was not loaded");
-    };
+    let StartupSettings::Loaded { settings, path } = load_startup(&paths).unwrap();
     assert_eq!(path, production);
     assert_eq!(settings.raw["experiment"]["profile"], "new");
 

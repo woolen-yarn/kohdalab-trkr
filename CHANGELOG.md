@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.5
+
+- Automatically create the missing application-specific default configuration on first normal GUI launch.
+- Preserve existing/corrupt profiles with atomic no-clobber creation and report initialization errors. Do not connect hardware or enable outputs.
+
+
 ## 0.4.4 — 2026-10-29
 
 - Add the additive Control Protocol 1 GUI API, shared Python SDK, canonical discovery and verified receipt/ownership tests.

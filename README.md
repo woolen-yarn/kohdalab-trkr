@@ -28,7 +28,7 @@ Synthetic TRKR data; no instruments connected. The same interface is used on Win
 
 | Channel / 配布区分 | Version / バージョン | Platforms / 対応環境 |
 | --- | --- | --- |
-| Stable / 安定版 | [0.4.4](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.4) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
+| Stable / 安定版 | [0.4.5](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v0.4.5) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
 
 Rust and Python are not required to run the packaged application. Current Windows
 artifacts are unsigned; download packages and checksums together from Releases.
@@ -59,7 +59,7 @@ Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings
 
 Python can attach to the desktop GUI or launch it with a JSON profile, then exclusively control measurements, motion, and output settings while keeping the live plots and Stop available. / Pythonから既存GUIへ接続、またはJSON設定で新規起動し、ライブプロット・Stopを使いながら測定・移動・保存先を排他制御できます。
 
-TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\.kohdalab\trkr\config.json` on Windows). Demo settings use the separate `demo.json`. The standard installed locations are `C:\Program Files\Kohdalab\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\.kohdalab\trkr\config.json`）に保存されます。Demo設定は別の`demo.json`を使用します。標準のインストール先は`C:\Program Files\Kohdalab\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
+TRKR saves its user profile at `~/.kohdalab/trkr/config.json` (`%USERPROFILE%\.kohdalab\trkr\config.json` on Windows). On the first normal launch, the file is created from the embedded safe defaults; this does not connect hardware or enable outputs. Existing valid, invalid, or future-version files are never replaced automatically. Demo settings use the separate `demo.json`. The standard installed locations are `C:\Program Files\Kohdalab\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config.json`（Windowsでは`%USERPROFILE%\.kohdalab\trkr\config.json`）に保存されます。通常の初回起動では内蔵の安全な既定値から自動作成されますが、機器接続や出力有効化は行いません。既存の有効・不正・将来版のファイルは自動で置き換えません。Demo設定は別の`demo.json`を使用します。標準のインストール先は`C:\Program Files\Kohdalab\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
 
 ## Development / 開発
 
