@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased / 未公開
+## 0.4.9
+
+- Use consistent Config, Output, snapshot-save and replay dialog titles across platforms; report cancellation rather than leaving an opening notice. / 各OSのConfig・Output・スナップショット保存・再表示ダイアログのタイトルを統一し、キャンセル完了をログへ表示。
+- Fall back to the nearest existing initial directory on macOS as on Windows when a nested output path has not yet been created. / Macでも未作成の入れ子パスを指定したときは最寄りの既存フォルダーから開きます。
 
 - Match IV’s Windows Output folder picker: use the native Explorer-style dialog titled `Output directory`, with nearest-existing-folder fallback. / WindowsのOutput選択画面をIVと同じエクスプローラー形式・`Output directory`タイトルへ統一し、未作成パスは最寄りの既存フォルダーから開きます。
 

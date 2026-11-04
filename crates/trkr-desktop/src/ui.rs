@@ -2236,7 +2236,7 @@ impl App {
     }
     fn begin_dialog(&mut self, kind: DialogKind, initial: String) {
         if self.dialog.is_none() {
-            self.note("Opening file chooser…");
+            self.note(format!("Opening {}…", kind.title().to_lowercase()));
             self.dialog = Some(PendingDialog {
                 kind,
                 workflow: self.workflow,
@@ -2281,7 +2281,7 @@ impl App {
                         }
                     }
                 },
-                Ok(None) => {}
+                Ok(None) => self.note("Selection cancelled"),
                 Err(error) => self.note(error),
             }
         }
