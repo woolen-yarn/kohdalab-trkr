@@ -938,3 +938,40 @@ fn referenced_cc_gui_initialization_can_skip_home_while_still_moving_to_zero() {
         }
     ));
 }
+
+#[test]
+fn single_pair_csv_load_selects_available_demo_display_without_derivation() {
+    for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+        let mut app = App::with_context(&egui::Context::default(), true);
+        let plan = Plan::default();
+        let signal = trkr_core::Signal::from_pair(mode, 1e-6, 2.).unwrap();
+        let data = crate::replay_data::Dataset {
+            plan: plan.clone(),
+            samples: vec![Sample {
+                recording: Default::default(),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: 0.,
+                target: plan.targets().unwrap()[0],
+                signal,
+                position: Default::default(),
+            }],
+        };
+        let (send, receiver) = std::sync::mpsc::channel();
+        send.send(Ok(vec![(PathBuf::from("single-pair.csv"), data)]))
+            .unwrap();
+        app.demo.pending = Some(receiver);
+        app.demo_tick();
+        assert_eq!(app.mode, mode);
+        assert_eq!(
+            app.demo.datasets[App::ix(Workflow::SignalMonitor)]
+                .as_ref()
+                .unwrap()
+                .samples[0]
+                .signal
+                .acquired_pair(),
+            Some(mode)
+        );
+        assert!(app.trace.is_empty());
+    }
+}

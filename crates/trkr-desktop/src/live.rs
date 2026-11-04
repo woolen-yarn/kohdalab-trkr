@@ -82,6 +82,7 @@ impl History {
             .iter()
             .filter(|(time, _)| newest - time <= 30.)
             .map(|(time, signal)| [time - newest, mode.values(*signal)[channel] * scale])
+            .filter(|point| point[1].is_finite())
             .collect()
     }
 }
@@ -140,6 +141,30 @@ mod tests {
         );
         assert!(
             h.points_at(DisplayMode::Xy, 0, 1e6, h.newest(true))
+                .is_empty()
+        );
+    }
+    #[test]
+    fn unacquired_pair_has_no_live_plot_points() {
+        let mut history = History::default();
+        history.push(
+            Signal::from_pair(DisplayMode::Xy, 1., 2.).unwrap(),
+            ReadingOrigin::Hardware,
+        );
+        assert_eq!(
+            history
+                .points_at(DisplayMode::Xy, 0, 1., history.newest(false))
+                .len(),
+            1
+        );
+        assert!(
+            history
+                .points_at(DisplayMode::RTheta, 0, 1., history.newest(false))
+                .is_empty()
+        );
+        assert!(
+            history
+                .points_at(DisplayMode::RTheta, 1, 1., history.newest(false))
                 .is_empty()
         );
     }

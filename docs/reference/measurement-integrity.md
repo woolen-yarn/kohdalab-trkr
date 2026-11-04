@@ -1,17 +1,31 @@
 # Measurement integrity / 測定記録の精度
 
+## Pending update: LI5640 selected-pair acquisition / 未公開更新：LI5640片側取得
+
+LI5640 reads only the pair selected in the left panel: XY or Rθ. The instrument display/output mapping is configured on connect or explicit mode change and verified before each read. Acquisition queries do not write DDEF/OTYP or alternate the display. The other components remain blank in main CSV and null in the API/raw signal object; they are never reconstructed. `signal_xy_only` / `signal_rtheta_only` identify the measured pair, and CSV replay preserves this omission. LI5640 mode changes are disabled while a GUI operation is pending/running; external `set_lockin("display_mode", "xy" | "r_theta")` uses the same worker. Other lock-in drivers retain all-component acquisition. Each LI5640 sample uses one DOUT? plus three read-only mode queries to prevent silent relabeling after external/front-panel changes; the former per-pair 20 ms sleeps are removed. Periodic/manual settings refresh no longer changes OTYP to fetch reference frequency, so that unqueried field stays unknown. Explicit selection failures restore/verify the old mapping or invalidate the session if restoration is unverified.
+
+LI5640は左パネルで選んだXYまたはRθだけを取得します。接続・明示的な選択変更時に本体の表示と出力対応を設定し、読取り前に確認します。通常取得中はDDEF/OTYPを書き換えず、表示を往復しません。未取得側はmain CSVで空欄、API・raw信号オブジェクトでnullとし、計算で補いません。取得側は上記quality flagで識別し、CSV再表示でも未取得を維持します。GUI操作の実行待ち・実行中はLI5640の選択変更を無効にします。外部制御も同じワーカーで処理します。他機種の全成分取得は維持します。LI5640はDOUT? 1回と読取り専用のモード照会3回で外部・本体操作による誤ラベルを防ぎ、従来の各ペア20 ms待機は除去します。周期・手動の設定照会もOTYPを変更せず、未取得の参照周波数は不明のままです。明示的な選択変更が失敗した場合は元設定の復元を確認し、確認できなければ接続を無効化します。
+
+Recording revision 6 retains the main/raw column schemas and adds `position_value` raw rows for observed `delay_stage_pulse` (pulse), `delay_stage_mm` (mm), `x_scanner_mm` / `y_scanner_mm` (mm), and `x_scanner_deg` / `y_scanner_deg` (deg). `device_role`, `quantity`, `value`, `unit` and point index make native values directly readable; the original responses and structured position are retained. `delay_stage_pulse` is the controller readback; `delay_stage_mm` is its conversion using effective calibration and is identified as such in `value_origin`. Missing axes remain absent, pulse 0 remains a valid value, and scalar materialization does not trigger hardware reads. Repeated reading snapshots do not create duplicate scalar rows. Cached final/last positions carry an explicit qualification with unknown observation time rather than borrowing movement completion timestamps.
+
+記録revision 6ではmain/rawの列構成を維持し、上記の装置生座標を`position_value`行へ明示します。機器・量・値・単位・測定点番号で抽出でき、生応答と元の座標オブジェクトも保持します。遅延pulseは装置読戻し、遅延mmは実効校正によるpulseからの換算として`value_origin`で区別します。未接続軸は捏造せず、pulseの0は有効値として保持し、記録のための追加照会はしません。同じ点のreadingに再掲された座標は明示行へ二重展開しません。キャッシュされた最終・直近座標には観測時刻不明を明記し、移動完了時刻を実読取時刻として扱いません。
+
+A scanner arrival mismatch now reports X/Y, requested sample µm, quantized native command, native readback, difference and allowed tolerance. The tolerance and stop-on-failure behavior are unchanged. The last saved point in a screenshot cannot identify the failed target; use the detailed error and raw/run files.
+
+スキャナ到達エラーにはX/Y・要求µm・丸め後の装置指令・生読戻し・差・許容差を表示します。許容差や不一致時の停止処理は変更しません。画面の最後の保存点だけでは失敗点を特定できないため、詳細エラーとraw/runを確認します。
+
 ## Stop and motion verification (0.4.1) / 停止・移動確認
 
 Stop first stops the motion axes and verifies stationary controller states. It then
 retires exactly one interrupted GPIB helper reply before accepting another command.
 A healthy reply is discarded and the session stays connected; missing, malformed or
 failed replies invalidate the session. This never resumes the interrupted run.
-LI5640 display-changing reads still require reconnection if cancellation prevents
-restoring their settings. Communication failure is distinct from a normal Stop.
+In 0.4.1–0.4.7, LI5640 display-changing reads required reconnection if cancellation prevented
+restoring their settings. The pending selected-pair reader does not perform those writes. Communication failure is distinct from a normal Stop.
 
 Stopでは軸への停止命令と停止状態の確認を優先し、その後、中断したGPIB応答を1件だけ回収・破棄します。
 正常な応答なら接続を維持し、未応答・不正応答・通信失敗なら接続を無効にします。中断した測定は再開しません。
-LI5640で表示設定を復元できない中断は、引き続き再接続が必要です。通信異常は通常の停止と区別します。
+0.4.1～0.4.7のLI5640は表示復元できない中断で再接続が必要でした。未公開の片側取得では通常読取りに表示変更がありません。通信異常は通常の停止と区別します。
 
 Compensation must reach its own commanded position before the final move starts.
 HOME requires a post-command BUSY/HOMING transition and a confirmed completion state;
@@ -54,7 +68,7 @@ Historical descriptions below apply to their stated versions, not the new writer
 | --- | --- |
 | `run_id`, `point_index` | Run UUID and one-based saved point number / 測定UUIDと1始まりの点番号 |
 | `timestamp`, `elapsed_s` | Signal-read completion on host UTC and monotonic run seconds / ホスト側信号読取完了のUTC・単調経過秒 |
-| `quality_flags` | `simulated`, `ok`, `overload`, `reference_unlock`, `reference_status_unknown`, `status_unknown`, `unit_unknown`; combined with `\|` / 状態・不明・合成を区別 |
+| `quality_flags` | `simulated`, `ok`, `overload`, `reference_unlock`, `reference_status_unknown`, `status_unknown`, `unit_unknown`; pending revision 6 adds `signal_xy_only` / `signal_rtheta_only`; combined with `\|` / 状態・不明・合成を区別 |
 | `measurement`, `fast_axis`, `slow_axis`, `line_index` | Workflow, axes and zero-based 2D line index; slow/line empty for 1D / 測定・走査軸と0始まり2D行番号。1Dはslow・line空欄 |
 | `target_elapsed_s` | Monitor scheduled seconds / モニター予定経過秒 |
 | `target_t_cor_ps`, `target_x_cor_um`, `target_y_cor_um` | Canonical commanded measurement coordinates, even when input uses mm/pulse / 入力がmm・pulseでも換算済みの測定座標指令 |

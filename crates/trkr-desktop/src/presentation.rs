@@ -378,8 +378,10 @@ fn prepare_heatmap(
                 ys.binary_search_by(|v| v.total_cmp(&y)),
             )
         {
-            image.pixels[(ys.len() - 1 - yi) * xs.len() + xi] =
-                diverging(mode.values(sample.signal)[signal] * signal_scale, max);
+            let value = mode.values(sample.signal)[signal] * signal_scale;
+            if value.is_finite() {
+                image.pixels[(ys.len() - 1 - yi) * xs.len() + xi] = diverging(value, max);
+            }
         }
     }
     Some(PreparedHeatmap {

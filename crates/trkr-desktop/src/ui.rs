@@ -1040,6 +1040,13 @@ impl App {
             };
             self.note(action);
         }
+        if self.model == Model::Li5640
+            && !self.source_demo
+            && s.devices[0]
+            && !self.controller.has_pending()
+        {
+            self.mode = s.signal_mode;
+        }
         self.snapshot = s;
         if (self.snapshot.running || completed_run) && self.snapshot.total > 0 {
             self.scan_progress[Self::ix(self.active_workflow)] =
@@ -1477,6 +1484,7 @@ impl App {
         }
     }
     fn lockin(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let previous_mode = self.mode;
         let phase = device_phase(
             self.snapshot.devices[0],
             self.snapshot.running,
@@ -1593,13 +1601,16 @@ impl App {
                 );
             }
             let extra = if self.device_expanded[0] { 114. } else { 0. };
-            form.enabled = true;
+            form.enabled = !(self.model == Model::Li5640
+                && !self.source_demo
+                && (self.snapshot.running || self.controller.has_pending()));
             form.combo(
                 "signal_mode_combo",
                 precision::rect(w - 103., 27., 92., 24.),
                 &mut self.mode,
                 &[(DisplayMode::Xy, "X / Y"), (DisplayMode::RTheta, "R / θ")],
             );
+            form.enabled = true;
             let origin = self.live.origin();
             let live = self.live.recent()
                 && match origin {
@@ -1694,6 +1705,16 @@ impl App {
                         );
                 }
             }
+        }
+        if previous_mode != self.mode
+            && !self.demo_viewer
+            && let Err(error) = self.controller.send(Command::SetLockin {
+                setting: "display_mode".into(),
+                value: serde_json::to_value(self.mode).expect("display mode"),
+            })
+        {
+            self.mode = previous_mode;
+            self.note(error);
         }
         if connect {
             match Self::gpib_address(&self.lockin_resource) {

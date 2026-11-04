@@ -682,6 +682,10 @@ fn compensation_readback_mismatch_never_starts_the_final_leg() {
         .return_to_with_progress([None, Some(0.), None], &AtomicBool::new(false), None)
         .unwrap_err();
     assert!(error.contains("Scanner readback does not match target"));
+    assert!(error.contains("X scanner requested sample -100 µm"));
+    assert!(error.contains("commanded 5 mm"));
+    assert!(error.contains("read back 4 mm (-200 µm)"));
+    assert!(error.contains("difference 1 mm, allowed 0.0002 mm"));
     let commands = log.lock().unwrap();
     assert!(commands.contains(&"1PA5.0000".into()));
     assert!(!commands.contains(&"1PA6.0000".into()));

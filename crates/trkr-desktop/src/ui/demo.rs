@@ -236,6 +236,13 @@ impl App {
                                         .max(s.signal.r_v.abs())
                                 })
                                 .fold(0_f64, f64::max);
+                            if let Some(mode) = data
+                                .samples
+                                .first()
+                                .and_then(|sample| sample.signal.acquired_pair())
+                            {
+                                self.mode = mode;
+                            }
                             self.demo.datasets[i] = Some(Arc::new(data));
                         }
                     }

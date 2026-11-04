@@ -93,8 +93,11 @@ pub fn draw(
     } else {
         Scale::for_magnitude(extent)
     };
-    let current = history.signal().map(|signal| mode.values(signal)[channel]);
-    let state = if history.signal().is_none() {
+    let current = history
+        .signal()
+        .map(|signal| mode.values(signal)[channel])
+        .filter(|value| value.is_finite());
+    let state = if current.is_none() {
         "WAITING"
     } else if active && history.recent() {
         "LIVE"

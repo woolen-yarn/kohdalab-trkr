@@ -1263,17 +1263,21 @@ impl MotionRig {
                         .as_ref()
                         .ok_or("Scanner not connected")?;
                     let expected = s.config.raw_target(*v)?;
-                    let measured = s
+                    let measured_sample = actual.physical[i].ok_or("Missing position readback")?;
+                    let measured = s.config.raw_from_sample_um(measured_sample);
+                    let allowed = s
                         .config
-                        .raw_from_sample_um(actual.physical[i].ok_or("Missing position readback")?);
-                    if (expected - measured).abs()
-                        > s.config
-                            .resolution
-                            .or(s.config.min_step)
-                            .unwrap_or(0.0001)
-                            .max(0.0001)
-                    {
-                        return Err("Scanner readback does not match target".into());
+                        .resolution
+                        .or(s.config.min_step)
+                        .unwrap_or(0.0001)
+                        .max(0.0001);
+                    let difference = (expected - measured).abs();
+                    if difference > allowed {
+                        let axis = if i == 1 { "X" } else { "Y" };
+                        let unit = s.config.pos_unit.as_deref().unwrap_or("native unit");
+                        return Err(format!(
+                            "Scanner readback does not match target: {axis} scanner requested sample {v} µm; commanded {expected} {unit}; read back {measured} {unit} ({measured_sample} µm); difference {difference} {unit}, allowed {allowed} {unit}"
+                        ));
                     }
                 }
             }

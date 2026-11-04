@@ -97,6 +97,10 @@ impl RawWriter {
     }
     pub fn append(&mut self, event: &Value) -> Result<(), String> {
         let mut event = event.clone();
+        // Keep native device coordinates in queryable CSV rows as well as in
+        // the original event JSON. This observes a position already obtained
+        // by the engine; it never adds a motion-controller query.
+        let position_values = raw_position_values(&event);
         if let Some(exchanges) = event
             .as_object_mut()
             .and_then(|v| v.remove("exchanges"))
@@ -111,6 +115,9 @@ impl RawWriter {
             }
         }
         self.write_event(&event)?;
+        for value in position_values {
+            self.write_event(&value)?;
+        }
         self.flush()
     }
     fn write_event(&mut self, event: &Value) -> Result<(), String> {
@@ -170,6 +177,58 @@ impl RawWriter {
         self.event_index += 1;
         Ok(())
     }
+}
+
+/// Flatten native motion readbacks that are already attached to an audit
+/// event.  The calibrated `physical` values remain in the original JSON; these
+/// rows expose the controller-native values without guessing values for absent
+/// devices.
+fn raw_position_values(event: &Value) -> Vec<Value> {
+    let mut values = Vec::new();
+    for source in ["position", "final_position", "last_observed_position"] {
+        // The reading event repeats the preceding position_read snapshot; do
+        // not materialize duplicate scalar rows for those same observations.
+        if source == "position" && event["event"] == "reading" {
+            continue;
+        }
+        let Some(position) = event.get(source).and_then(Value::as_object) else {
+            continue;
+        };
+        for (field, role, quantity, unit) in [
+            (
+                "delay_stage_pulse",
+                "delay_stage",
+                "delay_stage_pulse",
+                "pulse",
+            ),
+            ("delay_stage_mm", "delay_stage", "delay_stage_mm", "mm"),
+            ("x_scanner_mm", "scanner_x", "x_scanner_mm", "mm"),
+            ("x_scanner_deg", "scanner_x", "x_scanner_deg", "deg"),
+            ("y_scanner_mm", "scanner_y", "y_scanner_mm", "mm"),
+            ("y_scanner_deg", "scanner_y", "y_scanner_deg", "deg"),
+        ] {
+            let Some(value) = position.get(field).filter(|value| !value.is_null()) else {
+                continue;
+            };
+            values.push(json!({
+                "event": "position_value",
+                "point_index": event.get("point_index"),
+                "reading_index": event.get("reading_index"),
+                "device_role": role,
+                "quantity": quantity,
+                "value": value,
+                "unit": unit,
+                "timing": if source == "position" { event.pointer("/timing/position").or_else(||event.get("timing")) } else { None },
+                "position_source": source,
+                "value_origin": if field == "delay_stage_mm" { "converted_from_delay_stage_pulse_using_effective_calibration" } else { "controller_readback" },
+                "timing_scope": "aggregate_position_read_window_not_individual_device_timestamp",
+                "parent_event": event.get("event"),
+                "parent_error": event.get("error"),
+                "position_qualification": if source == "position" { "queried_during_parent_event" } else { "last_observed_no_extra_query; observation_time_unknown" },
+            }));
+        }
+    }
+    values
 }
 fn cell(value: &Value) -> String {
     match value {
@@ -322,6 +381,87 @@ mod tests {
         let mut snapshot_bytes = Vec::new();
         snapshot(&path, &mut snapshot_bytes, 1, false).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), snapshot_bytes);
+    }
+    #[test]
+    fn native_motion_values_are_explicit_rows_without_inventing_missing_axes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("run.raw.csv");
+        let mut writer = RawWriter::create(&path, "run-test").unwrap();
+        writer
+            .append(&json!({
+                "event": "position_read",
+                "point_index": 7,
+                "timing": {"position":{"host_started_elapsed_s": 1.25,"host_completed_elapsed_s":1.5,"host_started_at_utc":"2026-11-04T00:00:00Z"},"signal":null},
+                "position": {
+                    "physical": [null, null, null],
+                    "delay_stage_mm": 12.3456789012345,
+                    "delay_stage_pulse": 987654321,
+                    "x_scanner_deg": -0.123456789012345,
+                    "y_scanner_mm": 4.56789012345678,
+                    "x_scanner_mm": null,
+                    "y_scanner_deg": null
+                }
+            }))
+            .unwrap();
+        writer.finish().unwrap();
+        let mut reader = csv::Reader::from_path(&path).unwrap();
+        let headers = reader.headers().unwrap().clone();
+        let column = |name| headers.iter().position(|value| value == name).unwrap();
+        let rows: Vec<_> = reader.records().map(Result::unwrap).collect();
+        assert_eq!(rows.len(), 5); // Original event plus four native values.
+        let native: Vec<_> = rows
+            .iter()
+            .filter(|row| &row[column("event_type")] == "position_value")
+            .collect();
+        assert_eq!(native.len(), 4);
+        let field = |quantity: &str| {
+            native
+                .iter()
+                .find(|row| &row[column("quantity")] == quantity)
+                .unwrap()
+        };
+        assert_eq!(&field("delay_stage_pulse")[column("value")], "987654321");
+        assert_eq!(&field("delay_stage_pulse")[column("unit")], "pulse");
+        assert_eq!(
+            &field("delay_stage_mm")[column("value")],
+            "12.3456789012345"
+        );
+        assert_eq!(
+            &field("x_scanner_deg")[column("value")],
+            "-0.123456789012345"
+        );
+        assert_eq!(&field("y_scanner_mm")[column("value")], "4.56789012345678");
+        assert!(native.iter().all(|row| &row[column("point_index")] == "7"));
+        assert!(
+            native
+                .iter()
+                .all(|row| &row[column("started_elapsed_s")] == "1.25")
+        );
+        assert!(
+            native.iter().all(|row| {
+                !matches!(&row[column("quantity")], "x_scanner_mm" | "y_scanner_deg")
+            })
+        );
+    }
+    #[test]
+    fn cached_motion_positions_do_not_fabricate_read_timestamps_or_duplicate_reading_rows() {
+        let event = json!({"event":"move","point_index":2,"timing":{"host_started_elapsed_s":10.,"host_completed_elapsed_s":20.},"final_position":{"delay_stage_pulse":0,"y_scanner_deg":0.01234567890123456},"error":"position mismatch"});
+        let rows = raw_position_values(&event);
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert!(row["timing"].is_null());
+            assert!(
+                row["position_qualification"]
+                    .as_str()
+                    .unwrap()
+                    .contains("observation_time_unknown")
+            );
+            assert_eq!(row["parent_error"], "position mismatch");
+        }
+        assert!(
+            raw_position_values(&json!({"event":"reading","position":{"delay_stage_pulse":1}}))
+                .is_empty()
+        );
     }
     #[test]
     fn snapshot_drops_torn_multiline_record_and_future_points() {

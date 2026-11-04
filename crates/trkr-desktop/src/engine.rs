@@ -28,7 +28,7 @@ use std::{
 };
 #[cfg(test)]
 use trkr_core::Axis;
-use trkr_core::{Coordinate, Plan, Signal, Target, Workflow};
+use trkr_core::{Coordinate, DisplayMode, Plan, Signal, Target, Workflow};
 use trkr_motion::{DelayCalibration, MotionConfig, MotionRig, Position};
 use trkr_transport::Gpib;
 
@@ -101,6 +101,8 @@ pub struct Snapshot {
     pub phase: String,
     pub position: Position,
     pub signal: Option<Signal>,
+    #[serde(default)]
+    pub signal_mode: DisplayMode,
     #[serde(default)]
     pub signal_origin: Option<ReadingOrigin>,
     pub lockin: Value,
@@ -209,6 +211,7 @@ fn poll_live(
         _ => ReadingOrigin::Hardware,
     };
     let position = state.position.clone();
+    let signal_mode = state.signal_mode;
     let elapsed = monitor.started.elapsed().as_secs_f64();
     let demo_coordinates = monitor.demo_coordinates;
     if let Some(signal) = monitor.poll(
@@ -218,8 +221,10 @@ fn poll_live(
                     .as_deref_mut()
                     .ok_or(OperationError::LockinDisconnected)?;
                 match cancel {
-                    Some(token) => lockin::read_cancellable(model, gpib, token),
-                    None => lockin::read(model, gpib),
+                    Some(token) => {
+                        lockin::read_selected_cancellable(model, gpib, token, signal_mode)
+                    }
+                    None => lockin::read_selected(model, gpib, signal_mode),
                 }
             }
             Source::Demo => Ok(Signal::demo(
@@ -725,6 +730,9 @@ impl Session {
                 .transpose()?
                 .flatten();
         }
+        if let Some(gpib) = &mut self.gpib {
+            lockin::select_mode(config.model, gpib, self.state.signal_mode)?;
+        }
         self.config = Some(config);
         self.read()?;
         Ok(())
@@ -740,7 +748,7 @@ impl Session {
                 .as_ref()
                 .ok_or("Missing lock-in configuration")?
                 .model;
-            self.state.signal = Some(lockin::read(model, gpib)?);
+            self.state.signal = Some(lockin::read_selected(model, gpib, self.state.signal_mode)?);
             self.state.signal_origin = Some(ReadingOrigin::Hardware);
         }
         Ok(())
@@ -757,10 +765,11 @@ impl Session {
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<Option<PathBuf>, String> {
-        let refresh = matches!(
-            command,
-            Command::SetLockin { .. } | Command::AutoLockin { .. }
-        );
+        let refresh = match &command {
+            Command::SetLockin { setting, .. } => setting != "display_mode",
+            Command::AutoLockin { .. } => true,
+            _ => false,
+        };
         let result = self.execute(command, cancel, send)?;
         if refresh {
             self.execute(Command::LockinSettings, cancel, send)
@@ -901,6 +910,23 @@ impl Session {
             }
             Command::SetLockin { setting, value } => {
                 self.lockin_context = None;
+                if setting == "display_mode" {
+                    let mode: DisplayMode = serde_json::from_value(value)
+                        .map_err(|e| format!("Invalid signal mode: {e}"))?;
+                    if let (Some(config), Some(gpib)) = (&self.config, &mut self.gpib) {
+                        lockin::select_mode(config.model, gpib, mode)?;
+                    }
+                    self.state.signal_mode = mode;
+                    if self
+                        .config
+                        .as_ref()
+                        .is_some_and(|config| config.model == Model::Li5640)
+                    {
+                        self.state.signal = None;
+                        self.state.signal_origin = None;
+                    }
+                    return Ok(None);
+                }
                 let setting = match setting.as_str() {
                     "sensitivity" => "Sensitivity",
                     "time_constant" => "Time Constant",
@@ -1021,6 +1047,14 @@ impl Session {
     fn recording_context(&self, source: Source, configured: &HardwareConfig) -> Value {
         let mut context = serde_json::Map::new();
         context.insert("source".into(), serde_json::json!(source));
+        context.insert(
+            "signal_mode".into(),
+            serde_json::json!(self.state.signal_mode),
+        );
+        context.insert(
+            "unacquired_signal_components".into(),
+            serde_json::json!("not_derived; null in API/raw, blank in main CSV"),
+        );
         context.insert("configured_hardware".into(), serde_json::json!(configured));
         context.insert(
             "transport".into(),
@@ -1336,7 +1370,7 @@ impl Session {
                                 }
                             }
                             let gpib = self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
-                            let (recorded, window, captured) = timing::observe(start, || lockin::read_recorded_cancellable(model, gpib, cancel));
+                            let (recorded, window, captured) = timing::observe(start, || lockin::read_selected_recorded_cancellable(model, gpib, cancel, self.state.signal_mode));
                             point_timing.signal = Some(window);
                             let exchanges = serde_json::to_value(&recorded.exchanges)
                                 .map_err(|error| error.to_string())?;
@@ -1394,6 +1428,11 @@ impl Session {
                             Err(_) => flags.push("status_unknown"),
                         }
                         if signal_unit=="unknown" { flags.push("unit_unknown"); }
+                        match signal.acquired_pair() {
+                            Some(DisplayMode::Xy) => flags.push("signal_xy_only"),
+                            Some(DisplayMode::RTheta) => flags.push("signal_rtheta_only"),
+                            None => {},
+                        }
                         quality_flags=if flags.is_empty() { "ok".into() } else { flags.join("|") };
                         status_event=Some(serde_json::json!({"event":"status_check","point_index":index+1,"device_role":"lockin",
                             "timing":window, "settings":status.result.as_ref().ok(), "error":status.result.as_ref().err(),"exchanges":status.exchanges}));

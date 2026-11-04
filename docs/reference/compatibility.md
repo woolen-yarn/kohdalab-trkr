@@ -62,9 +62,7 @@ every 100 ms during motion and settling as well as while idle, subject to device
 response time. Display-only reads never add CSV rows or advance Step; saved signals
 are still read after settling. Near the end of a wait, the measurement read takes
 priority over an additional display read. Stop can interrupt a pending live-read
-response; an interrupted wire transaction disconnects the lock-in and requires
-reconnection. For LI5640, an interrupted display-selection sequence also marks
-the connection invalid and asks the operator to verify display/output settings.
+response; a healthy cancelled reply is retired and discarded before the connection is reused. Transport/recovery failures require reconnection. In the pending LI5640 update, reads never switch displays: only the selected pair is acquired, with the other components null/blank and never derived. Explicit mode changes restore and verify the previous configuration on failure; failed restoration invalidates the connection.
 
 ## Read-only demo
 
@@ -156,8 +154,7 @@ Remaining explicit interface differences:
 - U/V maps are a Rust extension. Their two physical X/Y targets remain coupled;
   Cartesian scan ordering is not applied as two independent motor moves.
 - A failed GPIB transport is invalidated rather than retried with other lock-in
-  read commands. LI5640 requires a complete saved display/output state before
-  temporarily selecting channels. These retain restoration and transport safety.
+  read commands. Pending LI5640 selected-pair acquisition changes the display only on explicit mode selection/connect, with verified rollback or invalidation after a failed configuration. Per-sample mode checks are read-only.
 - Delay position parsing retains validated comma-separated controller replies.
   Undocumented variants accepted by the old permissive regex have not been
   claimed compatible without captured responses. No hardware motion was used
@@ -255,7 +252,7 @@ Configは機器欄のスクロール領域の上に固定します。左の矢�
 
 SRKRは最新X/YまたはU/Vを同時保持します。STRKRとSRKR 2Dは順序付きfast/slowペアごとに最新結果を保持し、過去のペアを選ぶとプロット、Step、Save Now用の記録CSVを復元します。再測定で置き換わるのは対象軸・ペアだけです。各結果の原点とthetaを使い、U/Vは保存thetaが選択角度と一致するときだけ表示します。theta変更で履歴を無制限に増やしません。Clear plotはそのタブの保持結果を消します。
 
-SRKR 2Dはx/yまたはu/vのみで、thetaはuの横に1つです。STRKRはtとx/y/u/vのいずれかを両順序で組み合わせます。取得前に目標と復帰経路を検証します。待機期限、移動後の取得、点ごとのCSV flushを維持します。XY/Rθモニターは、待機・移動・アイドルのいずれでも機器応答に応じて約100 msごとに新規取得します。表示用読取はCSVやStepに加算しません。保存用信号は待機後に取得し、待機終了間際は追加表示読取より測定を優先します。Stopは進行中のライブ応答を中断でき、中断した通信はロックイン接続を無効化して再接続を要求します。LI5640の表示選択途中の中断では、表示・出力設定の確認も要求します。
+SRKR 2Dはx/yまたはu/vのみで、thetaはuの横に1つです。STRKRはtとx/y/u/vのいずれかを両順序で組み合わせます。取得前に目標と復帰経路を検証します。待機期限、移動後の取得、点ごとのCSV flushを維持します。XY/Rθモニターは、待機・移動・アイドルのいずれでも機器応答に応じて約100 msごとに新規取得します。表示用読取はCSVやStepに加算しません。保存用信号は待機後に取得し、待機終了間際は追加表示読取より測定を優先します。Stopは進行中のライブ応答を中断し、正常な中断応答は回収・破棄して接続を維持します。通信・復旧失敗時は再接続が必要です。未公開のLI5640更新では選択した片側だけを取得し、未取得側はnull・空欄で計算補完せず、点ごとの表示切替はしません。明示的な選択変更の失敗時は元設定の復元を確認し、確認できなければ接続を無効化します。
 
 ### 読取専用Demo
 
@@ -295,7 +292,7 @@ GUI単独Move、Notebookの`Client.move()`、`approach`省略のnative Moveは�
 - GUIはロックイン`main`、ステージ`t`、X/Yスキャナの固定構成です。測定ごとの任意名・複数機器選択は未対応で、該当設定は接続前に拒否し、最初の要素へ勝手に切り替えません。
 - Notebookは`kohdalab_trkr.Client`とJSON経由です。旧`kohdalab.Experiment`・callback APIの差替え互換ではありません。`run(output=None)`では意図的にCSVを作らず、保存には出力パスが必要です。
 - U/VはRust拡張でX/Yが連動し、直交2Dの独立したモーター移動順序は適用しません。
-- GPIB失敗を別の読取命令で再試行せず接続無効とします。LI5640は表示を一時選択する前に全表示・出力状態の保存を必要とし、復元と通信安全性を保持します。
+- GPIB失敗を別の読取命令で再試行せず接続無効とします。未公開のLI5640片側取得では、表示変更は接続・明示的選択時に限定し、設定失敗は確認付き復元または接続無効化とします。点ごとのモード確認は読取り専用です。
 - 遅延位置は検証済みのカンマ区切り応答を解析します。旧正規表現が許容した未文書化形式は、実応答なしで互換とは主張しません。監査で実機移動は行っておらず、移動・制限は装置ごとの検証が必要です。
 
 ## English — full-source re-audit, 2026-10-21

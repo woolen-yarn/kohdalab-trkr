@@ -226,7 +226,22 @@ fn parse_row(
     let y = number_alias("Y", "Y_V")?;
     let r = number_alias("R", "R_V")?;
     let theta = number("Theta_deg")?;
-    let signal = signal(x, y, r, theta, row_number)?;
+    let flags = get("quality_flags").unwrap_or_default();
+    let signal = if flags.split('|').any(|f| f == "signal_xy_only") {
+        Signal::from_pair(
+            trkr_core::DisplayMode::Xy,
+            x.ok_or("Missing measured X")?,
+            y.ok_or("Missing measured Y")?,
+        )?
+    } else if flags.split('|').any(|f| f == "signal_rtheta_only") {
+        Signal::from_pair(
+            trkr_core::DisplayMode::RTheta,
+            r.ok_or("Missing measured R")?,
+            theta.ok_or("Missing measured theta")?,
+        )?
+    } else {
+        signal(x, y, r, theta, row_number)?
+    };
     let corrected = [
         coordinate(&record, h, row_number, Axis::T)?,
         coordinate(&record, h, row_number, Axis::X)?,
@@ -778,5 +793,28 @@ mod tests {
         assert_eq!(data.samples[0].target.slow, Some(3.));
         assert_eq!(data.samples[0].position.physical[1], Some(-3.001));
         assert_eq!(data.samples[0].position.physical[2], Some(2.001));
+    }
+    #[test]
+    fn selected_pair_csv_replay_does_not_reconstruct_unacquired_components() {
+        for (flag, values, mode) in [
+            ("signal_xy_only", "1e-9,2e-9,,", trkr_core::DisplayMode::Xy),
+            (
+                "signal_rtheta_only",
+                ",,3e-9,40",
+                trkr_core::DisplayMode::RTheta,
+            ),
+        ] {
+            let file = csv(&format!(
+                "measurement,target_elapsed_s,elapsed_s,X,Y,R,Theta_deg,quality_flags\nsignal_monitor,0,0,{values},{flag}\n"
+            ));
+            let data = load(file.path()).unwrap();
+            let signal = data.samples[0].signal;
+            assert_eq!(signal.acquired_pair(), Some(mode));
+            if mode == trkr_core::DisplayMode::Xy {
+                assert!(signal.r_v.is_nan() && signal.theta_deg.is_nan());
+            } else {
+                assert!(signal.x_v.is_nan() && signal.y_v.is_nan());
+            }
+        }
     }
 }

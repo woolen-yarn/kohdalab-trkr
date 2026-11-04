@@ -911,3 +911,126 @@ done
     assert_eq!(session.state.lockin["Sensitivity"], serde_json::json!(5e-6));
     assert!(session.lockin_context.is_some());
 }
+
+#[test]
+fn disconnected_signal_mode_selection_is_acknowledged_without_connecting_devices() {
+    let mut session = Session::default();
+    let (send, _events) = mpsc::sync_channel(8);
+    session
+        .execute_remote(
+            Command::SetLockin {
+                setting: "display_mode".into(),
+                value: "r_theta".into(),
+            },
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap();
+    assert_eq!(session.state.signal_mode, DisplayMode::RTheta);
+    assert!(session.gpib.is_none() && session.rig.is_none());
+    assert!(session.state.devices.iter().all(|connected| !*connected));
+    assert!(
+        session
+            .execute(
+                Command::SetLockin {
+                    setting: "display_mode".into(),
+                    value: "bad".into()
+                },
+                &AtomicBool::new(false),
+                &send
+            )
+            .is_err()
+    );
+    assert_eq!(session.state.signal_mode, DisplayMode::RTheta);
+}
+
+#[cfg(unix)]
+#[test]
+fn li5640_acquisition_records_only_selected_pair_and_never_switches_displays_per_point() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+        let dir = tempfile::tempdir().unwrap();
+        let hex = |text: &str| {
+            text.as_bytes()
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>()
+        };
+        let display = if mode == DisplayMode::Xy { "0" } else { "1" };
+        let mut script = "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile read -r operation address timeout payload; do\n if [ \"$operation\" = EXIT ]; then break; fi\n if [ \"$operation\" = WRITE ]; then printf 'KIV\\tERR\\t756e6578706563746564207772697465\\n'; continue; fi\n case \"$payload\" in\n".to_owned();
+        for (command, reply) in [
+            ("OTYP?\n", "1,2"),
+            ("DDEF? 1\n", display),
+            ("DDEF? 2\n", display),
+            ("DOUT?\n", "1.234567890123456e-9,-20"),
+        ] {
+            script.push_str(&format!(
+                "  {}) printf 'KIV\\tOK\\t{}\\n' ;;\n",
+                hex(command),
+                hex(reply)
+            ));
+        }
+        script.push_str("  *) printf 'KIV\\tOK\\t30\\n' ;;\n esac\ndone\n");
+        let mut session = scripted_lockin_session(dir.path(), &script);
+        let mut hardware = config();
+        hardware.model = Model::Li5640;
+        session.config = Some(hardware.clone());
+        session.state.signal_mode = mode;
+        let plan = Plan {
+            n_points: 2,
+            interval_s: 0.01,
+            ..Default::default()
+        };
+        let path = dir.path().join("li.csv");
+        let (send, _events) = mpsc::sync_channel(128);
+        session
+            .acquire(
+                Source::Gpib {
+                    model: Model::Li5640,
+                    address: 12,
+                },
+                hardware,
+                &plan,
+                Some(&path),
+                &AtomicBool::new(false),
+                &send,
+            )
+            .unwrap();
+        assert_eq!(session.state.rows, 2);
+        assert_eq!(session.state.signal.unwrap().acquired_pair(), Some(mode));
+        let mut csv = csv::Reader::from_path(&path).unwrap();
+        let headers = csv.headers().unwrap().clone();
+        for record in csv.records() {
+            let record = record.unwrap();
+            let get = |field| &record[headers.iter().position(|h| h == field).unwrap()];
+            if mode == DisplayMode::Xy {
+                assert!(get("R").is_empty() && get("Theta_deg").is_empty());
+                assert!(get("quality_flags").contains("signal_xy_only"));
+            } else {
+                assert!(get("X").is_empty() && get("Y").is_empty());
+                assert!(get("quality_flags").contains("signal_rtheta_only"));
+            }
+        }
+        let metadata: Value =
+            serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            metadata["context"]["signal_mode"],
+            serde_json::to_value(mode).unwrap()
+        );
+        let mut raw = csv::Reader::from_path(path.with_extension("raw.csv")).unwrap();
+        let headers = raw.headers().unwrap().clone();
+        let command = headers.iter().position(|h| h == "command").unwrap();
+        let response = headers.iter().position(|h| h == "raw_response").unwrap();
+        let mut signal_responses = 0;
+        for record in raw.records() {
+            let record = record.unwrap();
+            assert!(record[command].is_empty() || record[command].contains('?'));
+            if &record[command] == "DOUT?\n" {
+                assert_eq!(&record[response], "1.234567890123456e-9,-20");
+                signal_responses += 1;
+            }
+        }
+        assert_eq!(signal_responses, 2);
+    }
+}
