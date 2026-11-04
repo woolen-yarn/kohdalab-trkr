@@ -400,7 +400,12 @@ mod tests {
         let (existing_dir, existing_name) = existing
             .split_once('\n')
             .expect("directory and filename helper output");
-        assert_eq!(PathBuf::from(existing_dir), directory);
+        // WinForms/.NET expands the runner temp path from its 8.3 alias
+        // (RUNNER~1) to its long name. Compare the actual directory identity.
+        assert_eq!(
+            fs::canonicalize(existing_dir).expect("existing chooser directory"),
+            fs::canonicalize(&directory).expect("test directory")
+        );
         assert!(existing_name.is_empty());
 
         let missing = directory.join("not created [child] 'value'.csv");
@@ -414,7 +419,10 @@ mod tests {
         let (missing_dir, missing_name) = missing_output
             .split_once('\n')
             .expect("directory and filename helper output");
-        assert_eq!(PathBuf::from(missing_dir), directory);
+        assert_eq!(
+            fs::canonicalize(missing_dir).expect("fallback chooser directory"),
+            fs::canonicalize(&directory).expect("test directory")
+        );
         assert_eq!(missing_name, "not created [child] 'value'.csv");
 
         let invalid = windows_path_helper_output("?:\\trkr-invalid-drive");
