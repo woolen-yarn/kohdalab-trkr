@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased / 未公開
+## 0.4.8
 
 - Keep Windows Config/Output choosers foregrounded with an owned dialog and use a literal-safe existing initial folder; preserve paths with brackets/apostrophes and hidden console startup. / WindowsのConfig・Output選択画面に前面表示用の所有ウィンドウを設け、未作成・特殊文字を含むパスも扱える初期フォルダー処理に修正。
 - Qualify LI5640 normal voltage/current units from ISRC/NORM/RAT readback, use VSEN/ISEN sensitivity accordingly, and preserve ambiguous normalized/ratio units as unknown. Compare unit context before/after each saved signal; flag/retain unknown and stop if it changes. Keep mixed-unit plot samples separate. / LI5640の電圧・電流単位と感度を実照会で判定。取得前後で単位設定が変わった点はunknownで保持して停止し、単位の異なるデータを同一単位として描画しません。

@@ -17,7 +17,7 @@ requests the existing TRKR stop path and does not claim cleanup until the
 native status confirms it.
 
 
-## Pending LI5640 mode selection / 未公開：LI5640取得モード
+## LI5640 mode selection (0.4.8) / LI5640取得モード（0.4.8）
 
 `GuiClient.set_lockin("display_mode", "xy")` or `"r_theta"` selects the pair through the GUI worker; it may be set before connecting. The status snapshot includes `signal_mode`. LI5640 signal objects use null for the unacquired pair, and main CSV leaves those columns blank. No components are derived. Changes sent during a running operation are serialized after it; wait for the returned receipt before starting a measurement. Other models still acquire all four components.
 

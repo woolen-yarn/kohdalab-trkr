@@ -11,13 +11,13 @@ legacy maintenance operations that are outside the measurement API.
 | Lock-in | SR7265 | GPIB | XY/Rθ acquisition, sensitivity, time constant, coupling, slope, AC gain, auto actions |
 | Lock-in | SR830 | GPIB | XY/Rθ acquisition, sensitivity, time constant, coupling, slope, auto actions |
 | Lock-in | SR5210 | GPIB | XY/Rθ acquisition, sensitivity, time constant, slope, auto actions; AC coupling only |
-| Lock-in | LI5640 | GPIB | Selected XY or Rθ acquisition (pending update; previously both with display restoration), sensitivity, time constant, coupling, slope, auto actions |
+| Lock-in | LI5640 | GPIB | Selected XY or Rθ acquisition (0.4.8; previously both with display restoration), sensitivity, time constant, coupling, slope, auto actions |
 | Delay controller | SHOT302GS | Serial | Position readback, absolute moves, microstep readout, initialization/home, normal Stop |
 | Delay controller | GSC01 / GSC01A | Serial | Position readback, absolute moves, microstep readout, initialization/home, normal Stop |
 | Scanner controller | CONEX-CC | Serial | Position readback, absolute moves, home/initialization, Stop, configurable software hysteresis compensation |
 | Scanner controller | CONEX-AGAP | Serial | U/V axis control, position readback, absolute moves, closed-loop initialization and Stop |
 
-Pending update: CONEX-AGAP arrival tolerance defaults to 0.01° independently of its 0.001° minimum motion; set per-axis `position_tolerance` in native units to override it. CONEX-CC keeps its previous tolerance.
+In 0.4.8, CONEX-AGAP arrival tolerance defaults to 0.01° independently of its 0.001° minimum motion; set per-axis `position_tolerance` in native units to override it. CONEX-CC keeps its previous tolerance.
 
 Built-in motion presets supply defaults; experiment origins, sample conversion,
 direction and limits remain profile settings.
@@ -52,13 +52,13 @@ directory are ignored by Git and never copied into release artifacts.
 | ロックイン | SR7265 | GPIB | XY/Rθ取得、感度、時定数、結合、スロープ、ACゲイン、自動操作 |
 | ロックイン | SR830 | GPIB | XY/Rθ取得、感度、時定数、結合、スロープ、自動操作 |
 | ロックイン | SR5210 | GPIB | XY/Rθ取得、感度、時定数、スロープ、自動操作。AC結合のみ |
-| ロックイン | LI5640 | GPIB | 選択したXYまたはRθのみ取得（未公開更新。従来は表示復元付き両側取得）、感度、時定数、結合、スロープ、自動操作 |
+| ロックイン | LI5640 | GPIB | 選択したXYまたはRθのみ取得（0.4.8。従来は表示復元付き両側取得）、感度、時定数、結合、スロープ、自動操作 |
 | 遅延ステージ制御 | SHOT302GS | シリアル | 位置読取、絶対移動、microstep読取、初期化・原点復帰、通常Stop |
 | 遅延ステージ制御 | GSC01 / GSC01A | シリアル | 位置読取、絶対移動、microstep読取、初期化・原点復帰、通常Stop |
 | スキャナ制御 | CONEX-CC | シリアル | 位置読取、絶対移動、原点復帰・初期化、Stop、設定可能なソフトウェアヒステリシス補償 |
 | スキャナ制御 | CONEX-AGAP | シリアル | U/V軸制御、位置読取、絶対移動、閉ループ初期化、Stop |
 
-未公開の修正ではCONEX-AGAPの到達許容差を最小移動0.001°と分離して既定0.01°とします。軸ごとの`position_tolerance`（装置単位）で変更できます。CONEX-CCの従来の許容差は維持します。
+0.4.8ではCONEX-AGAPの到達許容差を最小移動0.001°と分離して既定0.01°とします。軸ごとの`position_tolerance`（装置単位）で変更できます。CONEX-CCの従来の許容差は維持します。
 
 組込みプリセットは既定値を与えます。実験原点、試料上の換算、方向、制限は設定ごとに管理します。
 
