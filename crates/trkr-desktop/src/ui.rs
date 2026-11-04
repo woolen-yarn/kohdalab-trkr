@@ -1029,6 +1029,13 @@ impl App {
         }
     }
     fn apply_snapshot(&mut self, s: Snapshot) {
+        if !self.source_demo
+            && !self.demo_viewer
+            && snapshot_signal_unit(&self.snapshot, self.model)
+                != snapshot_signal_unit(&s, self.model)
+        {
+            self.live.clear();
+        }
         let completed_run = self.snapshot.running && !s.running;
         self.live
             .connection_changed(self.snapshot.devices[0], s.devices[0]);
@@ -1039,6 +1046,13 @@ impl App {
                 "Move complete"
             };
             self.note(action);
+        }
+        if self.model == Model::Li5640
+            && !self.source_demo
+            && s.devices[0]
+            && !self.controller.has_pending()
+        {
+            self.mode = s.signal_mode;
         }
         self.snapshot = s;
         if (self.snapshot.running || completed_run) && self.snapshot.total > 0 {
@@ -1077,6 +1091,11 @@ impl App {
                         s.captured_at.unwrap_or_else(Instant::now),
                     );
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
+                        if self.trace.last().is_some_and(|last| {
+                            last.recording.signal_unit != s.recording.signal_unit
+                        }) {
+                            self.live.clear();
+                        }
                         self.live.push(s.signal, self.active_live_origin);
                     }
                     let trace = if self.active_workflow == self.workflow {
@@ -1476,7 +1495,24 @@ impl App {
             Err(error) => self.note(error),
         }
     }
+    fn display_signal_unit(&self) -> String {
+        if self.demo_viewer || self.active_live_origin == engine::ReadingOrigin::Replay {
+            return self
+                .trace
+                .last()
+                .map(|s| s.recording.signal_unit.as_str())
+                .filter(|u| !u.is_empty())
+                .unwrap_or("V")
+                .into();
+        }
+        if self.source_demo {
+            return "V".into();
+        }
+        snapshot_signal_unit(&self.snapshot, self.model).into()
+    }
     fn lockin(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        let previous_mode = self.mode;
+        let signal_unit = self.display_signal_unit();
         let phase = device_phase(
             self.snapshot.devices[0],
             self.snapshot.running,
@@ -1486,14 +1522,12 @@ impl App {
         );
         let caption = device_caption(self.snapshot.devices[0], self.model.name(), phase);
         self.poll_gpib_refresh();
-        let sensitivity = self
-            .snapshot
-            .lockin
-            .get("Sensitivity")
-            .and_then(Value::as_f64);
+        let sensitivity = qualified_lockin_sensitivity(&self.snapshot, self.model);
         let (voltage_scale, voltage_unit) = sensitivity
             .map(presentation::voltage_scale_from_sensitivity)
             .unwrap_or_else(|| self.demo_voltage_scale());
+        let (voltage_scale, voltage_unit) =
+            presentation::signal_display_scale(voltage_scale, voltage_unit, &signal_unit);
         let alarm = lockin_health_text(&self.snapshot.lockin);
         let time_constant = self
             .snapshot
@@ -1593,13 +1627,16 @@ impl App {
                 );
             }
             let extra = if self.device_expanded[0] { 114. } else { 0. };
-            form.enabled = true;
+            form.enabled = !(self.model == Model::Li5640
+                && !self.source_demo
+                && (self.snapshot.running || self.controller.has_pending()));
             form.combo(
                 "signal_mode_combo",
                 precision::rect(w - 103., 27., 92., 24.),
                 &mut self.mode,
                 &[(DisplayMode::Xy, "X / Y"), (DisplayMode::RTheta, "R / θ")],
             );
+            form.enabled = true;
             let origin = self.live.origin();
             let live = self.live.recent()
                 && match origin {
@@ -1625,6 +1662,7 @@ impl App {
                         Some(_) => self.snapshot.running,
                         None => false,
                     },
+                    &signal_unit,
                 );
             }
             let sens = sensitivity
@@ -1694,6 +1732,16 @@ impl App {
                         );
                 }
             }
+        }
+        if previous_mode != self.mode
+            && !self.demo_viewer
+            && let Err(error) = self.controller.send(Command::SetLockin {
+                setting: "display_mode".into(),
+                value: serde_json::to_value(self.mode).expect("display mode"),
+            })
+        {
+            self.mode = previous_mode;
+            self.note(error);
         }
         if connect {
             match Self::gpib_address(&self.lockin_resource) {
@@ -2188,6 +2236,7 @@ impl App {
     }
     fn begin_dialog(&mut self, kind: DialogKind, initial: String) {
         if self.dialog.is_none() {
+            self.note("Opening file chooser…");
             self.dialog = Some(PendingDialog {
                 kind,
                 workflow: self.workflow,
@@ -2840,13 +2889,16 @@ impl App {
             .as_ref()
             .unwrap_or_else(|| self.plan())
             .clone();
-        let (scale, unit) = self
-            .snapshot
-            .lockin
-            .get("Sensitivity")
-            .and_then(Value::as_f64)
+        let (scale, unit) = qualified_lockin_sensitivity(&self.snapshot, self.model)
             .map(presentation::voltage_scale_from_sensitivity)
             .unwrap_or_else(|| self.demo_voltage_scale());
+        let signal_unit = self
+            .trace
+            .last()
+            .map(|s| s.recording.signal_unit.clone())
+            .filter(|u| !u.is_empty())
+            .unwrap_or_else(|| self.display_signal_unit());
+        let (scale, unit) = presentation::signal_display_scale(scale, unit, &signal_unit);
         presentation::plots(
             ui,
             &self.trace,
@@ -2859,7 +2911,7 @@ impl App {
                 epoch: self.plot_epoch,
                 y_log: self.trkr_log_y,
                 voltage_scale: scale,
-                voltage_unit: unit,
+                voltage_unit: &unit,
                 history: &self.plot_history,
             },
         );
@@ -3480,6 +3532,35 @@ fn device_caption(connected: bool, name: &str, phase: Option<&str>) -> String {
         name.into()
     }
 }
+fn qualified_lockin_sensitivity(snapshot: &Snapshot, model: Model) -> Option<f64> {
+    if model == Model::Li5640 {
+        if snapshot
+            .lockin
+            .get("Status Error")
+            .is_some_and(|value| !value.is_null())
+        {
+            return None;
+        }
+        let configured_mode = snapshot.lockin.get("input_mode").and_then(Value::as_i64)?;
+        if !matches!(configured_mode, 0..=3) {
+            return None;
+        }
+        if let Some(current) = snapshot
+            .lockin
+            .pointer("/Overload/input_mode")
+            .and_then(Value::as_i64)
+            && current != configured_mode
+        {
+            return None;
+        }
+    }
+    snapshot.lockin.get("Sensitivity").and_then(Value::as_f64)
+}
+
+fn snapshot_signal_unit(snapshot: &Snapshot, model: Model) -> &'static str {
+    snapshot.observed_signal_unit(model)
+}
+
 fn initialization_homes(axis: usize, controllers: &[String; 2]) -> bool {
     axis == 0
         || controllers[axis - 1]

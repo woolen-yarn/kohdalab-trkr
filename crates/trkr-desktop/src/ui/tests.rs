@@ -938,3 +938,88 @@ fn referenced_cc_gui_initialization_can_skip_home_while_still_moving_to_zero() {
         }
     ));
 }
+
+#[test]
+fn single_pair_csv_load_selects_available_demo_display_without_derivation() {
+    for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+        let mut app = App::with_context(&egui::Context::default(), true);
+        let plan = Plan::default();
+        let signal = trkr_core::Signal::from_pair(mode, 1e-6, 2.).unwrap();
+        let data = crate::replay_data::Dataset {
+            plan: plan.clone(),
+            samples: vec![Sample {
+                recording: Default::default(),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: 0.,
+                target: plan.targets().unwrap()[0],
+                signal,
+                position: Default::default(),
+            }],
+        };
+        let (send, receiver) = std::sync::mpsc::channel();
+        send.send(Ok(vec![(PathBuf::from("single-pair.csv"), data)]))
+            .unwrap();
+        app.demo.pending = Some(receiver);
+        app.demo_tick();
+        assert_eq!(app.mode, mode);
+        assert_eq!(
+            app.demo.datasets[App::ix(Workflow::SignalMonitor)]
+                .as_ref()
+                .unwrap()
+                .samples[0]
+                .signal
+                .acquired_pair(),
+            Some(mode)
+        );
+        assert!(app.trace.is_empty());
+    }
+}
+
+#[test]
+fn signal_unit_uses_current_status_or_settings_context_without_periodic_unknown_flicker() {
+    for model in [Model::Li5640, Model::Sr7265] {
+        let mut state = Snapshot {
+            devices: [true, false, false, false],
+            lockin: json!({"input_mode":0,"signal_unit":"V","Overload":{"overload":false},"Status Error":null}),
+            ..Default::default()
+        };
+        assert_eq!(snapshot_signal_unit(&state, model), "V");
+        state.lockin["Overload"] = json!({"input_mode":0,"signal_unit":"V"});
+        assert_eq!(snapshot_signal_unit(&state, model), "V");
+        if model == Model::Li5640 {
+            state.lockin["Overload"]["signal_unit"] = json!("unknown");
+            assert_eq!(snapshot_signal_unit(&state, model), "unknown");
+        }
+        state.lockin["Status Error"] = json!("query failed");
+        assert_eq!(snapshot_signal_unit(&state, model), "unknown");
+    }
+    let mut state = Snapshot {
+        devices: [true, false, false, false],
+        lockin: json!({"signal_unit":"A"}),
+        ..Default::default()
+    };
+    assert_eq!(snapshot_signal_unit(&state, Model::Li5640), "A");
+    state.devices[0] = false;
+    assert_eq!(snapshot_signal_unit(&state, Model::Li5640), "unknown");
+}
+
+#[test]
+fn input_mode_change_does_not_relabel_a_stale_voltage_sensitivity_as_current() {
+    let mut snapshot = Snapshot {
+        devices: [true, false, false, false],
+        lockin: json!({"input_mode":0,"Sensitivity":2e-9,"signal_unit":"V","Overload":{"input_mode":2,"signal_unit":"A"},"Status Error":null}),
+        ..Default::default()
+    };
+    assert_eq!(snapshot_signal_unit(&snapshot, Model::Li5640), "A");
+    assert_eq!(qualified_lockin_sensitivity(&snapshot, Model::Li5640), None);
+    snapshot.lockin["input_mode"] = json!(2);
+    snapshot.lockin["signal_unit"] = json!("A");
+    snapshot.lockin["Sensitivity"] = json!(5e-15);
+    assert_eq!(
+        qualified_lockin_sensitivity(&snapshot, Model::Li5640),
+        Some(5e-15)
+    );
+    snapshot.lockin["Status Error"] = json!("query failed");
+    assert_eq!(qualified_lockin_sensitivity(&snapshot, Model::Li5640), None);
+}

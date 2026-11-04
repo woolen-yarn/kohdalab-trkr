@@ -1,17 +1,31 @@
 # Measurement integrity / 測定記録の精度
 
+## Measurement and desktop fixes (0.4.8) / 測定・画面修正（0.4.8）
+
+LI5640 reads only the pair selected in the left panel: XY or Rθ. The instrument display/output mapping is configured on connect or explicit mode change and verified before each read. Acquisition queries do not write DDEF/OTYP or alternate the display. The other components remain blank in main CSV and null in the API/raw signal object; they are never reconstructed. `signal_xy_only` / `signal_rtheta_only` identify the measured pair, and CSV replay preserves this omission. LI5640 mode changes are disabled while a GUI operation is pending/running; external `set_lockin("display_mode", "xy" | "r_theta")` uses the same worker. Other lock-in drivers retain all-component acquisition. Each LI5640 sample uses one DOUT? plus three read-only mode queries to prevent silent relabeling after external/front-panel changes; the former per-pair 20 ms sleeps are removed. Periodic/manual settings refresh no longer changes OTYP to fetch reference frequency, so that unqueried field stays unknown. Explicit selection failures restore/verify the old mapping or invalidate the session if restoration is unverified.
+
+LI5640は左パネルで選んだXYまたはRθだけを取得します。接続・明示的な選択変更時に本体の表示と出力対応を設定し、読取り前に確認します。通常取得中はDDEF/OTYPを書き換えず、表示を往復しません。未取得側はmain CSVで空欄、API・raw信号オブジェクトでnullとし、計算で補いません。取得側は上記quality flagで識別し、CSV再表示でも未取得を維持します。GUI操作の実行待ち・実行中はLI5640の選択変更を無効にします。外部制御も同じワーカーで処理します。他機種の全成分取得は維持します。LI5640はDOUT? 1回と読取り専用のモード照会3回で外部・本体操作による誤ラベルを防ぎ、従来の各ペア20 ms待機は除去します。周期・手動の設定照会もOTYPを変更せず、未取得の参照周波数は不明のままです。明示的な選択変更が失敗した場合は元設定の復元を確認し、確認できなければ接続を無効化します。
+
+Recording revision 6 retains the main/raw column schemas and adds `position_value` raw rows for observed `delay_stage_pulse` (pulse), `delay_stage_mm` (mm), `x_scanner_mm` / `y_scanner_mm` (mm), and `x_scanner_deg` / `y_scanner_deg` (deg). `device_role`, `quantity`, `value`, `unit` and point index make native values directly readable; the original responses and structured position are retained. `delay_stage_pulse` is the controller readback; `delay_stage_mm` is its conversion using effective calibration and is identified as such in `value_origin`. Missing axes remain absent, pulse 0 remains a valid value, and scalar materialization does not trigger hardware reads. Repeated reading snapshots do not create duplicate scalar rows. Cached final/last positions carry an explicit qualification with unknown observation time rather than borrowing movement completion timestamps.
+
+記録revision 6ではmain/rawの列構成を維持し、上記の装置生座標を`position_value`行へ明示します。機器・量・値・単位・測定点番号で抽出でき、生応答と元の座標オブジェクトも保持します。遅延pulseは装置読戻し、遅延mmは実効校正によるpulseからの換算として`value_origin`で区別します。未接続軸は捏造せず、pulseの0は有効値として保持し、記録のための追加照会はしません。同じ点のreadingに再掲された座標は明示行へ二重展開しません。キャッシュされた最終・直近座標には観測時刻不明を明記し、移動完了時刻を実読取時刻として扱いません。
+
+A scanner arrival mismatch now reports X/Y, requested sample µm, quantized native command, native readback, difference and allowed tolerance. Arrival tolerance is now separate from minimum motion resolution: CONEX-AGAP defaults to 0.01° based on the manufacturer’s specified bidirectional repeatability, while CONEX-CC retains its previous default. An optional `instruments.scanner.x.position_tolerance` / `.y.position_tolerance` overrides the threshold in native deg/mm; it must be finite, positive and no larger than the configured travel span. Normalized run configuration records the resolved tolerance. Minimum motion resolution, command rounding, travel limits and delay-stage verification are unchanged. At the exact tolerance boundary, a bound of 8 × f64 epsilon × (absolute target + absolute readback + absolute native origin + tolerance) excludes only binary conversion/subtraction roundoff; errors outside that numerical bound still fail. For example, 0.053° − 0.052° evaluates as 0.0010000000000000009° rather than exact 0.001°. The last saved point in a screenshot cannot identify the failed target; use the detailed error and raw/run files.
+
+スキャナ到達エラーにはX/Y・要求µm・丸め後の装置指令・生読戻し・差・許容差を表示します。到達許容差を最小移動分解能から分離し、CONEX-AGAPはメーカーの両方向繰返し精度に基づく0.01°を既定にします。X/Yごとの`position_tolerance`（装置単位deg/mm）で変更でき、有限の正値かつ設定travel範囲以内が必要です。run JSONに実効許容差を保存します。CONEX-CCの既定、最小移動分解能、指令の丸め、travel limit、遅延ステージの確認は維持します。0.053°−0.052°が計算上0.0010000000000000009°になるような境界では、上記の機械精度に基づく換算・減算誤差だけを除外し、その外側は引き続き停止します。画面の最後の保存点だけでは失敗点を特定できないため、詳細エラーとraw/runを確認します。
+
 ## Stop and motion verification (0.4.1) / 停止・移動確認
 
 Stop first stops the motion axes and verifies stationary controller states. It then
 retires exactly one interrupted GPIB helper reply before accepting another command.
 A healthy reply is discarded and the session stays connected; missing, malformed or
 failed replies invalidate the session. This never resumes the interrupted run.
-LI5640 display-changing reads still require reconnection if cancellation prevents
-restoring their settings. Communication failure is distinct from a normal Stop.
+In 0.4.1–0.4.7, LI5640 display-changing reads required reconnection if cancellation prevented
+restoring their settings. The 0.4.8 selected-pair reader does not perform those writes. Communication failure is distinct from a normal Stop.
 
 Stopでは軸への停止命令と停止状態の確認を優先し、その後、中断したGPIB応答を1件だけ回収・破棄します。
 正常な応答なら接続を維持し、未応答・不正応答・通信失敗なら接続を無効にします。中断した測定は再開しません。
-LI5640で表示設定を復元できない中断は、引き続き再接続が必要です。通信異常は通常の停止と区別します。
+0.4.1～0.4.7のLI5640は表示復元できない中断で再接続が必要でした。0.4.8の片側取得では通常読取りに表示変更がありません。通信異常は通常の停止と区別します。
 
 Compensation must reach its own commanded position before the final move starts.
 HOME requires a post-command BUSY/HOMING transition and a confirmed completion state;
@@ -54,7 +68,7 @@ Historical descriptions below apply to their stated versions, not the new writer
 | --- | --- |
 | `run_id`, `point_index` | Run UUID and one-based saved point number / 測定UUIDと1始まりの点番号 |
 | `timestamp`, `elapsed_s` | Signal-read completion on host UTC and monotonic run seconds / ホスト側信号読取完了のUTC・単調経過秒 |
-| `quality_flags` | `simulated`, `ok`, `overload`, `reference_unlock`, `reference_status_unknown`, `status_unknown`, `unit_unknown`; combined with `\|` / 状態・不明・合成を区別 |
+| `quality_flags` | `simulated`, `ok`, `overload`, `reference_unlock`, `reference_status_unknown`, `status_unknown`, `unit_unknown`; revision 6 (0.4.8) adds `signal_xy_only` / `signal_rtheta_only` and `unit_context_changed`; combined with `\|` / 状態・不明・合成を区別 |
 | `measurement`, `fast_axis`, `slow_axis`, `line_index` | Workflow, axes and zero-based 2D line index; slow/line empty for 1D / 測定・走査軸と0始まり2D行番号。1Dはslow・line空欄 |
 | `target_elapsed_s` | Monitor scheduled seconds / モニター予定経過秒 |
 | `target_t_cor_ps`, `target_x_cor_um`, `target_y_cor_um` | Canonical commanded measurement coordinates, even when input uses mm/pulse / 入力がmm・pulseでも換算済みの測定座標指令 |
@@ -64,17 +78,20 @@ Historical descriptions below apply to their stated versions, not the new writer
 | `spatial_theta_deg` | Spatial rotation / 空間回転角 |
 | `X`, `Y`, `R`, `Theta_deg`, `signal_unit` | Original instrument components and qualified unit / 装置由来の各成分と確認できた単位 |
 
-Do not assume V if `signal_unit` is `unknown`. Currently SR7265 voltage input
-(IMODE 0) is qualified from the point status query; other unverified modes remain
-unknown. Simulation is synthetic V. A status read follows the signal read and is
+Do not assume V if `signal_unit` is `unknown`. SR7265 voltage input
+(IMODE 0) is qualified from the point status query. LI5640 checks ISRC/NORM/RAT
+before and after each saved reading: normal voltage inputs are V and current inputs
+are A; normalized, ratio and unsupported modes remain unknown. A changed context
+preserves that point as unknown with a quality flag and stops before the next
+scan/return move. Raw records retain both query windows without claiming atomic
+instrument acquisition. Simulation is synthetic V. A status read follows the signal read and is
 not simultaneous with it; supported overload/reference bits are saved, while
 unsupported information remains unknown. Status/IMODE reads add read-only I/O,
 so total point duration includes their cost. They do not configure the instrument.
 Start settings are freshly queried using the existing settings commands; controls
 not queried (including unimplemented phase/reference controls) remain unknown.
 
-`signal_unit=unknown`をVと仮定しません。現時点では点ごとの状態照会で確認した
-SR7265 IMODE 0をVとし、未検証のモードは不明を維持します。合成値は合成Vです。
+`signal_unit=unknown`をVと仮定しません。点ごとの状態照会で確認したSR7265 IMODE 0をVとします。LI5640は保存用信号の前後でISRC/NORM/RATを照会し、通常のA/A−B入力はV、電流入力はAと確認します。正規化・比率表示や未対応モードは不明を維持します。取得前後で設定が変わった点はunknown・flag付きで保持して、次の走査・復帰前に停止します。rawには前後の時間窓を保存しますが、装置側の同時刻取得を保証するものではありません。合成値は合成Vです。
 状態照会は信号読取後で同時ではありません。対応する過負荷・参照異常ビットを保存し、
 未対応情報は不明です。状態・IMODE照会による読取時間は点の所要時間に含まれますが、
 装置設定は変更しません。開始時の設定は既存の設定照会を使い再取得し、未照会の位相・
@@ -221,3 +238,16 @@ noise, input mode and instrument specifications determine physical uncertainty;
 CSV exponent notation alone cannot determine significant figures.
 
 既存設定、Notebook命令と旧CSV再生は維持します。旧有効7桁CSVで失われた桁は復元できません。物理的な不確かさは校正、ノイズ、入力モード、装置仕様で決まり、CSVの指数表記だけでは有効数字を決められません。
+
+
+### LI5640 units and Windows selection dialogs / LI5640の単位・Windows選択画面
+
+Normal LI5640 input is qualified by `ISRC?` (0/1: V; 2/3: A), with `NORM?=0` and `RAT?=0`. Current sensitivity uses `ISEN?` / `ISEN`: gain 10⁶ permits indices 4–26 (50 fA–1 µA), and gain 10⁸ permits indices 1–20 (5 fA–10 nA); voltage sensitivity uses `VSEN?` / `VSEN`. The GUI displays A/V with the corresponding metric prefix. An idle live unit is the last observed status (up to 500 ms cadence), not an atomic ADC-unit snapshot. A changed input mode suppresses stale sensitivity until fresh settings arrive. Historical line/heatmap traces use their own recorded unit and omit points in other units from that view; source CSV still retains every original row/unit.
+
+LI5640は通常の電圧入力をV、電流入力をAと実照会で判定し、感度もVSEN／ISENに対応させます。電流利得10⁶は50 fA–1 µA（index 4–26）、10⁸は5 fA–10 nA（index 1–20）の範囲に制限します。ライブ単位は最大500 ms周期で確認した直近状態で、ADCと同時の照会ではありません。入力モードが変わった直後は古い感度を新しい単位で表示せず、設定再取得まで非表示にします。過去の線・heatmapは各記録の単位を維持し、異なる単位の点を同一単位で描きません。元CSVの全行・単位は保持します。
+
+Windows Config **Browse** and Output **…** open native choosers with a centered topmost owner; the initial location falls back to the nearest existing folder for a not-yet-created output path. Literal brackets/apostrophes are preserved, filenames are separate from directories, PowerShell remains STA with no terminal window, and cancellation is distinct from failure. A Windows-only nonvisual test executes the actual PowerShell path helpers; interactive foreground behavior still needs a Windows desktop check.
+
+WindowsのConfig **Browse**・Output **…** は中央・前面の所有ウィンドウを使う選択画面にし、保存先が未作成でも最寄りの既存フォルダーから開きます。角括弧・引用符をパスとして保持し、ファイル名とディレクトリを分離します。端末画面は出さず、キャンセルとエラーを区別します。Windows専用テストで実際のPowerShellパス処理を実行しますが、前面表示の実機確認とは区別します。
+
+Sources: [Newport AG-M100D datasheet](https://www.newport.com.cn/medias/sys_master/images/images/hcf/hf6/9122779496478/CONEX-AG-M100D-Data-Sheet.pdf), [NF LI5640 GPIB manual](https://www.nfcorp.co.jp/english/sup/dl/manual/mi/e_li5640-4.pdf).

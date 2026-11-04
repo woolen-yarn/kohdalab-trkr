@@ -236,6 +236,13 @@ impl App {
                                         .max(s.signal.r_v.abs())
                                 })
                                 .fold(0_f64, f64::max);
+                            if let Some(mode) = data
+                                .samples
+                                .first()
+                                .and_then(|sample| sample.signal.acquired_pair())
+                            {
+                                self.mode = mode;
+                            }
                             self.demo.datasets[i] = Some(Arc::new(data));
                         }
                     }
@@ -294,6 +301,13 @@ impl App {
             self.snapshot.signal = Some(sample.signal);
             self.snapshot.signal_origin = Some(engine::ReadingOrigin::Replay);
             self.snapshot.position = sample.position.clone();
+            if self
+                .trace
+                .last()
+                .is_some_and(|last| last.recording.signal_unit != sample.recording.signal_unit)
+            {
+                self.live.clear();
+            }
             self.live.push(sample.signal, engine::ReadingOrigin::Replay);
             self.trace.push(sample);
             self.snapshot.rows += 1;

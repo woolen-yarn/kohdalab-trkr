@@ -51,6 +51,39 @@ fn scanner_scale_has_no_extra_thousand() {
     assert!(c.raw_target(310.).is_err());
     assert_eq!(c.raw_target(10.).unwrap(), 0.024);
     assert_eq!(c.digits(), 3);
+    assert_eq!(c.position_tolerance, Some(0.01));
+}
+#[test]
+fn scanner_position_tolerance_defaults_and_validates_overrides() {
+    assert_eq!(scanner().effective_position_tolerance().unwrap(), 0.01);
+
+    let cc = ScannerConfig {
+        port: "test".into(),
+        actuator: Some("TRA12CC".into()),
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    assert_eq!(cc.effective_position_tolerance().unwrap(), 0.0002);
+
+    let mut tighter = scanner();
+    tighter.position_tolerance = Some(0.002);
+    assert_eq!(
+        tighter.normalized().unwrap().position_tolerance,
+        Some(0.002)
+    );
+    let mut looser = scanner();
+    looser.position_tolerance = Some(0.02);
+    assert_eq!(looser.normalized().unwrap().position_tolerance, Some(0.02));
+
+    for tolerance in [0., -0.01, f64::NAN, f64::INFINITY, 1.500_001] {
+        let mut invalid = scanner();
+        invalid.position_tolerance = Some(tolerance);
+        assert!(
+            invalid.normalized().is_err(),
+            "{tolerance:?} must be rejected"
+        );
+    }
 }
 #[test]
 fn scanner_negative_scale_and_preset_alias() {

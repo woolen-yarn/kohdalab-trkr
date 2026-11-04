@@ -10,7 +10,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
-use trkr_core::{Axis, Coordinate, Plan, Workflow};
+use trkr_core::{Axis, Coordinate, DisplayMode, Plan, Workflow};
 
 pub const FIELDS: &[&str] = &[
     "run_id",
@@ -209,7 +209,7 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
         "plan": plan, "experiment":plan.experiment, "timestamp": utc_now()?,
         "schema_version": 3,
-        "recording_revision": 5,
+        "recording_revision": 6,
         "csv_schema": "trkr_analysis_v1", "raw_schema": "raw_csv_v1",
         "run_id":run_id, "status":"running", "rows":0,
         "software": {"version":env!("CARGO_PKG_VERSION"), "git_commit":option_env!("KOHDALAB_BUILD_COMMIT")},
@@ -223,6 +223,7 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "csv_scientific_fields": ["X", "Y", "R"],
         "other_numeric_fields": "shortest_roundtrip_python_compatible",
         "precision_policy": "no_accuracy_claim",
+        "signal_component_policy": "LI5640: selected measured pair only, other columns blank, signal_xy_only/signal_rtheta_only flags; no derived components",
         "timing_policy": {
             "clock": "host UTC labels and monotonic elapsed seconds; device timestamp unknown",
             "csv_timestamp": "signal read completion; empty when unavailable",
@@ -514,10 +515,18 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
         put("v_cor_um", csv_float(-x * s + y * c));
     }
     put("spatial_theta_deg", csv_float(plan.theta_deg));
-    put("X", csv_voltage(sample.signal.x_v)?);
-    put("Y", csv_voltage(sample.signal.y_v)?);
-    put("R", csv_voltage(sample.signal.r_v)?);
-    put("Theta_deg", csv_float(sample.signal.theta_deg));
+    let pair = sample.signal.acquired_pair();
+    if pair != Some(DisplayMode::RTheta) {
+        put("X", csv_voltage(sample.signal.x_v)?);
+        put("Y", csv_voltage(sample.signal.y_v)?);
+    }
+    if pair != Some(DisplayMode::Xy) {
+        put("R", csv_voltage(sample.signal.r_v)?);
+        if !sample.signal.theta_deg.is_finite() {
+            return Err("Non-finite raw lock-in phase cannot be saved".into());
+        }
+        put("Theta_deg", csv_float(sample.signal.theta_deg));
+    }
     Ok(result)
 }
 
@@ -926,6 +935,35 @@ mod tests {
             }
             assert!(!cell(&r, "target_u_cor_um").is_empty());
             assert_eq!(cell(&r, "target_v_cor_um"), "0.0");
+        }
+    }
+    #[test]
+    fn single_measured_pair_leaves_other_csv_components_blank() {
+        let plan = Plan::default();
+        for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+            let sample = Sample {
+                recording: Default::default(),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: 0.,
+                target: plan.targets().unwrap()[0],
+                signal: trkr_core::Signal::from_pair(mode, 1.234567890123456e-9, -2.).unwrap(),
+                position: Default::default(),
+            };
+            let values = row(&plan, &sample).unwrap();
+            let get = |name| &values[FIELDS.iter().position(|field| *field == name).unwrap()];
+            if mode == DisplayMode::Xy {
+                assert!(get("R").is_empty() && get("Theta_deg").is_empty());
+                assert_eq!(get("X").parse::<f64>().unwrap(), sample.signal.x_v);
+                assert_eq!(get("Y").parse::<f64>().unwrap(), sample.signal.y_v);
+            } else {
+                assert!(get("X").is_empty() && get("Y").is_empty());
+                assert_eq!(get("R").parse::<f64>().unwrap(), sample.signal.r_v);
+                assert_eq!(
+                    get("Theta_deg").parse::<f64>().unwrap(),
+                    sample.signal.theta_deg
+                );
+            }
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use trkr_core::Signal;
+use trkr_core::{DisplayMode, Signal};
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Model {
@@ -16,7 +16,6 @@ pub enum Model {
 /// settings/UI and auto actions share this one definition.
 pub struct ModelDescriptor {
     pub name: &'static str,
-    pub read_changes_display: bool,
     termination: &'static str,
     auto_phase: &'static str,
     auto_sensitivity: &'static str,
@@ -28,7 +27,6 @@ pub struct ModelDescriptor {
 const MODELS: [ModelDescriptor; 4] = [
     ModelDescriptor {
         name: "SR830",
-        read_changes_display: false,
         termination: "\n",
         auto_phase: "APHS",
         auto_sensitivity: "AGAN",
@@ -39,7 +37,6 @@ const MODELS: [ModelDescriptor; 4] = [
     },
     ModelDescriptor {
         name: "SR7265",
-        read_changes_display: false,
         termination: "\r",
         auto_phase: "AQN",
         auto_sensitivity: "AS",
@@ -50,7 +47,6 @@ const MODELS: [ModelDescriptor; 4] = [
     },
     ModelDescriptor {
         name: "SR5210",
-        read_changes_display: false,
         termination: "\r",
         auto_phase: "AQN",
         auto_sensitivity: "AS",
@@ -61,7 +57,6 @@ const MODELS: [ModelDescriptor; 4] = [
     },
     ModelDescriptor {
         name: "LI5640",
-        read_changes_display: true,
         termination: "\n",
         auto_phase: "APHS",
         auto_sensitivity: "ASEN",
@@ -123,11 +118,12 @@ pub struct RecordedOperation<T> {
 /// by that read.  The recording adapter only observes the existing `Io`
 /// calls, so it never performs additional instrument I/O.
 pub type RecordedRead = RecordedOperation<Signal>;
+#[cfg(test)]
 pub fn read_recorded(model: Model, io: &mut impl Io) -> RecordedRead {
     recorded(io, |io| read(model, io))
 }
 pub fn settings_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Value> {
-    recorded(io, |io| settings_impl(io, model, false))
+    recorded(io, |io| settings_impl(io, model))
 }
 
 pub fn status_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Value> {
@@ -141,8 +137,51 @@ pub fn status_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Valu
         if model == Model::Sr7265 {
             value["input_mode"] = json!(query_value(io, "IMODE\r")?);
         }
+        if model == Model::Li5640 {
+            value.as_object_mut().expect("status object").extend(
+                li5640_unit_context(io)?
+                    .as_object()
+                    .expect("unit context")
+                    .clone(),
+            );
+        }
         Ok(value)
     })
+}
+
+/// Unit qualification observes the device, never a profile assumption.
+pub fn measured_unit(model: Model, status: Option<&Value>) -> &'static str {
+    let Some(status) = status else {
+        return "unknown";
+    };
+    match model {
+        Model::Sr7265 if status["input_mode"].as_f64() == Some(0.) => "V",
+        Model::Li5640 => match status["signal_unit"].as_str() {
+            Some("V") => "V",
+            Some("A") => "A",
+            _ => "unknown",
+        },
+        _ => "unknown",
+    }
+}
+fn li5640_unit_context(io: &mut impl Io) -> Result<Value, String> {
+    let input = integer(query_value(io, "ISRC?\n")?, "ISRC?")?;
+    let normalization = integer(query_value(io, "NORM?\n")?, "NORM?")?;
+    let ratio = integer(query_value(io, "RAT?\n")?, "RAT?")?;
+    let input_unit = match input {
+        0 | 1 => "V",
+        2 | 3 => "A",
+        _ => "unknown",
+    };
+    let unit = if normalization != 0 || ratio != 0 {
+        "unknown"
+    } else {
+        input_unit
+    };
+    Ok(
+        json!({"input_mode":input,"normalization_mode":normalization,"ratio_mode":ratio,
+        "signal_unit":unit,"input_unit":input_unit,"unit_qualification":"queried_input_and_display_mode"}),
+    )
 }
 
 struct Recording<'a, T> {
@@ -270,60 +309,57 @@ impl<T: CancellableIo> Io for Cancellable<'_, T> {
 }
 
 /// Display reads during motion/settling observe Stop even during a helper
-/// response. This also covers LI5640 display selection and restoration writes.
+/// response. LI5640 acquisition itself never changes the selected displays.
+#[cfg(test)]
 pub fn read_cancellable(
     model: Model,
     io: &mut impl CancellableIo,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> Result<Signal, String> {
-    let result = read(
-        model,
-        &mut Cancellable {
-            io: &mut *io,
-            cancel,
-        },
-    );
-    if let Err(error) = &result
-        && model.descriptor().read_changes_display
-        && cancel.load(std::sync::atomic::Ordering::Acquire)
-    {
-        // Selection writes may already have succeeded. Never leave this session
-        // marked healthy when cancellation prevented the restoration writes.
-        io.invalidate();
-        return Err(format!(
-            "{}; LI5640 recovery required: reconnect and verify display/output settings",
-            error
-        ));
-    }
-    result
+    read_selected_cancellable(model, io, cancel, DisplayMode::Xy)
+}
+pub fn read_selected_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+    mode: DisplayMode,
+) -> Result<Signal, String> {
+    read_selected(model, &mut Cancellable { io, cancel }, mode)
 }
 
 /// Recorded acquisition queries observe Stop without losing raw evidence.
+#[cfg(test)]
 pub fn read_recorded_cancellable(
     model: Model,
     io: &mut impl CancellableIo,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> RecordedRead {
-    let mut result = read_recorded(
-        model,
-        &mut Cancellable {
-            io: &mut *io,
-            cancel,
-        },
-    );
-    if result.result.is_err()
-        && model.descriptor().read_changes_display
-        && cancel.load(std::sync::atomic::Ordering::Acquire)
-    {
-        io.invalidate();
-        if let Err(error) = &mut result.result {
-            error.push_str(
-                "; LI5640 recovery required: reconnect and verify display/output settings",
-            );
-        }
-    }
-    result
+    read_selected_recorded_cancellable(model, io, cancel, DisplayMode::Xy)
 }
+pub fn read_selected_recorded_cancellable(
+    model: Model,
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+    mode: DisplayMode,
+) -> RecordedRead {
+    recorded(&mut Cancellable { io, cancel }, |io| {
+        read_selected(model, io, mode)
+    })
+}
+pub fn li5640_unit_recorded_cancellable(
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RecordedOperation<Value> {
+    recorded(&mut Cancellable { io, cancel }, |io| {
+        li5640_unit_context(io)
+    })
+}
+pub fn same_li5640_unit_context(before: &Value, after: &Value) -> bool {
+    ["input_mode", "normalization_mode", "ratio_mode"]
+        .into_iter()
+        .all(|key| before.get(key).is_some() && before.get(key) == after.get(key))
+}
+
 pub fn status_recorded_cancellable(
     model: Model,
     io: &mut impl CancellableIo,
@@ -339,15 +375,32 @@ pub fn settings_recorded_cancellable(
     settings_recorded(model, &mut Cancellable { io, cancel })
 }
 
+#[cfg(test)]
 pub fn read(model: Model, io: &mut impl Io) -> Result<Signal, String> {
+    read_selected(model, io, DisplayMode::Xy)
+}
+pub fn read_selected(model: Model, io: &mut impl Io, mode: DisplayMode) -> Result<Signal, String> {
     match model {
         Model::Sr830 => read_sr830(io),
         Model::Sr7265 => read_sr7265(io),
         Model::Sr5210 => read_sr5210(io),
-        Model::Li5640 => read_li5640(io),
+        Model::Li5640 => read_li5640(io, mode),
     }
 }
 
+// LI5640 manual §4.6: 50 fA–1 µA at 10^6 V/A; 5 fA–10 nA at 10^8 V/A.
+fn li5640_sensitivity_table(input: i32) -> Result<(&'static [f64], i32, &'static str), String> {
+    match input {
+        0 | 1 => Ok((&SR_SENS, 0, "VSEN")),
+        2 => Ok((&LI_CURRENT_SENS[3..], 4, "ISEN")),
+        3 => Ok((&LI_CURRENT_SENS[..20], 1, "ISEN")),
+        _ => Err("Unsupported LI5640 input mode".into()),
+    }
+}
+const LI_CURRENT_SENS: [f64; 26] = [
+    5e-15, 1e-14, 2e-14, 5e-14, 1e-13, 2e-13, 5e-13, 1e-12, 2e-12, 5e-12, 1e-11, 2e-11, 5e-11,
+    1e-10, 2e-10, 5e-10, 1e-9, 2e-9, 5e-9, 1e-8, 2e-8, 5e-8, 1e-7, 2e-7, 5e-7, 1e-6,
+];
 const SR_SENS: [f64; 27] = [
     2e-9, 5e-9, 10e-9, 20e-9, 50e-9, 100e-9, 200e-9, 500e-9, 1e-6, 2e-6, 5e-6, 10e-6, 20e-6, 50e-6,
     100e-6, 200e-6, 500e-6, 1e-3, 2e-3, 5e-3, 10e-3, 20e-3, 50e-3, 100e-3, 200e-3, 500e-3, 1.0,
@@ -374,14 +427,15 @@ const AC_GAIN: [f64; 10] = [0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0, 70.0, 80.0,
 /// by a model are represented by JSON null, while their available list is
 /// empty.  This lets the GUI share one settings panel across all models.
 pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
-    settings_impl(io, model, true)
+    settings_impl(io, model)
 }
-fn settings_impl(
-    io: &mut impl Io,
-    model: Model,
-    allow_output_change: bool,
-) -> Result<Value, String> {
+fn settings_impl(io: &mut impl Io, model: Model) -> Result<Value, String> {
     let mut input_mode = Value::Null;
+    let li_context = if model == Model::Li5640 {
+        Some(li5640_unit_context(io)?)
+    } else {
+        None
+    };
     let (sensitivity, time_constant, ref_freq, coupling, slope, ac_gain, overload, available) =
         match model {
             Model::Sr830 => (
@@ -419,24 +473,44 @@ fn settings_impl(
                 overload_sr5210(io)?,
                 model.descriptor().available(&S5210_SENS, &S5210_TC),
             ),
-            Model::Li5640 => (
-                indexed(io, "VSEN?\n", &SR_SENS)?,
-                indexed(io, "TCON?\n", &SR_TC)?,
-                if allow_output_change {
-                    Some(li5640_ref_freq(io)?)
-                } else {
-                    None
-                },
-                coupling(io, "ICPL?\n")?,
-                slope4(io, "SLOP?\n")?,
-                Value::Null,
-                overload_li5640(io)?,
-                model.descriptor().available(&SR_SENS, &SR_TC),
-            ),
+            Model::Li5640 => {
+                let context = li_context.as_ref().expect("LI5640 context");
+                let input = integer(
+                    context["input_mode"]
+                        .as_f64()
+                        .ok_or("Missing LI5640 input mode")?,
+                    "ISRC?",
+                )?;
+                let (table, base, command) = li5640_sensitivity_table(input)?;
+                let sensitivity = table_value(
+                    integer(
+                        query_value(io, &format!("{command}?\n"))?,
+                        "LI5640 sensitivity",
+                    )?,
+                    table,
+                    base,
+                    "LI5640 sensitivity",
+                )?;
+                (
+                    sensitivity,
+                    indexed(io, "TCON?\n", &SR_TC)?,
+                    None,
+                    coupling(io, "ICPL?\n")?,
+                    slope4(io, "SLOP?\n")?,
+                    Value::Null,
+                    overload_li5640(io)?,
+                    model.descriptor().available(table, &SR_TC),
+                )
+            }
         };
-    Ok(
-        json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "input_mode":input_mode, "available": available}),
-    )
+    let mut value = json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "input_mode":input_mode, "available": available});
+    if let Some(context) = li_context {
+        value
+            .as_object_mut()
+            .expect("settings object")
+            .extend(context.as_object().expect("unit context").clone());
+    }
+    Ok(value)
 }
 
 pub fn set_setting(
@@ -510,7 +584,16 @@ pub fn set_setting(
             write_slope(io, "XDB", value, descriptor.slope, descriptor.termination)
         }
         (Model::Li5640, "Sensitivity") => {
-            write_index(io, "VSEN", value, &SR_SENS, descriptor.termination)
+            let input = integer(query_value(io, "ISRC?\n")?, "ISRC?")?;
+            let (table, base, command) = li5640_sensitivity_table(input)?;
+            write_index_base(
+                io,
+                command,
+                value,
+                table,
+                base as usize,
+                descriptor.termination,
+            )
         }
         (Model::Li5640, "Time Constant") => {
             write_index(io, "TCON", value, &SR_TC, descriptor.termination)
@@ -686,23 +769,6 @@ fn overload_li5640(io: &mut impl Io) -> Result<Value, String> {
         json!({"overload": overload, "input_overload": overload, "raw_input_overload": value & 1 != 0, "middle_stage_overload": value & 2 != 0, "data1_display_overload": value & 4 != 0, "data2_display_overload": value & 8 != 0, "data1_ratio_display_overload": value & 16 != 0, "data2_ratio_display_overload": value & 32 != 0, "overload_byte": value}),
     )
 }
-fn li5640_ref_freq(io: &mut impl Io) -> Result<f64, String> {
-    let saved = io.query("OTYP?\n")?;
-    if saved.trim().is_empty() {
-        return Err("Unexpected empty response for \"OTYP?\"".into());
-    }
-    let result = (|| {
-        io.write("OTYP 3\n")?;
-        query_value(io, "DOUT?\n")
-    })();
-    let restore = io.write(&format!("OTYP {}\n", saved.trim()));
-    match (result, restore) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore)) => Err(format!("{error}; restore LI5640 OTYP: {restore}")),
-    }
-}
-
 fn read_sr830(io: &mut impl Io) -> Result<Signal, String> {
     let values = query_values(io, "SNAP?1,2,3,4\n", 4)?;
     signal(values[0], values[1], values[2], values[3])
@@ -758,64 +824,100 @@ fn read_sr5210(io: &mut impl Io) -> Result<Signal, String> {
     )
 }
 
-fn read_li5640(io: &mut impl Io) -> Result<Signal, String> {
-    // Do not alter instrument state until every value needed to restore it is
-    // available.  This is stricter than the legacy driver and avoids leaving
-    // a display changed when a settings query fails.
-    let output_types = io.query("OTYP?\n")?;
-    if output_types.trim().is_empty() {
-        return Err("Unexpected empty response for \"OTYP?\"".into());
-    }
-    let display1 = integer(query_value(io, "DDEF? 1\n")?, "DDEF? 1")?;
-    let display2 = integer(query_value(io, "DDEF? 2\n")?, "DDEF? 2")?;
-
-    let result = (|| {
-        let (x, y) = li5640_pair(io, 0, 0)?;
-        let (r, theta) = li5640_pair(io, 1, 1)?;
-        signal(x, y, r, theta)
-    })();
-    let restore = restore_li5640(io, &output_types, display1, display2);
-    match (result, restore) {
-        (Ok(value), Ok(())) => Ok(value),
-        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-        (Err(error), Err(restore_error)) => {
-            Err(format!("{error}; restore LI5640 settings: {restore_error}"))
-        }
-    }
-}
-
-fn li5640_pair(io: &mut impl Io, first: i32, second: i32) -> Result<(f64, f64), String> {
-    io.write(&format!("DDEF 1,{first}\n"))?;
-    io.write(&format!("DDEF 2,{second}\n"))?;
-    std::thread::sleep(std::time::Duration::from_millis(20));
-    io.write("OTYP 1,2\n")?;
-    let values = query_values(io, "DOUT?\n", 2)?;
-    Ok((values[0], values[1]))
-}
-
-fn restore_li5640(
-    io: &mut impl Io,
-    output_types: &str,
-    display1: i32,
-    display2: i32,
+/// Explicit user mode selection, used at connect/mode change, never per sample.
+pub fn select_mode(
+    model: Model,
+    io: &mut impl CancellableIo,
+    mode: DisplayMode,
 ) -> Result<(), String> {
-    // Attempt every restoration so one failed write does not prevent the
-    // remaining saved settings from being restored.
-    let mut errors = Vec::new();
-    if let Err(error) = io.write(&format!("OTYP {}\n", output_types.trim())) {
-        errors.push(error);
+    if model != Model::Li5640 {
+        return Ok(());
     }
-    if let Err(error) = io.write(&format!("DDEF 1,{display1}\n")) {
-        errors.push(error);
+    let selected = if mode == DisplayMode::Xy { 0 } else { 1 };
+    let output_text = io.query("OTYP?\n").map_err(|e| format!("transport: {e}"))?;
+    let count = output_text.trim().split(',').count();
+    if !(1..=6).contains(&count) {
+        return Err("Unexpected LI5640 output selection length".into());
     }
-    if let Err(error) = io.write(&format!("DDEF 2,{display2}\n")) {
-        errors.push(error);
+    let output = parse_values(&output_text, count, "OTYP?")?;
+    let first = integer(query_value(io, "DDEF? 1\n")?, "DDEF? 1")?;
+    let second = integer(query_value(io, "DDEF? 2\n")?, "DDEF? 2")?;
+    let changed = first != selected || second != selected || output != [1., 2.];
+    let result = (|| {
+        if first != selected {
+            io.write(&format!("DDEF 1,{selected}\n"))?;
+        }
+        if second != selected {
+            io.write(&format!("DDEF 2,{selected}\n"))?;
+        }
+        if output != [1., 2.] {
+            io.write("OTYP 1,2\n")?;
+        }
+        if changed {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        verify_li5640_mode(io, mode)
+    })();
+    if let Err(error) = result {
+        // Explicit selection is a transaction. A partial configuration must
+        // either restore and verify the previous state or require reconnection.
+        let mut failures = Vec::new();
+        for command in [
+            format!("OTYP {}\n", output_text.trim()),
+            format!("DDEF 1,{first}\n"),
+            format!("DDEF 2,{second}\n"),
+        ] {
+            if let Err(e) = io.write(&command) {
+                failures.push(e);
+            }
+        }
+        if failures.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let restored = (|| {
+                let restored_output = query_values(io, "OTYP?\n", count)?;
+                let restored_first = integer(query_value(io, "DDEF? 1\n")?, "DDEF? 1")?;
+                let restored_second = integer(query_value(io, "DDEF? 2\n")?, "DDEF? 2")?;
+                if restored_output != output || restored_first != first || restored_second != second
+                {
+                    return Err("LI5640 previous display/output settings not restored".into());
+                }
+                Ok(())
+            })();
+            if let Err(e) = restored {
+                failures.push(e);
+            }
+        }
+        if failures.is_empty() {
+            return Err(format!(
+                "{error}; previous LI5640 display/output settings restored"
+            ));
+        }
+        io.invalidate();
+        return Err(format!(
+            "{error}; LI5640 recovery required: reconnect and verify display/output settings; restoration: {}",
+            failures.join("; ")
+        ));
     }
-    if errors.is_empty() {
-        Ok(())
-    } else {
-        Err(errors.join("; "))
+    Ok(())
+}
+fn verify_li5640_mode(io: &mut impl Io, mode: DisplayMode) -> Result<(), String> {
+    let selected = if mode == DisplayMode::Xy { 0 } else { 1 };
+    let output = query_values(io, "OTYP?\n", 2)?;
+    let first = integer(query_value(io, "DDEF? 1\n")?, "DDEF? 1")?;
+    let second = integer(query_value(io, "DDEF? 2\n")?, "DDEF? 2")?;
+    if output != [1., 2.] || first != selected || second != selected {
+        return Err(format!(
+            "LI5640 display/output mode differs from selected {mode:?}; reselect the mode before reading"
+        ));
     }
+    Ok(())
+}
+fn read_li5640(io: &mut impl Io, mode: DisplayMode) -> Result<Signal, String> {
+    // Guard against front-panel/another client's mode changes. Never silently
+    // relabel DATA1/DATA2, change the display, or derive unmeasured components.
+    verify_li5640_mode(io, mode)?;
+    let values = query_values(io, "DOUT?\n", 2)?;
+    Signal::from_pair(mode, values[0], values[1])
 }
 
 fn query_value(io: &mut impl Io, command: &str) -> Result<f64, String> {
@@ -936,7 +1038,7 @@ mod tests {
 
     #[test]
     fn automatic_li5640_settings_snapshot_never_changes_output_type() {
-        let mut io = Fake::new(&["0", "0", "0", "0", "0"]);
+        let mut io = Fake::new(&["0", "0", "0", "0", "0", "0", "0", "0"]);
         io.fail_write = Some("OTYP 3\n");
         let snapshot = settings_recorded(Model::Li5640, &mut io);
         assert!(snapshot.result.as_ref().unwrap()["Ref. Freq"].is_null());
@@ -965,6 +1067,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn li5640_units_follow_queried_input_mode_and_never_assume_normalized_values_are_volts() {
+        for (input, norm, ratio, unit) in [
+            ("0", "0", "0", "V"),
+            ("1", "0", "0", "V"),
+            ("2", "0", "0", "A"),
+            ("3", "0", "0", "A"),
+            ("0", "1", "0", "unknown"),
+            ("0", "2", "0", "unknown"),
+            ("0", "0", "1", "unknown"),
+            ("9", "0", "0", "unknown"),
+        ] {
+            let mut io = Fake::new(&["0", input, norm, ratio]);
+            let result = status_recorded(Model::Li5640, &mut io);
+            let value = result.result.unwrap();
+            assert_eq!(measured_unit(Model::Li5640, Some(&value)), unit);
+            assert_eq!(io.commands, ["OVCR?\n", "ISRC?\n", "NORM?\n", "RAT?\n"]);
+            assert!(
+                result
+                    .exchanges
+                    .iter()
+                    .all(|event| event.operation == "query")
+            );
+        }
+        assert_eq!(measured_unit(Model::Li5640, None), "unknown");
+    }
+
+    #[test]
+    fn li5640_current_input_uses_current_sensitivity_readback_and_setter() {
+        let mut io = Fake::new(&["2", "0", "0", "26", "0", "0", "0", "0"]);
+        let value = settings(&mut io, Model::Li5640).unwrap();
+        assert_eq!(value["signal_unit"], "A");
+        assert_eq!(value["Sensitivity"], json!(1e-6));
+        assert!(io.commands.iter().any(|c| c == "ISEN?\n"));
+        assert!(!io.commands.iter().any(|c| c == "VSEN?\n"));
+        let mut io = Fake::new(&["3"]);
+        set_setting(&mut io, Model::Li5640, "Sensitivity", &json!(5e-15)).unwrap();
+        assert_eq!(io.commands, ["ISRC?\n", "ISEN 1\n"]);
+    }
+
+    #[test]
+    fn li5640_current_sensitivity_respects_the_queried_conversion_gain() {
+        let (low_gain, base, _) = li5640_sensitivity_table(2).unwrap();
+        assert_eq!(base, 4);
+        assert_eq!(low_gain[0], 50e-15);
+        assert_eq!(*low_gain.last().unwrap(), 1e-6);
+        let (high_gain, base, _) = li5640_sensitivity_table(3).unwrap();
+        assert_eq!(base, 1);
+        assert_eq!(high_gain[0], 5e-15);
+        assert_eq!(*high_gain.last().unwrap(), 10e-9);
+        let mut io = Fake::new(&["2"]);
+        assert!(set_setting(&mut io, Model::Li5640, "Sensitivity", &json!(5e-15)).is_err());
+        assert_eq!(io.commands, ["ISRC?\n"]);
+    }
     #[test]
     fn every_model_preserves_auto_commands_and_rejects_unknown_actions_without_io() {
         let commands = [
@@ -995,27 +1151,15 @@ mod tests {
             io.replies.push_back(Err("transport failure".into()));
             assert_eq!(
                 read(model, &mut io).unwrap_err(),
-                if model == Model::Li5640 {
-                    "transport failure"
-                } else {
-                    "transport: transport failure"
-                },
+                "transport: transport failure",
                 "{model:?}"
             );
             let mut io = Fake::new(&[]);
             let cancel = std::sync::atomic::AtomicBool::new(true);
             let error = read_cancellable(model, &mut io, &cancel).unwrap_err();
-            assert_eq!(
-                error,
-                if model == Model::Li5640 {
-                    "cancelled; LI5640 recovery required: reconnect and verify display/output settings"
-                } else {
-                    "transport: cancelled"
-                },
-                "{model:?}"
-            );
+            assert_eq!(error, "transport: cancelled", "{model:?}");
             assert!(io.commands.is_empty(), "cancelled read must not issue I/O");
-            assert_eq!(io.invalidated, model == Model::Li5640);
+            assert!(!io.invalidated);
         }
     }
 
@@ -1082,116 +1226,186 @@ mod tests {
         }
     }
     #[test]
-    fn cancellable_li5640_read_selects_and_restores_displays() {
-        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        let got = read_cancellable(Model::Li5640, &mut io, &cancel).unwrap();
-        assert_eq!((got.x_v, got.y_v, got.r_v, got.theta_deg), (1., 2., 3., 4.));
-        assert!(io.commands.ends_with(&[
-            "OTYP 9,8\n".into(),
-            "DDEF 1,7\n".into(),
-            "DDEF 2,6\n".into()
-        ]));
+    fn li5640_reads_only_selected_pair_without_any_display_writes() {
+        for (mode, defs, values) in [
+            (DisplayMode::Xy, "0", "1,2"),
+            (DisplayMode::RTheta, "1", "3,40"),
+        ] {
+            let mut io = Fake::new(&["1,2", defs, defs, values, "1,2", defs, defs, values]);
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            let first = read_selected_cancellable(Model::Li5640, &mut io, &cancel, mode).unwrap();
+            let second = read_selected_recorded_cancellable(Model::Li5640, &mut io, &cancel, mode)
+                .result
+                .unwrap();
+            assert_eq!(first, second);
+            assert_eq!(first.acquired_pair(), Some(mode));
+            let unavailable = if mode == DisplayMode::Xy {
+                [first.r_v, first.theta_deg]
+            } else {
+                [first.x_v, first.y_v]
+            };
+            assert!(unavailable.iter().all(|value| value.is_nan()));
+            assert!(io.commands.iter().all(|c| c.contains('?')));
+            assert_eq!(
+                io.commands
+                    .iter()
+                    .filter(|c| c.as_str() == "DOUT?\n")
+                    .count(),
+                2
+            );
+        }
     }
     #[test]
-    fn cancelled_li5640_read_attempts_all_restores_and_reports_failure() {
-        struct CancelOnSelection {
-            io: Fake,
-            attempted: Vec<String>,
+    fn li5640_mode_selection_changes_only_at_explicit_configuration_and_verifies_readback() {
+        let mut io = Fake::new(&["3", "1", "1", "1,2", "0", "0"]);
+        select_mode(Model::Li5640, &mut io, DisplayMode::Xy).unwrap();
+        assert_eq!(
+            io.commands
+                .iter()
+                .filter(|c| !c.contains('?'))
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["DDEF 1,0\n", "DDEF 2,0\n", "OTYP 1,2\n"]
+        );
+        let mut correct = Fake::new(&["1,2", "1", "1", "1,2", "1", "1"]);
+        select_mode(Model::Li5640, &mut correct, DisplayMode::RTheta).unwrap();
+        assert!(correct.commands.iter().all(|c| c.contains('?')));
+    }
+    #[test]
+    fn li5640_refuses_wrong_display_or_output_selection_instead_of_mislabeling_or_mutating() {
+        for replies in [["1,2", "1", "1"], ["2,1", "0", "0"]] {
+            let mut io = Fake::new(&replies);
+            assert!(
+                read(Model::Li5640, &mut io)
+                    .unwrap_err()
+                    .contains("differs from selected")
+            );
+            assert_eq!(io.commands, ["OTYP?\n", "DDEF? 1\n", "DDEF? 2\n"]);
         }
-        impl Io for CancelOnSelection {
-            fn query(&mut self, c: &str) -> Result<String, String> {
-                self.io.query(c)
-            }
-            fn write(&mut self, c: &str) -> Result<(), String> {
-                self.io.write(c)
-            }
+    }
+    #[test]
+    fn li5640_configuration_failure_does_not_produce_a_measurement() {
+        let mut io = Fake::new(&["1,2", "1", "1"]);
+        io.fail_write = Some("DDEF 1,0\n");
+        assert!(
+            select_mode(Model::Li5640, &mut io, DisplayMode::Xy)
+                .unwrap_err()
+                .contains("write failed")
+        );
+        assert!(!io.commands.iter().any(|c| c == "DOUT?\n"));
+    }
+
+    #[test]
+    fn li5640_selection_failures_restore_and_verify_every_previous_setting() {
+        for failed in ["DDEF 1,0\n", "DDEF 2,0\n", "OTYP 1,2\n"] {
+            let mut io = Fake::new(&["3", "1", "1", "3", "1", "1"]);
+            io.fail_write = Some(failed);
+            let error = select_mode(Model::Li5640, &mut io, DisplayMode::Xy).unwrap_err();
+            assert!(
+                error.contains("previous LI5640 display/output settings restored"),
+                "{failed}: {error}"
+            );
+            assert!(!io.invalidated);
+            assert!(io.commands.ends_with(&[
+                "OTYP 3\n".into(),
+                "DDEF 1,1\n".into(),
+                "DDEF 2,1\n".into(),
+                "OTYP?\n".into(),
+                "DDEF? 1\n".into(),
+                "DDEF? 2\n".into()
+            ]));
         }
-        impl CancellableIo for CancelOnSelection {
-            fn invalidate(&mut self) {
-                self.io.invalidate();
+        let mut io = Fake::new(&["3", "1", "1", "1,2", "1", "0", "3", "1", "1"]);
+        assert!(
+            select_mode(Model::Li5640, &mut io, DisplayMode::Xy)
+                .unwrap_err()
+                .contains("settings restored")
+        );
+        assert!(!io.invalidated);
+    }
+    #[test]
+    fn li5640_rollback_waits_for_display_settings_to_settle_before_verification() {
+        struct Delayed {
+            inner: Fake,
+            restored_at: Option<std::time::Instant>,
+        }
+        impl Io for Delayed {
+            fn query(&mut self, command: &str) -> Result<String, String> {
+                if self
+                    .restored_at
+                    .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(20))
+                {
+                    return Err("display settings still settling".into());
+                }
+                self.inner.query(command)
             }
-            fn query_cancellable(
-                &mut self,
-                c: &str,
-                token: &std::sync::atomic::AtomicBool,
-            ) -> Result<String, String> {
-                self.io.query_cancellable(c, token)
-            }
-            fn write_cancellable(
-                &mut self,
-                c: &str,
-                token: &std::sync::atomic::AtomicBool,
-            ) -> Result<(), String> {
-                self.attempted.push(c.into());
-                let result = self.io.write_cancellable(c, token);
-                if c == "DDEF 1,0\n" {
-                    token.store(true, std::sync::atomic::Ordering::Release);
+            fn write(&mut self, command: &str) -> Result<(), String> {
+                let result = self.inner.write(command);
+                if command == "DDEF 2,1\n" {
+                    self.restored_at = Some(std::time::Instant::now());
                 }
                 result
             }
         }
-        let mut io = CancelOnSelection {
-            io: Fake::new(&["9,8", "7", "6"]),
-            attempted: vec![],
+        impl CancellableIo for Delayed {
+            fn invalidate(&mut self) {
+                self.inner.invalidated = true;
+            }
+            fn query_cancellable(
+                &mut self,
+                c: &str,
+                cancel: &std::sync::atomic::AtomicBool,
+            ) -> Result<String, String> {
+                if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    Err("cancelled".into())
+                } else {
+                    self.query(c)
+                }
+            }
+            fn write_cancellable(
+                &mut self,
+                c: &str,
+                cancel: &std::sync::atomic::AtomicBool,
+            ) -> Result<(), String> {
+                if cancel.load(std::sync::atomic::Ordering::Acquire) {
+                    Err("cancelled".into())
+                } else {
+                    self.write(c)
+                }
+            }
+        }
+        let mut io = Delayed {
+            inner: Fake::new(&["3", "1", "1", "3", "1", "1"]),
+            restored_at: None,
         };
-        let cancel = std::sync::atomic::AtomicBool::new(false);
-        let error = read_cancellable(Model::Li5640, &mut io, &cancel).unwrap_err();
-        assert!(error.contains("cancelled"));
-        assert!(error.contains("restore LI5640 settings"));
+        io.inner.fail_write = Some("DDEF 2,0\n");
+        let error = select_mode(Model::Li5640, &mut io, DisplayMode::Xy).unwrap_err();
+        assert!(error.contains("settings restored"), "{error}");
+        assert!(!io.inner.invalidated);
+    }
+    #[test]
+    fn li5640_selection_failed_restoration_invalidates_and_still_attempts_all_restores() {
+        let mut io = Fake::new(&["3", "1", "1", "1,2", "1", "0"]);
+        io.fail_write = Some("OTYP 3\n");
+        let error = select_mode(Model::Li5640, &mut io, DisplayMode::Xy).unwrap_err();
         assert!(error.contains("LI5640 recovery required"));
-        assert!(io.io.invalidated);
-        assert_eq!(io.io.commands.last().unwrap(), "DDEF 1,0\n");
-        assert!(io.attempted.ends_with(&[
-            "OTYP 9,8\n".into(),
-            "DDEF 1,7\n".into(),
-            "DDEF 2,6\n".into()
+        assert!(io.invalidated);
+        assert!(io.commands.ends_with(&[
+            "OTYP 3\n".into(),
+            "DDEF 1,1\n".into(),
+            "DDEF 2,1\n".into()
         ]));
     }
-
     #[test]
-    fn li5640_restores_saved_settings() {
-        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
-        let got = read(Model::Li5640, &mut io).unwrap();
-        assert_eq!(
-            (got.x_v, got.y_v, got.r_v, got.theta_deg),
-            (1.0, 2.0, 3.0, 4.0)
+    fn li5640_periodic_and_manual_settings_never_mutate_output_mapping() {
+        let mut io = Fake::new(&["0", "0", "0", "0", "0", "0", "0", "0"]);
+        let settings = settings(&mut io, Model::Li5640).unwrap();
+        assert!(settings["Ref. Freq"].is_null());
+        assert!(
+            io.commands
+                .iter()
+                .all(|c| c.contains('?') && !c.starts_with("OTYP"))
         );
-        assert_eq!(
-            io.commands,
-            [
-                "OTYP?\n",
-                "DDEF? 1\n",
-                "DDEF? 2\n",
-                "DDEF 1,0\n",
-                "DDEF 2,0\n",
-                "OTYP 1,2\n",
-                "DOUT?\n",
-                "DDEF 1,1\n",
-                "DDEF 2,1\n",
-                "OTYP 1,2\n",
-                "DOUT?\n",
-                "OTYP 9,8\n",
-                "DDEF 1,7\n",
-                "DDEF 2,6\n"
-            ]
-        );
-    }
-
-    #[test]
-    fn li5640_does_not_mutate_without_complete_saved_state() {
-        let mut io = Fake::new(&["9,8", "bad"]);
-        assert!(read(Model::Li5640, &mut io).is_err());
-        assert_eq!(io.commands, ["OTYP?\n", "DDEF? 1\n"]);
-    }
-
-    #[test]
-    fn li5640_reports_restore_failure_after_attempting_every_restore() {
-        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
-        io.fail_write = Some("DDEF 1,7\n");
-        let error = read(Model::Li5640, &mut io).unwrap_err();
-        assert!(error.contains("write failed"));
-        assert_eq!(io.commands.last(), Some(&"DDEF 2,6\n".to_string()));
     }
 
     #[test]
@@ -1200,7 +1414,7 @@ mod tests {
             (Model::Sr830, &["1,2,3,4"]),
             (Model::Sr7265, &["1,2", "3,4"]),
             (Model::Sr5210, &["8", "10000,-5000", "2500,12345"]),
-            (Model::Li5640, &["9,8", "7", "6", "1,2", "3,4"]),
+            (Model::Li5640, &["1,2", "0", "0", "1,2"]),
         ];
         for (model, replies) in cases {
             let mut direct_io = Fake::new(replies);
@@ -1299,28 +1513,17 @@ mod tests {
     }
 
     #[test]
-    fn recorded_li5640_read_captures_all_restoration_writes() {
-        let mut io = Fake::new(&["9,8", "7", "6", "1,2", "3,4"]);
-        io.fail_write = Some("DDEF 1,7\n");
-        let recorded = read_recorded(Model::Li5640, &mut io);
-
-        assert!(recorded.result.unwrap_err().contains("write failed"));
-        let restores = &recorded.exchanges[11..];
-        assert_eq!(
-            restores
-                .iter()
-                .map(|exchange| exchange.command.as_str())
-                .collect::<Vec<_>>(),
-            ["OTYP 9,8\n", "DDEF 1,7\n", "DDEF 2,6\n"]
-        );
-        assert!(
-            restores
-                .iter()
-                .all(|exchange| exchange.operation == "write")
-        );
-        assert_eq!(restores[0].error, None);
-        assert_eq!(restores[1].error.as_deref(), Some("write failed"));
-        assert_eq!(restores[2].error, None);
+    fn recorded_li5640_query_failure_keeps_raw_evidence_without_restoration_writes() {
+        let mut io = Fake::new(&["1,2", "0", "0"]);
+        io.replies.push_back(Err("cancelled".into()));
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let recorded = read_recorded_cancellable(Model::Li5640, &mut io, &cancel);
+        assert!(recorded.result.unwrap_err().contains("cancelled"));
+        assert_eq!(recorded.exchanges.len(), 4);
+        assert_eq!(recorded.exchanges[3].command, "DOUT?\n");
+        assert_eq!(recorded.exchanges[3].error.as_deref(), Some("cancelled"));
+        assert!(recorded.exchanges.iter().all(|e| e.operation == "query"));
+        assert!(!io.invalidated);
     }
 
     #[test]

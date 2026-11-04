@@ -6,15 +6,81 @@ use serde::{Deserialize, Serialize};
 pub const MAX_AXIS_POINTS: usize = 100_000;
 pub const MAX_TOTAL_POINTS: usize = 1_000_000;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Signal {
+    #[serde(with = "optional_signal_value")]
     pub x_v: f64,
+    #[serde(with = "optional_signal_value")]
     pub y_v: f64,
+    #[serde(with = "optional_signal_value")]
     pub r_v: f64,
+    #[serde(with = "optional_signal_value")]
     pub theta_deg: f64,
 }
 
+// An unacquired LI5640 component is null on the wire and NaN in memory.
+// It must never be interpreted as zero or reconstructed from the other pair.
+mod optional_signal_value {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+        if value.is_finite() {
+            serializer.serialize_f64(*value)
+        } else {
+            serializer.serialize_none()
+        }
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+        Ok(Option::<f64>::deserialize(deserializer)?.unwrap_or(f64::NAN))
+    }
+}
+impl PartialEq for Signal {
+    fn eq(&self, other: &Self) -> bool {
+        [self.x_v, self.y_v, self.r_v, self.theta_deg]
+            .into_iter()
+            .zip([other.x_v, other.y_v, other.r_v, other.theta_deg])
+            .all(|(a, b)| a == b || (a.is_nan() && b.is_nan()))
+    }
+}
+
 impl Signal {
+    pub fn from_pair(mode: DisplayMode, first: f64, second: f64) -> Result<Self, String> {
+        if !first.is_finite() || !second.is_finite() || (mode == DisplayMode::RTheta && first < 0.)
+        {
+            return Err("Lock-in returned a non-finite value or negative magnitude".into());
+        }
+        Ok(match mode {
+            DisplayMode::Xy => Self {
+                x_v: first,
+                y_v: second,
+                r_v: f64::NAN,
+                theta_deg: f64::NAN,
+            },
+            DisplayMode::RTheta => Self {
+                x_v: f64::NAN,
+                y_v: f64::NAN,
+                r_v: first,
+                theta_deg: second,
+            },
+        })
+    }
+    pub fn acquired_pair(self) -> Option<DisplayMode> {
+        if self.x_v.is_finite()
+            && self.y_v.is_finite()
+            && self.r_v.is_nan()
+            && self.theta_deg.is_nan()
+        {
+            Some(DisplayMode::Xy)
+        } else if self.x_v.is_nan()
+            && self.y_v.is_nan()
+            && self.r_v.is_finite()
+            && self.theta_deg.is_finite()
+        {
+            Some(DisplayMode::RTheta)
+        } else {
+            None
+        }
+    }
+
     pub fn new(x_v: f64, y_v: f64, r_v: f64, theta_deg: f64) -> Result<Self, String> {
         if ![x_v, y_v, r_v, theta_deg].into_iter().all(f64::is_finite) || r_v < 0.0 {
             return Err("Lock-in returned a non-finite value or negative magnitude".into());
@@ -40,10 +106,12 @@ impl Signal {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisplayMode {
     #[default]
+    #[serde(rename = "xy")]
     Xy,
+    #[serde(rename = "r_theta", alias = "rtheta")]
     RTheta,
 }
 
@@ -655,5 +723,35 @@ mod tests {
         let s = Signal::new(1., 2., 3., -120.).unwrap();
         assert_eq!(DisplayMode::RTheta.values(s), [3., -120.]);
         assert_eq!(DisplayMode::Xy.values(s), [1., 2.]);
+    }
+    #[test]
+    fn single_pair_signal_round_trips_null_components_without_deriving_them() {
+        for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+            let signal = Signal::from_pair(mode, 1.234567890123456e-9, -2.).unwrap();
+            let value = serde_json::to_value(signal).unwrap();
+            let missing = if mode == DisplayMode::Xy {
+                ["r_v", "theta_deg"]
+            } else {
+                ["x_v", "y_v"]
+            };
+            assert!(missing.iter().all(|key| value[*key].is_null()));
+            let restored: Signal = serde_json::from_value(value).unwrap();
+            assert_eq!(signal, restored);
+            assert_eq!(restored.acquired_pair(), Some(mode));
+            assert!(
+                DisplayMode::values(
+                    if mode == DisplayMode::Xy {
+                        DisplayMode::RTheta
+                    } else {
+                        DisplayMode::Xy
+                    },
+                    restored
+                )
+                .into_iter()
+                .all(f64::is_nan)
+            );
+        }
+        assert!(Signal::from_pair(DisplayMode::RTheta, -1., 0.).is_err());
+        assert!(Signal::from_pair(DisplayMode::Xy, f64::NAN, 0.).is_err());
     }
 }

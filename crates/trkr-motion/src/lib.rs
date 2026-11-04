@@ -86,6 +86,10 @@ pub struct ScannerConfig {
     pub resolution: Option<f64>,
     #[serde(default)]
     pub min_step: Option<f64>,
+    /// Arrival tolerance in the scanner's native unit. When omitted, this is
+    /// resolved from the controller model during normalization.
+    #[serde(default)]
+    pub position_tolerance: Option<f64>,
     #[serde(default)]
     pub ensure_closed_loop_on_move: Option<bool>,
     #[serde(default)]
@@ -207,6 +211,7 @@ impl Default for ScannerConfig {
             pos_digits: None,
             resolution: None,
             min_step: None,
+            position_tolerance: None,
             ensure_closed_loop_on_move: None,
             software_hysteresis: Hysteresis::default(),
         }
@@ -483,6 +488,24 @@ impl ScannerConfig {
         if let Some(r) = c.resolution.or(c.min_step) {
             positive(r, "Scanner resolution")?;
         }
+        let default_position_tolerance = match model {
+            // The AG-M100D encoder resolution is 0.001 deg, but its specified
+            // bidirectional repeatability is 0.01 deg. Arrival verification
+            // must use the latter rather than rejecting normal mechanics.
+            ScannerModel::ConexAgap => 0.01,
+            ScannerModel::ConexCc => c.resolution.or(c.min_step).unwrap_or(0.0001).max(0.0001),
+        };
+        let position_tolerance = c.position_tolerance.unwrap_or(default_position_tolerance);
+        positive(position_tolerance, "Scanner position tolerance")?;
+        if position_tolerance > max - min {
+            return Err(format!(
+                "Scanner position tolerance {position_tolerance} exceeds travel span {} (limits {min}..{max})",
+                max - min
+            ));
+        }
+        // Persist the resolved default in the normalized configuration so the
+        // effective-motion JSON records the tolerance actually used.
+        c.position_tolerance = Some(position_tolerance);
         if c.pos_digits.is_some_and(|d| d > 12) {
             return Err("Scanner pos_digits must be <=12".into());
         }
@@ -543,6 +566,11 @@ impl ScannerConfig {
         }
         let factor = 10_f64.powi(self.digits() as i32);
         Ok((raw * factor).round_ties_even() / factor)
+    }
+    /// Effective arrival tolerance in the scanner's native unit.
+    pub fn effective_position_tolerance(&self) -> Result<f64, String> {
+        self.position_tolerance
+            .ok_or_else(|| "Missing normalized scanner position tolerance".into())
     }
     fn hysteresis_sign(&self) -> Result<f64, String> {
         match self
@@ -1263,17 +1291,25 @@ impl MotionRig {
                         .as_ref()
                         .ok_or("Scanner not connected")?;
                     let expected = s.config.raw_target(*v)?;
-                    let measured = s
-                        .config
-                        .raw_from_sample_um(actual.physical[i].ok_or("Missing position readback")?);
-                    if (expected - measured).abs()
-                        > s.config
-                            .resolution
-                            .or(s.config.min_step)
-                            .unwrap_or(0.0001)
-                            .max(0.0001)
-                    {
-                        return Err("Scanner readback does not match target".into());
+                    let measured_sample = actual.physical[i].ok_or("Missing position readback")?;
+                    let measured = s.config.raw_from_sample_um(measured_sample);
+                    let allowed = s.config.effective_position_tolerance()?;
+                    let difference = (expected - measured).abs();
+                    // Comparing a difference of decimal encoder readings at
+                    // exactly one configured resolution can exceed `allowed`
+                    // by a few binary ULPs (e.g. 0.053 - 0.052 > 0.001).
+                    // Bound only conversion/subtraction roundoff; the physical
+                    // arrival tolerance remains the configured native-unit
+                    // tolerance.
+                    let roundoff = 8.
+                        * f64::EPSILON
+                        * (expected.abs() + measured.abs() + s.config.origin().abs() + allowed);
+                    if difference > allowed && difference - allowed > roundoff {
+                        let axis = if i == 1 { "X" } else { "Y" };
+                        let unit = s.config.pos_unit.as_deref().unwrap_or("native unit");
+                        return Err(format!(
+                            "Scanner readback does not match target: {axis} scanner requested sample {v} µm; commanded {expected} {unit}; read back {measured} {unit} ({measured_sample} µm); difference {difference} {unit}, allowed {allowed} {unit}"
+                        ));
                     }
                 }
             }

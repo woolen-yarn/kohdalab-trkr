@@ -104,6 +104,27 @@ pub fn voltage_scale_from_sensitivity(sensitivity_v: f64) -> (f64, &'static str)
     }
 }
 
+/// Display scale only: storage retains the original acquired value and unit.
+pub fn signal_display_scale(scale: f64, label: &str, unit: &str) -> (f64, String) {
+    if !matches!(unit, "V" | "A") {
+        return (1., "unknown".into());
+    }
+    match label.strip_suffix('V').or_else(|| label.strip_suffix('A')) {
+        Some(prefix) => (scale, format!("{prefix}{unit}")),
+        None => (1., unit.into()),
+    }
+}
+
+fn signal_component(samples: &[Sample], sample: &Sample, mode: DisplayMode, channel: usize) -> f64 {
+    if let Some(last) = samples.last()
+        && !last.recording.signal_unit.is_empty()
+        && sample.recording.signal_unit != last.recording.signal_unit
+    {
+        return f64::NAN;
+    }
+    mode.values(sample.signal)[channel]
+}
+
 pub fn axis_value(sample: &Sample, axis: Axis, plan: &Plan) -> f64 {
     let physical = sample.position.physical;
     let corrected: [f64; 3] = std::array::from_fn(|i| {
@@ -157,19 +178,30 @@ struct LineSpec {
 }
 
 impl PlotView<'_> {
+    fn trace_display_scale(&self) -> (f64, String) {
+        match self
+            .samples
+            .last()
+            .map(|s| s.recording.signal_unit.as_str())
+            .filter(|unit| !unit.is_empty())
+        {
+            Some(unit) => signal_display_scale(self.voltage_scale, self.voltage_unit, unit),
+            None => (self.voltage_scale, self.voltage_unit.into()),
+        }
+    }
     fn signal_scale(&self, signal: usize) -> f64 {
         if self.mode == DisplayMode::RTheta && signal == 1 {
             1.
         } else {
-            self.voltage_scale
+            self.trace_display_scale().0
         }
     }
     fn signal_label(&self, signal: usize) -> String {
         match (self.mode, signal) {
-            (DisplayMode::RTheta, 0) => format!("R ({})", self.voltage_unit),
+            (DisplayMode::RTheta, 0) => format!("R ({})", self.trace_display_scale().1),
             (DisplayMode::RTheta, _) => "Theta (deg)".into(),
-            (_, 0) => format!("X ({})", self.voltage_unit),
-            (_, _) => format!("Y ({})", self.voltage_unit),
+            (_, 0) => format!("X ({})", self.trace_display_scale().1),
+            (_, _) => format!("Y ({})", self.trace_display_scale().1),
         }
     }
     fn line(
@@ -224,7 +256,7 @@ impl PlotView<'_> {
                         } else {
                             axis_value(sample, spec.axis, self.plan)
                         },
-                        self.mode.values(sample.signal)[spec.signal]
+                        signal_component(self.samples, sample, self.mode, spec.signal)
                             * self.signal_scale(spec.signal),
                     ]
                 })
@@ -252,6 +284,10 @@ impl PlotView<'_> {
             spec.axis.name(),
             self.mode == DisplayMode::RTheta,
             self.voltage_scale.to_bits(),
+            self.samples
+                .last()
+                .map(|s| s.recording.signal_unit.as_str())
+                .unwrap_or_default(),
             self.epoch,
             has_data,
             log,
@@ -368,7 +404,7 @@ fn prepare_heatmap(
     }
     let max = samples
         .iter()
-        .map(|sample| (mode.values(sample.signal)[signal] * signal_scale).abs())
+        .map(|sample| (signal_component(samples, sample, mode, signal) * signal_scale).abs())
         .fold(0., f64::max);
     let mut image = egui::ColorImage::filled([xs.len(), ys.len()], Color32::TRANSPARENT);
     for sample in samples {
@@ -378,8 +414,10 @@ fn prepare_heatmap(
                 ys.binary_search_by(|v| v.total_cmp(&y)),
             )
         {
-            image.pixels[(ys.len() - 1 - yi) * xs.len() + xi] =
-                diverging(mode.values(sample.signal)[signal] * signal_scale, max);
+            let value = signal_component(samples, sample, mode, signal) * signal_scale;
+            if value.is_finite() {
+                image.pixels[(ys.len() - 1 - yi) * xs.len() + xi] = diverging(value, max);
+            }
         }
     }
     Some(PreparedHeatmap {
@@ -693,6 +731,10 @@ pub fn verify_visible_data(
             axis.name(),
             mode == DisplayMode::RTheta,
             scale.to_bits(),
+            samples
+                .last()
+                .map(|s| s.recording.signal_unit.as_str())
+                .unwrap_or_default(),
             epoch,
             true,
             log,
@@ -709,7 +751,7 @@ pub fn verify_visible_data(
             } else {
                 axis_value(sample, axis, plan)
             };
-            let y = mode.values(sample.signal)[signal]
+            let y = signal_component(samples, sample, mode, signal)
                 * if mode == DisplayMode::RTheta && signal == 1 {
                     1.
                 } else {
@@ -1079,5 +1121,78 @@ mod tests {
         assert_eq!(prepared.extent.width, 2.);
         assert_eq!(prepared.extent.height, 3.);
         assert_eq!(prepared.extent.center, PlotPoint::new(1., 2.5));
+    }
+    #[test]
+    fn signal_display_units_follow_the_qualified_base_quantity() {
+        assert_eq!(signal_display_scale(1e6, "uV", "V"), (1e6, "uV".into()));
+        assert_eq!(signal_display_scale(1e6, "uV", "A"), (1e6, "uA".into()));
+        assert_eq!(
+            signal_display_scale(1e6, "uV", "unknown"),
+            (1., "unknown".into())
+        );
+    }
+    #[test]
+    fn mixed_unit_traces_do_not_relabel_old_points_and_retained_traces_keep_their_own_unit() {
+        let plan = Plan {
+            workflow: Workflow::Srkr2d,
+            fast: Axis::X,
+            slow: Axis::Y,
+            fast_range: trkr_core::Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            slow_range: trkr_core::Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            ..Default::default()
+        };
+        let samples = plan
+            .targets()
+            .unwrap()
+            .into_iter()
+            .take(2)
+            .zip(["V", "A"])
+            .map(|(target, unit)| Sample {
+                recording: Box::new(crate::engine::SampleRecording {
+                    signal_unit: unit.into(),
+                    ..Default::default()
+                }),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: 0.,
+                target,
+                signal: trkr_core::Signal::from_pair(DisplayMode::Xy, 1e-6, 2e-6).unwrap(),
+                position: Default::default(),
+            })
+            .collect::<Vec<_>>();
+        let view = PlotView {
+            epoch: 0,
+            y_log: false,
+            samples: &samples,
+            plan: &plan,
+            mode: DisplayMode::Xy,
+            voltage_scale: 1e6,
+            voltage_unit: "uV",
+        };
+        assert_eq!(view.signal_label(0), "X (uA)");
+        assert!(signal_component(&samples, &samples[0], DisplayMode::Xy, 0).is_nan());
+        assert_eq!(
+            signal_component(&samples, &samples[1], DisplayMode::Xy, 0),
+            1e-6
+        );
+        let image = prepare_heatmap(&samples, DisplayMode::Xy, 0, view.signal_scale(0))
+            .unwrap()
+            .image;
+        assert_eq!(image.pixels[0], Color32::TRANSPARENT);
+        assert_ne!(image.pixels[1], Color32::TRANSPARENT);
+        let retained = PlotView {
+            samples: &samples[..1],
+            voltage_unit: "uA",
+            ..view
+        };
+        assert_eq!(retained.signal_label(0), "X (uV)");
     }
 }
