@@ -1104,6 +1104,9 @@ fn scanner_arrival_tolerance_boundary_ignores_only_arithmetic_roundoff() {
     for scale in [698.1317007977318, 493.653659795374, -493.653659795374] {
         let mut config = agap("U");
         config.sample_um_per_unit = scale;
+        // Keep this numerical-boundary regression at the encoder-resolution
+        // tolerance; AGAP's normal default is its 0.01 deg repeatability.
+        config.position_tolerance = Some(0.001);
         rig.scanners[0].as_mut().unwrap().config = config.clone();
         for (target, measured) in [(0.052, 0.053), (-0.052, -0.053), (0.035, 0.034)] {
             let requested = config.sample_um_from_raw(target);
@@ -1140,4 +1143,57 @@ fn scanner_arrival_tolerance_boundary_ignores_only_arithmetic_roundoff() {
         rig.verify_targets(&actual, [None, Some(requested), None])
             .is_err()
     );
+}
+
+#[test]
+fn agap_arrival_tolerance_uses_repeatability_and_explicit_overrides() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log, &[]);
+    let requested = 0.;
+
+    let config = agap("U");
+    assert_eq!(config.position_tolerance, Some(0.01));
+    rig.scanners[0].as_mut().unwrap().config = config.clone();
+    let within_repeatability = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.009)), None],
+        x_scanner_deg: Some(0.009),
+        ..Default::default()
+    };
+    rig.verify_targets(&within_repeatability, [None, Some(requested), None])
+        .unwrap();
+    let outside_repeatability = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.010_001)), None],
+        x_scanner_deg: Some(0.010_001),
+        ..Default::default()
+    };
+    assert!(
+        rig.verify_targets(&outside_repeatability, [None, Some(requested), None])
+            .is_err()
+    );
+
+    let mut tighter = config.clone();
+    tighter.position_tolerance = Some(0.002);
+    let tighter = tighter.normalized().unwrap();
+    rig.scanners[0].as_mut().unwrap().config = tighter.clone();
+    let outside_tighter = Position {
+        physical: [None, Some(tighter.sample_um_from_raw(0.003)), None],
+        x_scanner_deg: Some(0.003),
+        ..Default::default()
+    };
+    assert!(
+        rig.verify_targets(&outside_tighter, [None, Some(requested), None])
+            .is_err()
+    );
+
+    let mut looser = config;
+    looser.position_tolerance = Some(0.02);
+    let looser = looser.normalized().unwrap();
+    rig.scanners[0].as_mut().unwrap().config = looser.clone();
+    let within_looser = Position {
+        physical: [None, Some(looser.sample_um_from_raw(0.015)), None],
+        x_scanner_deg: Some(0.015),
+        ..Default::default()
+    };
+    rig.verify_targets(&within_looser, [None, Some(requested), None])
+        .unwrap();
 }

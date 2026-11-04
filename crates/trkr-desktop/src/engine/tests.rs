@@ -948,7 +948,12 @@ fn disconnected_signal_mode_selection_is_acknowledged_without_connecting_devices
 #[test]
 fn li5640_acquisition_records_only_selected_pair_and_never_switches_displays_per_point() {
     let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
-    for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+    for (mode, unit, input) in [
+        (DisplayMode::Xy, "V", "0"),
+        (DisplayMode::RTheta, "V", "0"),
+        (DisplayMode::Xy, "A", "2"),
+        (DisplayMode::RTheta, "A", "3"),
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let hex = |text: &str| {
             text.as_bytes()
@@ -963,6 +968,8 @@ fn li5640_acquisition_records_only_selected_pair_and_never_switches_displays_per
             ("DDEF? 1\n", display),
             ("DDEF? 2\n", display),
             ("DOUT?\n", "1.234567890123456e-9,-20"),
+            ("ISRC?\n", input),
+            ("ISEN?\n", if input == "2" { "4" } else { "1" }),
         ] {
             script.push_str(&format!(
                 "  {}) printf 'KIV\\tOK\\t{}\\n' ;;\n",
@@ -1003,6 +1010,7 @@ fn li5640_acquisition_records_only_selected_pair_and_never_switches_displays_per
         for record in csv.records() {
             let record = record.unwrap();
             let get = |field| &record[headers.iter().position(|h| h == field).unwrap()];
+            assert_eq!(get("signal_unit"), unit);
             if mode == DisplayMode::Xy {
                 assert!(get("R").is_empty() && get("Theta_deg").is_empty());
                 assert!(get("quality_flags").contains("signal_xy_only"));
@@ -1033,4 +1041,157 @@ fn li5640_acquisition_records_only_selected_pair_and_never_switches_displays_per
         }
         assert_eq!(signal_responses, 2);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn li5640_changed_unit_during_signal_read_is_preserved_as_unknown_and_stops_before_next_point() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let script = r#"#!/bin/sh
+printf 'KIV\tOK\t-\n'
+reads=0
+while read -r operation address timeout payload; do
+  if [ "$operation" = EXIT ]; then break; fi
+  case "$payload" in
+    4f5459503f0a) printf 'KIV\tOK\t312c32\n' ;;
+    444f55543f0a) reads=$((reads+1)); printf 'KIV\tOK\t312c32\n' ;;
+    495352433f0a) if [ "$reads" -ge 2 ]; then printf 'KIV\tOK\t32\n'; else printf 'KIV\tOK\t30\n'; fi ;;
+    *) printf 'KIV\tOK\t30\n' ;;
+  esac
+done
+"#;
+    let mut session = scripted_lockin_session(dir.path(), script);
+    let mut hardware = config();
+    hardware.model = Model::Li5640;
+    session.config = Some(hardware.clone());
+    let plan = Plan {
+        n_points: 2,
+        interval_s: 0.01,
+        ..Default::default()
+    };
+    let path = dir.path().join("unit-changed.csv");
+    let (send, _events) = mpsc::sync_channel(128);
+    let error = session
+        .acquire(
+            Source::Gpib {
+                model: Model::Li5640,
+                address: 12,
+            },
+            hardware,
+            &plan,
+            Some(&path),
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap_err();
+    assert!(error.contains("unit context changed"), "{error}");
+    assert_eq!(session.state.rows, 1);
+    let mut csv = csv::Reader::from_path(&path).unwrap();
+    let headers = csv.headers().unwrap().clone();
+    let records = csv.records().map(Result::unwrap).collect::<Vec<_>>();
+    assert_eq!(records.len(), 1);
+    let cell = |field| &records[0][headers.iter().position(|h| h == field).unwrap()];
+    assert_eq!(cell("signal_unit"), "unknown");
+    assert!(cell("quality_flags").contains("unit_context_changed"));
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "error");
+    assert_eq!(metadata["rows"], 1);
+    let mut raw = csv::Reader::from_path(path.with_extension("raw.csv")).unwrap();
+    let headers = raw.headers().unwrap().clone();
+    let event = headers.iter().position(|h| h == "event_type").unwrap();
+    let details = headers.iter().position(|h| h == "details_json").unwrap();
+    let mut before = None;
+    let mut after = None;
+    for row in raw.records() {
+        let row = row.unwrap();
+        if &row[event] == "unit_context_before_signal" {
+            before = Some(
+                serde_json::from_str::<Value>(&row[details]).unwrap()["settings"]["input_mode"]
+                    .clone(),
+            );
+        }
+        if &row[event] == "status_check" {
+            after = Some(
+                serde_json::from_str::<Value>(&row[details]).unwrap()["settings"]["input_mode"]
+                    .clone(),
+            );
+        }
+    }
+    assert_eq!(before, Some(serde_json::json!(0)));
+    assert_eq!(after, Some(serde_json::json!(2)));
+}
+
+#[test]
+fn sample_json_exposes_qualified_units_and_flags_without_private_recording_bookkeeping() {
+    let plan = Plan::default();
+    let sample = Sample {
+        recording: Box::new(SampleRecording {
+            signal_unit: "A".into(),
+            quality_flags: "signal_xy_only".into(),
+            run_id: "private-csv-id".into(),
+            point_index: 7,
+            ..Default::default()
+        }),
+        timing: Default::default(),
+        captured_at: None,
+        elapsed: 0.,
+        target: plan.targets().unwrap()[0],
+        signal: Signal::from_pair(DisplayMode::Xy, 1e-9, 2e-9).unwrap(),
+        position: Default::default(),
+    };
+    let value = serde_json::to_value(&sample).unwrap();
+    assert_eq!(value["signal_unit"], "A");
+    assert_eq!(value["quality_flags"], "signal_xy_only");
+    assert!(value["signal"]["r_v"].is_null());
+    assert!(value.get("recording").is_none());
+    assert!(value.get("run_id").is_none());
+    let decoded: Sample = serde_json::from_value(value).unwrap();
+    assert_eq!(decoded.recording.signal_unit, "A");
+    assert_eq!(decoded.signal.acquired_pair(), Some(DisplayMode::Xy));
+}
+#[test]
+fn native_replay_preserves_single_pair_units_and_unknown_defaults() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("single.csv");
+    std::fs::write(
+        &path,
+        "X,Y,R,Theta_deg,quality_flags,signal_unit,elapsed_s\n,,1e-9,40,signal_rtheta_only,A,0\n",
+    )
+    .unwrap();
+    let mut session = Session::default();
+    let (send, events) = mpsc::sync_channel(8);
+    session
+        .replay(&path, 0., &AtomicBool::new(false), &send)
+        .unwrap();
+    let Event::Sample(sample) = events.try_recv().unwrap() else {
+        panic!("missing sample")
+    };
+    assert_eq!(sample.recording.signal_unit, "A");
+    assert_eq!(sample.signal.acquired_pair(), Some(DisplayMode::RTheta));
+    assert!(sample.signal.x_v.is_nan());
+}
+#[test]
+fn live_json_qualifies_its_cached_unit_as_last_observed_not_atomic() {
+    let (send, events) = mpsc::sync_channel(8);
+    let mut monitor = LiveMonitor {
+        signal_unit: "A".into(),
+        ..LiveMonitor::default()
+    };
+    monitor.publish(
+        Signal::from_pair(DisplayMode::Xy, 1e-9, 2e-9).unwrap(),
+        ReadingOrigin::Hardware,
+        &Position::default(),
+        &send,
+    );
+    let Event::Live(reading) = events.try_recv().unwrap() else {
+        panic!("missing live event")
+    };
+    let mut value = serde_json::to_value(reading).unwrap();
+    assert_eq!(value["signal_unit"], "A");
+    assert_eq!(value["unit_qualification"], "last_observed_status");
+    value.as_object_mut().unwrap().remove("signal_unit");
+    let legacy: LiveReading = serde_json::from_value(value).unwrap();
+    assert_eq!(legacy.signal_unit, "unknown");
 }

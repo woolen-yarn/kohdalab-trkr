@@ -17,6 +17,8 @@ legacy maintenance operations that are outside the measurement API.
 | Scanner controller | CONEX-CC | Serial | Position readback, absolute moves, home/initialization, Stop, configurable software hysteresis compensation |
 | Scanner controller | CONEX-AGAP | Serial | U/V axis control, position readback, absolute moves, closed-loop initialization and Stop |
 
+Pending update: CONEX-AGAP arrival tolerance defaults to 0.01° independently of its 0.001° minimum motion; set per-axis `position_tolerance` in native units to override it. CONEX-CC keeps its previous tolerance.
+
 Built-in motion presets supply defaults; experiment origins, sample conversion,
 direction and limits remain profile settings.
 
@@ -55,6 +57,8 @@ directory are ignored by Git and never copied into release artifacts.
 | 遅延ステージ制御 | GSC01 / GSC01A | シリアル | 位置読取、絶対移動、microstep読取、初期化・原点復帰、通常Stop |
 | スキャナ制御 | CONEX-CC | シリアル | 位置読取、絶対移動、原点復帰・初期化、Stop、設定可能なソフトウェアヒステリシス補償 |
 | スキャナ制御 | CONEX-AGAP | シリアル | U/V軸制御、位置読取、絶対移動、閉ループ初期化、Stop |
+
+未公開の修正ではCONEX-AGAPの到達許容差を最小移動0.001°と分離して既定0.01°とします。軸ごとの`position_tolerance`（装置単位）で変更できます。CONEX-CCの従来の許容差は維持します。
 
 組込みプリセットは既定値を与えます。実験原点、試料上の換算、方向、制限は設定ごとに管理します。
 

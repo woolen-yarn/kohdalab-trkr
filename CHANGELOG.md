@@ -2,6 +2,10 @@
 
 ## Unreleased / 未公開
 
+- Keep Windows Config/Output choosers foregrounded with an owned dialog and use a literal-safe existing initial folder; preserve paths with brackets/apostrophes and hidden console startup. / WindowsのConfig・Output選択画面に前面表示用の所有ウィンドウを設け、未作成・特殊文字を含むパスも扱える初期フォルダー処理に修正。
+- Qualify LI5640 normal voltage/current units from ISRC/NORM/RAT readback, use VSEN/ISEN sensitivity accordingly, and preserve ambiguous normalized/ratio units as unknown. Compare unit context before/after each saved signal; flag/retain unknown and stop if it changes. Keep mixed-unit plot samples separate. / LI5640の電圧・電流単位と感度を実照会で判定。取得前後で単位設定が変わった点はunknownで保持して停止し、単位の異なるデータを同一単位として描画しません。
+- Separate scanner arrival tolerance from resolution: CONEX-AGAP defaults to 0.01°; optional native-unit `position_tolerance` overrides it per axis. CONEX-CC defaults and motion quantization remain unchanged. / CONEX-AGAPの到達許容差を分解能から分離し既定0.01°へ変更。軸ごとの`position_tolerance`で指定でき、CONEX-CCの既定と移動指令の丸めは維持。
+
 - Read only the selected XY or Rθ pair from LI5640; configure the display at connect/explicit mode change, never switch it per sample. Unacquired components remain blank in CSV and null in the API, with no reconstruction. / LI5640は選択した片側だけを取得し、接続・明示的な選択変更時のみ表示設定。未取得側はCSV空欄・API nullで計算補完しません。
 - Expose native delay pulse/mm and scanner mm/deg values as explicit raw CSV rows without extra instrument queries. / 遅延ステージのpulse・mm、スキャナのmm・degをraw CSVの明示行へ保存。追加の実機照会は行いません。
 - Report the scanner axis, commanded/read-back position, difference and configured tolerance when arrival verification fails; avoid false boundary failures caused solely by binary arithmetic roundoff. / 到達確認エラーに軸・装置指令値・読戻し値・差・設定許容差を表示し、境界の浮動小数点計算誤差だけで失敗しないよう修正。

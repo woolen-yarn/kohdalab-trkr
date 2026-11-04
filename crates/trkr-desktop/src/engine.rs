@@ -62,18 +62,22 @@ impl Device {
         }
     }
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct SampleRecording {
+    #[serde(skip)]
     pub run_id: String,
+    #[serde(skip)]
     pub point_index: usize,
     pub signal_unit: String,
     pub quality_flags: String,
+    #[serde(skip)]
     pub canonical_target: [Option<f64>; 3],
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Sample {
-    #[serde(skip)]
+    #[serde(flatten)]
     pub(crate) recording: Box<SampleRecording>,
     /// Host read intervals are recorded separately from protocol samples.
     #[serde(skip)]
@@ -113,9 +117,39 @@ pub struct Snapshot {
     #[serde(default)]
     pub delay_calibration: Option<DelayCalibration>,
 }
+impl Snapshot {
+    pub(crate) fn observed_signal_unit(&self, model: Model) -> &'static str {
+        if !self.devices[0]
+            || self
+                .lockin
+                .get("Status Error")
+                .is_some_and(|value| !value.is_null())
+        {
+            return "unknown";
+        }
+        let status = self
+            .lockin
+            .get("Overload")
+            .filter(|value| match model {
+                Model::Li5640 => value.get("signal_unit").is_some(),
+                Model::Sr7265 => value.get("input_mode").is_some(),
+                _ => false,
+            })
+            .unwrap_or(&self.lockin);
+        lockin::measured_unit(model, Some(status))
+    }
+}
+fn unknown_signal_unit() -> String {
+    "unknown".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LiveReading {
     pub signal: Signal,
+    #[serde(default = "unknown_signal_unit")]
+    pub signal_unit: String,
+    #[serde(default)]
+    pub unit_qualification: String,
     pub position: Position,
     #[serde(default = "hardware_origin")]
     pub origin: ReadingOrigin,
@@ -134,6 +168,7 @@ struct LiveMonitor {
     read_budget: Duration,
     demo_coordinates: [Option<f64>; 3],
     next_status: Instant,
+    signal_unit: String,
 }
 impl Default for LiveMonitor {
     fn default() -> Self {
@@ -144,6 +179,7 @@ impl Default for LiveMonitor {
             read_budget: LIVE_INTERVAL,
             demo_coordinates: [None; 3],
             next_status: now,
+            signal_unit: "unknown".into(),
         }
     }
 }
@@ -158,6 +194,13 @@ impl LiveMonitor {
         self.next = Instant::now() + LIVE_INTERVAL;
         let _ = send.try_send(Event::Live(LiveReading {
             signal,
+            signal_unit: self.signal_unit.clone(),
+            unit_qualification: if origin == ReadingOrigin::Demo {
+                "synthetic"
+            } else {
+                "last_observed_status"
+            }
+            .into(),
             position: position.clone(),
             origin,
         }));
@@ -191,6 +234,13 @@ impl LiveMonitor {
             (now.elapsed() + Duration::from_millis(10)).max(Duration::from_millis(20));
         let _ = send.try_send(Event::Live(LiveReading {
             signal,
+            signal_unit: self.signal_unit.clone(),
+            unit_qualification: if origin == ReadingOrigin::Demo {
+                "synthetic"
+            } else {
+                "last_observed_status"
+            }
+            .into(),
             position: position.clone(),
             origin,
         }));
@@ -210,6 +260,11 @@ fn poll_live(
         Source::Demo => ReadingOrigin::Demo,
         _ => ReadingOrigin::Hardware,
     };
+    monitor.signal_unit = match source {
+        Source::Demo => "V",
+        Source::Gpib { model, .. } => state.observed_signal_unit(model),
+    }
+    .into();
     let position = state.position.clone();
     let signal_mode = state.signal_mode;
     let elapsed = monitor.started.elapsed().as_secs_f64();
@@ -1346,6 +1401,7 @@ impl Session {
                     }
                     self.set_phase(Phase::Reading, send);
                     let mut point_timing = timing::AcquisitionTiming::default();
+                    let mut unit_context_before=None;
                     let (signal, exchanges, captured) = match source {
                         Source::Gpib { model, .. } => {
                             if let Some(rig) = &mut self.rig {
@@ -1370,6 +1426,13 @@ impl Session {
                                 }
                             }
                             let gpib = self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
+                            if model==Model::Li5640 {
+                                let (context,window,_) = timing::observe(start, || lockin::li5640_unit_recorded_cancellable(gpib,cancel));
+                                if let Some(recording)=&mut csv {
+                                    recording.append_audit(&serde_json::json!({"event":"unit_context_before_signal","point_index":index+1,"device_role":"lockin","settings":context.result.as_ref().ok(),"error":context.result.as_ref().err(),"timing":window,"exchanges":context.exchanges}))?;
+                                }
+                                unit_context_before=Some(context.result.inspect_err(|_|self.failure_code=Some("device_error".into()))?);
+                            }
                             let (recorded, window, captured) = timing::observe(start, || lockin::read_selected_recorded_cancellable(model, gpib, cancel, self.state.signal_mode));
                             point_timing.signal = Some(window);
                             let exchanges = serde_json::to_value(&recorded.exchanges)
@@ -1416,11 +1479,21 @@ impl Session {
                     if let Source::Gpib { model, .. } = source {
                         let gpib=self.gpib.as_mut().ok_or(OperationError::LockinDisconnected)?;
                         let (status,window,_) = timing::observe(start, || lockin::status_recorded_cancellable(model,gpib,cancel));
-                        signal_unit = if model==Model::Sr7265 && status.result.as_ref().ok().and_then(|v|v["input_mode"].as_f64())==Some(0.) { "V" } else { "unknown" }.into();
+                        signal_unit = lockin::measured_unit(model, status.result.as_ref().ok()).into();
                         update_lockin_status(&mut self.state, &status.result);
-                        let _ = send.try_send(Event::State(Box::new(self.state.clone())));
                         status_failure = status.result.as_ref().err().cloned();
                         let mut flags=Vec::new();
+                        if model==Model::Li5640 && let (Some(before),Ok(after))=(&unit_context_before,&status.result) {
+                            if lockin::same_li5640_unit_context(before,after) {
+                                signal_unit=lockin::measured_unit(model,Some(before)).into();
+                            } else {
+                                signal_unit="unknown".into();
+                                flags.push("unit_context_changed");
+                                let error="LI5640 input/display unit context changed during signal read";
+                                status_failure=Some(error.into());
+                                self.state.lockin["Status Error"]=serde_json::json!(error);
+                            }
+                        }
                         match &status.result {
                             Ok(value) => { if value["overload"]==true { flags.push("overload"); }
                                 if value["reference_unlock"]==true { flags.push("reference_unlock"); }
@@ -1434,8 +1507,9 @@ impl Session {
                             None => {},
                         }
                         quality_flags=if flags.is_empty() { "ok".into() } else { flags.join("|") };
+                        let _ = send.try_send(Event::State(Box::new(self.state.clone())));
                         status_event=Some(serde_json::json!({"event":"status_check","point_index":index+1,"device_role":"lockin",
-                            "timing":window, "settings":status.result.as_ref().ok(), "error":status.result.as_ref().err(),"exchanges":status.exchanges}));
+                            "timing":window, "settings":status.result.as_ref().ok(), "error":status_failure.as_ref(),"exchanges":status.exchanges}));
                     }
                     let sample = Sample {
                         recording: Box::new(SampleRecording {
@@ -1476,6 +1550,7 @@ impl Session {
                         if let Some(status_event) = status_event { csv.append_audit(&status_event)?; }
                         csv.write_sample(plan, &sample, start, index + 1, &mut self.state.rows)?;
                     } else { self.state.rows += 1; }
+                    self.live.signal_unit=sample.recording.signal_unit.clone();
                     self.live.publish_if_due(
                         signal,
                         match source {
@@ -1647,12 +1722,34 @@ impl Session {
                     .and_then(|s| s.parse().ok())
             };
             let required = |key| get(key).ok_or_else(|| format!("Replay invalid {key}"));
-            let signal = Signal::new(
-                required(if modern { "X" } else { "X_V" })?,
-                required(if modern { "Y" } else { "Y_V" })?,
-                required(if modern { "R" } else { "R_V" })?,
-                required("Theta_deg")?,
-            )?;
+            let text = |key: &str| {
+                headers
+                    .iter()
+                    .position(|h| h == key)
+                    .and_then(|i| r.get(i))
+                    .filter(|s| !s.trim().is_empty())
+            };
+            let flags = text("quality_flags").unwrap_or("legacy_status_unknown");
+            let signal = if flags.split('|').any(|f| f == "signal_xy_only") {
+                Signal::from_pair(
+                    DisplayMode::Xy,
+                    required(if modern { "X" } else { "X_V" })?,
+                    required(if modern { "Y" } else { "Y_V" })?,
+                )?
+            } else if flags.split('|').any(|f| f == "signal_rtheta_only") {
+                Signal::from_pair(
+                    DisplayMode::RTheta,
+                    required(if modern { "R" } else { "R_V" })?,
+                    required("Theta_deg")?,
+                )?
+            } else {
+                Signal::new(
+                    required(if modern { "X" } else { "X_V" })?,
+                    required(if modern { "Y" } else { "Y_V" })?,
+                    required(if modern { "R" } else { "R_V" })?,
+                    required("Theta_deg")?,
+                )?
+            };
             let target = Target {
                 fast: get("target_t_cor_ps")
                     .or_else(|| get("target_x_cor_um"))
@@ -1680,7 +1777,13 @@ impl Session {
             self.state.position = position.clone();
             self.state.rows += 1;
             let _ = send.try_send(Event::Sample(Sample {
-                recording: Default::default(),
+                recording: Box::new(SampleRecording {
+                    signal_unit: text("signal_unit")
+                        .unwrap_or(if modern { "unknown" } else { "V" })
+                        .into(),
+                    quality_flags: flags.into(),
+                    ..Default::default()
+                }),
                 timing: Default::default(),
                 captured_at: None,
                 elapsed: get("elapsed_s")

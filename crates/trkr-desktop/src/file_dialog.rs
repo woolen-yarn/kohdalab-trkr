@@ -99,45 +99,104 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 [Console]::OutputEncoding = $utf8
 $OutputEncoding = $utf8
 Add-Type -AssemblyName System.Windows.Forms
+[System.Windows.Forms.Application]::EnableVisualStyles()
 $kind = $env:TRKR_DIALOG_KIND
 $initial = $env:TRKR_DIALOG_INITIAL
+
+# A measurement output directory is often entered before it exists.  WinForms
+# dialogs cannot reliably use such a path as their initial folder, so walk up
+# to the nearest folder that does exist.  Use .NET path APIs here: PowerShell's
+# LiteralPath parameter set does not support Split-Path -Parent.
+function Get-ExistingDirectory([string] $path) {
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+  try {
+    $candidate = [System.IO.Path]::GetFullPath($path)
+    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+      $candidate = [System.IO.Path]::GetDirectoryName($candidate)
+    }
+    while (-not [string]::IsNullOrWhiteSpace($candidate)) {
+      if (Test-Path -LiteralPath $candidate -PathType Container) {
+        return (Get-Item -LiteralPath $candidate).FullName
+      }
+      $parent = [System.IO.Path]::GetDirectoryName($candidate)
+      if ($parent -eq $candidate) { break }
+      $candidate = $parent
+    }
+  } catch {
+    # Fall back to the shell default folder when the requested path cannot be
+    # resolved (for example, a disconnected mapped drive).
+  }
+  return $null
+}
+
+function Get-InitialFileName([string] $path) {
+  if ([string]::IsNullOrWhiteSpace($path)) { return $null }
+  try {
+    $fullPath = [System.IO.Path]::GetFullPath($path)
+    if (Test-Path -LiteralPath $fullPath -PathType Container) { return $null }
+    return [System.IO.Path]::GetFileName($fullPath)
+  } catch { return $null }
+}
+
+$initialDirectory = Get-ExistingDirectory $initial
+$initialFileName = Get-InitialFileName $initial
+if ($env:TRKR_DIALOG_VALIDATE_PATH_HELPERS -eq '1') {
+  if ($null -ne $initialDirectory) { [Console]::Out.Write($initialDirectory) }
+  [Console]::Out.Write("`n")
+  if ($null -ne $initialFileName) { [Console]::Out.Write($initialFileName) }
+  exit 0
+}
 if ($kind -eq 'directory') {
   $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-  if ($initial) { $dialog.SelectedPath = $initial }
+  $dialog.Description = 'Choose output folder'
+  $dialog.ShowNewFolderButton = $true
+  if ($initialDirectory) { $dialog.SelectedPath = $initialDirectory }
 } elseif ($kind -eq 'save_csv') {
   $dialog = New-Object System.Windows.Forms.SaveFileDialog
   $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
   $dialog.DefaultExt = 'csv'
   $dialog.AddExtension = $true
-  if ($initial) { $dialog.FileName = $initial }
+  if ($initialDirectory) { $dialog.InitialDirectory = $initialDirectory }
+  if ($initialFileName) { $dialog.FileName = $initialFileName }
 } elseif ($kind -eq 'replay_csv') {
   $dialog = New-Object System.Windows.Forms.OpenFileDialog
   $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
   $dialog.CheckFileExists = $true
-  if ($initial) {
-    if (Test-Path -LiteralPath $initial -PathType Container) { $dialog.InitialDirectory = $initial }
-    else {
-      $dialog.FileName = $initial
-      $parent = Split-Path -Parent $initial
-      if ($parent) { $dialog.InitialDirectory = $parent }
-    }
-  }
+  if ($initialDirectory) { $dialog.InitialDirectory = $initialDirectory }
+  if ($initialFileName) { $dialog.FileName = $initialFileName }
 } else {
   $dialog = New-Object System.Windows.Forms.OpenFileDialog
   $dialog.Filter = 'JSON profile (*.json)|*.json|All files (*.*)|*.*'
   $dialog.CheckFileExists = $true
-  if ($initial) {
-    if (Test-Path -LiteralPath $initial -PathType Container) { $dialog.InitialDirectory = $initial }
-    else {
-      $dialog.FileName = $initial
-      $parent = Split-Path -Parent $initial
-      if ($parent) { $dialog.InitialDirectory = $parent }
-    }
-  }
+  if ($initialDirectory) { $dialog.InitialDirectory = $initialDirectory }
+  if ($initialFileName) { $dialog.FileName = $initialFileName }
 }
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-  if ($kind -eq 'directory') { [Console]::Out.Write($dialog.SelectedPath) }
-  else { [Console]::Out.Write($dialog.FileName) }
+
+# This process has no application window of its own.  Give the dialog an
+# invisible, topmost WinForms owner so it is foregrounded instead of being
+# hidden behind the TRKR window.  The owner and dialog are always disposed.
+$owner = New-Object System.Windows.Forms.Form
+$owner.ShowInTaskbar = $false
+$owner.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
+$owner.Opacity = 0
+$owner.Size = [System.Drawing.Size]::new(1, 1)
+$owner.StartPosition = [System.Windows.Forms.FormStartPosition]::CenterScreen
+$owner.TopMost = $true
+$selection = $null
+try {
+  $owner.Show()
+  $owner.Activate()
+  $owner.BringToFront()
+  if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
+    if ($kind -eq 'directory') { $selection = $dialog.SelectedPath }
+    else { $selection = $dialog.FileName }
+  }
+} finally {
+  $owner.Dispose()
+  $dialog.Dispose()
+}
+if (-not [string]::IsNullOrWhiteSpace($selection)) {
+  [Console]::Out.Write($selection)
 }
 "#;
 
@@ -265,6 +324,22 @@ fn linux_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
 mod tests {
     use std::path::PathBuf;
 
+    #[cfg(windows)]
+    fn windows_path_helper_output(initial: &str) -> std::process::Output {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-STA",
+                "-Command",
+                super::WINDOWS_DIALOG_SCRIPT,
+            ])
+            .env("TRKR_DIALOG_INITIAL", initial)
+            .env("TRKR_DIALOG_VALIDATE_PATH_HELPERS", "1")
+            .output()
+            .expect("start PowerShell path-helper test")
+    }
+
     #[cfg(unix)]
     fn output(status: i32, stdout: &[u8]) -> std::process::Output {
         use std::os::unix::process::ExitStatusExt;
@@ -288,6 +363,69 @@ mod tests {
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.SelectedPath"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("UTF8Encoding"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("Set-StrictMode"));
+    }
+
+    #[test]
+    fn windows_script_uses_an_existing_initial_folder_and_a_foreground_owner() {
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("Get-ExistingDirectory"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("GetFullPath"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("GetDirectoryName"));
+        assert!(!super::WINDOWS_DIALOG_SCRIPT.contains("Split-Path -LiteralPath"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$initialDirectory"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("ShowDialog($owner)"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$owner.TopMost = $true"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$owner.Activate()"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$owner.Dispose()"));
+        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.Dispose()"));
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn windows_path_helpers_handle_literal_names_missing_children_and_invalid_drives() {
+        use std::{fs, process};
+
+        let directory = std::env::temp_dir().join(format!(
+            "trkr dialog [brackets] 'apostrophe' {}",
+            process::id()
+        ));
+        fs::create_dir_all(&directory).expect("create literal-name test directory");
+
+        let existing = windows_path_helper_output(&directory.display().to_string());
+        assert!(
+            existing.status.success(),
+            "PowerShell failed: {}",
+            String::from_utf8_lossy(&existing.stderr)
+        );
+        let existing = String::from_utf8(existing.stdout).expect("UTF-8 helper output");
+        let (existing_dir, existing_name) = existing
+            .split_once('\n')
+            .expect("directory and filename helper output");
+        assert_eq!(PathBuf::from(existing_dir), directory);
+        assert!(existing_name.is_empty());
+
+        let missing = directory.join("not created [child] 'value'.csv");
+        let missing_output = windows_path_helper_output(&missing.display().to_string());
+        assert!(
+            missing_output.status.success(),
+            "PowerShell failed: {}",
+            String::from_utf8_lossy(&missing_output.stderr)
+        );
+        let missing_output = String::from_utf8(missing_output.stdout).expect("UTF-8 helper output");
+        let (missing_dir, missing_name) = missing_output
+            .split_once('\n')
+            .expect("directory and filename helper output");
+        assert_eq!(PathBuf::from(missing_dir), directory);
+        assert_eq!(missing_name, "not created [child] 'value'.csv");
+
+        let invalid = windows_path_helper_output("?:\\trkr-invalid-drive");
+        assert!(
+            invalid.status.success(),
+            "invalid drive must fall back without failing: {}",
+            String::from_utf8_lossy(&invalid.stderr)
+        );
+        assert_eq!(String::from_utf8(invalid.stdout).unwrap(), "\n");
+
+        fs::remove_dir_all(directory).expect("remove literal-name test directory");
     }
 
     #[test]

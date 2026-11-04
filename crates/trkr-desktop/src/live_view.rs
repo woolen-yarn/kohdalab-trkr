@@ -76,6 +76,7 @@ pub fn draw(
     mode: DisplayMode,
     channel: usize,
     active: bool,
+    signal_unit: &str,
 ) -> egui::Rect {
     let channel = channel.min(1);
     let color = if channel == 0 { TEAL } else { ORANGE };
@@ -85,7 +86,7 @@ pub fn draw(
     let window = newest.clamp(2., 30.);
     let points = history.points_at(mode, channel, voltage_scale, newest);
     let extent = points.iter().fold(0_f64, |m, point| m.max(point[1].abs()));
-    let scale = if angular {
+    let scale = if angular || !matches!(signal_unit, "V" | "A") {
         Scale {
             factor: 1.,
             prefix: "",
@@ -108,7 +109,7 @@ pub fn draw(
     } else {
         "WAITING"
     };
-    let unit = if angular { "deg" } else { "V" };
+    let unit = if angular { "deg" } else { signal_unit };
 
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -240,7 +241,7 @@ mod tests {
                                 ui.max_rect().min,
                                 egui::vec2(167., 140.),
                             );
-                            let used = draw(ui, area, &history, mode, channel, false);
+                            let used = draw(ui, area, &history, mode, channel, false, "V");
                             assert!(
                                 used.width() <= area.width() + 0.1,
                                 "live panel overflow: {used:?}"

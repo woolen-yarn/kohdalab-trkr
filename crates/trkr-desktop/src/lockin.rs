@@ -137,8 +137,51 @@ pub fn status_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Valu
         if model == Model::Sr7265 {
             value["input_mode"] = json!(query_value(io, "IMODE\r")?);
         }
+        if model == Model::Li5640 {
+            value.as_object_mut().expect("status object").extend(
+                li5640_unit_context(io)?
+                    .as_object()
+                    .expect("unit context")
+                    .clone(),
+            );
+        }
         Ok(value)
     })
+}
+
+/// Unit qualification observes the device, never a profile assumption.
+pub fn measured_unit(model: Model, status: Option<&Value>) -> &'static str {
+    let Some(status) = status else {
+        return "unknown";
+    };
+    match model {
+        Model::Sr7265 if status["input_mode"].as_f64() == Some(0.) => "V",
+        Model::Li5640 => match status["signal_unit"].as_str() {
+            Some("V") => "V",
+            Some("A") => "A",
+            _ => "unknown",
+        },
+        _ => "unknown",
+    }
+}
+fn li5640_unit_context(io: &mut impl Io) -> Result<Value, String> {
+    let input = integer(query_value(io, "ISRC?\n")?, "ISRC?")?;
+    let normalization = integer(query_value(io, "NORM?\n")?, "NORM?")?;
+    let ratio = integer(query_value(io, "RAT?\n")?, "RAT?")?;
+    let input_unit = match input {
+        0 | 1 => "V",
+        2 | 3 => "A",
+        _ => "unknown",
+    };
+    let unit = if normalization != 0 || ratio != 0 {
+        "unknown"
+    } else {
+        input_unit
+    };
+    Ok(
+        json!({"input_mode":input,"normalization_mode":normalization,"ratio_mode":ratio,
+        "signal_unit":unit,"input_unit":input_unit,"unit_qualification":"queried_input_and_display_mode"}),
+    )
 }
 
 struct Recording<'a, T> {
@@ -303,6 +346,20 @@ pub fn read_selected_recorded_cancellable(
         read_selected(model, io, mode)
     })
 }
+pub fn li5640_unit_recorded_cancellable(
+    io: &mut impl CancellableIo,
+    cancel: &std::sync::atomic::AtomicBool,
+) -> RecordedOperation<Value> {
+    recorded(&mut Cancellable { io, cancel }, |io| {
+        li5640_unit_context(io)
+    })
+}
+pub fn same_li5640_unit_context(before: &Value, after: &Value) -> bool {
+    ["input_mode", "normalization_mode", "ratio_mode"]
+        .into_iter()
+        .all(|key| before.get(key).is_some() && before.get(key) == after.get(key))
+}
+
 pub fn status_recorded_cancellable(
     model: Model,
     io: &mut impl CancellableIo,
@@ -331,6 +388,19 @@ pub fn read_selected(model: Model, io: &mut impl Io, mode: DisplayMode) -> Resul
     }
 }
 
+// LI5640 manual §4.6: 50 fA–1 µA at 10^6 V/A; 5 fA–10 nA at 10^8 V/A.
+fn li5640_sensitivity_table(input: i32) -> Result<(&'static [f64], i32, &'static str), String> {
+    match input {
+        0 | 1 => Ok((&SR_SENS, 0, "VSEN")),
+        2 => Ok((&LI_CURRENT_SENS[3..], 4, "ISEN")),
+        3 => Ok((&LI_CURRENT_SENS[..20], 1, "ISEN")),
+        _ => Err("Unsupported LI5640 input mode".into()),
+    }
+}
+const LI_CURRENT_SENS: [f64; 26] = [
+    5e-15, 1e-14, 2e-14, 5e-14, 1e-13, 2e-13, 5e-13, 1e-12, 2e-12, 5e-12, 1e-11, 2e-11, 5e-11,
+    1e-10, 2e-10, 5e-10, 1e-9, 2e-9, 5e-9, 1e-8, 2e-8, 5e-8, 1e-7, 2e-7, 5e-7, 1e-6,
+];
 const SR_SENS: [f64; 27] = [
     2e-9, 5e-9, 10e-9, 20e-9, 50e-9, 100e-9, 200e-9, 500e-9, 1e-6, 2e-6, 5e-6, 10e-6, 20e-6, 50e-6,
     100e-6, 200e-6, 500e-6, 1e-3, 2e-3, 5e-3, 10e-3, 20e-3, 50e-3, 100e-3, 200e-3, 500e-3, 1.0,
@@ -361,6 +431,11 @@ pub fn settings(io: &mut impl Io, model: Model) -> Result<Value, String> {
 }
 fn settings_impl(io: &mut impl Io, model: Model) -> Result<Value, String> {
     let mut input_mode = Value::Null;
+    let li_context = if model == Model::Li5640 {
+        Some(li5640_unit_context(io)?)
+    } else {
+        None
+    };
     let (sensitivity, time_constant, ref_freq, coupling, slope, ac_gain, overload, available) =
         match model {
             Model::Sr830 => (
@@ -398,22 +473,44 @@ fn settings_impl(io: &mut impl Io, model: Model) -> Result<Value, String> {
                 overload_sr5210(io)?,
                 model.descriptor().available(&S5210_SENS, &S5210_TC),
             ),
-            Model::Li5640 => (
-                indexed(io, "VSEN?\n", &SR_SENS)?,
-                indexed(io, "TCON?\n", &SR_TC)?,
-                // Reading reference frequency through OTYP would temporarily
-                // replace the selected DATA1/DATA2 output. Leave it unknown.
-                None,
-                coupling(io, "ICPL?\n")?,
-                slope4(io, "SLOP?\n")?,
-                Value::Null,
-                overload_li5640(io)?,
-                model.descriptor().available(&SR_SENS, &SR_TC),
-            ),
+            Model::Li5640 => {
+                let context = li_context.as_ref().expect("LI5640 context");
+                let input = integer(
+                    context["input_mode"]
+                        .as_f64()
+                        .ok_or("Missing LI5640 input mode")?,
+                    "ISRC?",
+                )?;
+                let (table, base, command) = li5640_sensitivity_table(input)?;
+                let sensitivity = table_value(
+                    integer(
+                        query_value(io, &format!("{command}?\n"))?,
+                        "LI5640 sensitivity",
+                    )?,
+                    table,
+                    base,
+                    "LI5640 sensitivity",
+                )?;
+                (
+                    sensitivity,
+                    indexed(io, "TCON?\n", &SR_TC)?,
+                    None,
+                    coupling(io, "ICPL?\n")?,
+                    slope4(io, "SLOP?\n")?,
+                    Value::Null,
+                    overload_li5640(io)?,
+                    model.descriptor().available(table, &SR_TC),
+                )
+            }
         };
-    Ok(
-        json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "input_mode":input_mode, "available": available}),
-    )
+    let mut value = json!({"Sensitivity": sensitivity, "Time Constant": time_constant, "Ref. Freq": ref_freq, "Coupling": coupling, "Slope": slope, "AC Gain": ac_gain, "Overload": overload, "input_mode":input_mode, "available": available});
+    if let Some(context) = li_context {
+        value
+            .as_object_mut()
+            .expect("settings object")
+            .extend(context.as_object().expect("unit context").clone());
+    }
+    Ok(value)
 }
 
 pub fn set_setting(
@@ -487,7 +584,16 @@ pub fn set_setting(
             write_slope(io, "XDB", value, descriptor.slope, descriptor.termination)
         }
         (Model::Li5640, "Sensitivity") => {
-            write_index(io, "VSEN", value, &SR_SENS, descriptor.termination)
+            let input = integer(query_value(io, "ISRC?\n")?, "ISRC?")?;
+            let (table, base, command) = li5640_sensitivity_table(input)?;
+            write_index_base(
+                io,
+                command,
+                value,
+                table,
+                base as usize,
+                descriptor.termination,
+            )
         }
         (Model::Li5640, "Time Constant") => {
             write_index(io, "TCON", value, &SR_TC, descriptor.termination)
@@ -932,7 +1038,7 @@ mod tests {
 
     #[test]
     fn automatic_li5640_settings_snapshot_never_changes_output_type() {
-        let mut io = Fake::new(&["0", "0", "0", "0", "0"]);
+        let mut io = Fake::new(&["0", "0", "0", "0", "0", "0", "0", "0"]);
         io.fail_write = Some("OTYP 3\n");
         let snapshot = settings_recorded(Model::Li5640, &mut io);
         assert!(snapshot.result.as_ref().unwrap()["Ref. Freq"].is_null());
@@ -961,6 +1067,60 @@ mod tests {
         );
     }
 
+    #[test]
+    fn li5640_units_follow_queried_input_mode_and_never_assume_normalized_values_are_volts() {
+        for (input, norm, ratio, unit) in [
+            ("0", "0", "0", "V"),
+            ("1", "0", "0", "V"),
+            ("2", "0", "0", "A"),
+            ("3", "0", "0", "A"),
+            ("0", "1", "0", "unknown"),
+            ("0", "2", "0", "unknown"),
+            ("0", "0", "1", "unknown"),
+            ("9", "0", "0", "unknown"),
+        ] {
+            let mut io = Fake::new(&["0", input, norm, ratio]);
+            let result = status_recorded(Model::Li5640, &mut io);
+            let value = result.result.unwrap();
+            assert_eq!(measured_unit(Model::Li5640, Some(&value)), unit);
+            assert_eq!(io.commands, ["OVCR?\n", "ISRC?\n", "NORM?\n", "RAT?\n"]);
+            assert!(
+                result
+                    .exchanges
+                    .iter()
+                    .all(|event| event.operation == "query")
+            );
+        }
+        assert_eq!(measured_unit(Model::Li5640, None), "unknown");
+    }
+
+    #[test]
+    fn li5640_current_input_uses_current_sensitivity_readback_and_setter() {
+        let mut io = Fake::new(&["2", "0", "0", "26", "0", "0", "0", "0"]);
+        let value = settings(&mut io, Model::Li5640).unwrap();
+        assert_eq!(value["signal_unit"], "A");
+        assert_eq!(value["Sensitivity"], json!(1e-6));
+        assert!(io.commands.iter().any(|c| c == "ISEN?\n"));
+        assert!(!io.commands.iter().any(|c| c == "VSEN?\n"));
+        let mut io = Fake::new(&["3"]);
+        set_setting(&mut io, Model::Li5640, "Sensitivity", &json!(5e-15)).unwrap();
+        assert_eq!(io.commands, ["ISRC?\n", "ISEN 1\n"]);
+    }
+
+    #[test]
+    fn li5640_current_sensitivity_respects_the_queried_conversion_gain() {
+        let (low_gain, base, _) = li5640_sensitivity_table(2).unwrap();
+        assert_eq!(base, 4);
+        assert_eq!(low_gain[0], 50e-15);
+        assert_eq!(*low_gain.last().unwrap(), 1e-6);
+        let (high_gain, base, _) = li5640_sensitivity_table(3).unwrap();
+        assert_eq!(base, 1);
+        assert_eq!(high_gain[0], 5e-15);
+        assert_eq!(*high_gain.last().unwrap(), 10e-9);
+        let mut io = Fake::new(&["2"]);
+        assert!(set_setting(&mut io, Model::Li5640, "Sensitivity", &json!(5e-15)).is_err());
+        assert_eq!(io.commands, ["ISRC?\n"]);
+    }
     #[test]
     fn every_model_preserves_auto_commands_and_rejects_unknown_actions_without_io() {
         let commands = [
@@ -1238,7 +1398,7 @@ mod tests {
     }
     #[test]
     fn li5640_periodic_and_manual_settings_never_mutate_output_mapping() {
-        let mut io = Fake::new(&["0", "0", "0", "0", "0"]);
+        let mut io = Fake::new(&["0", "0", "0", "0", "0", "0", "0", "0"]);
         let settings = settings(&mut io, Model::Li5640).unwrap();
         assert!(settings["Ref. Freq"].is_null());
         assert!(
