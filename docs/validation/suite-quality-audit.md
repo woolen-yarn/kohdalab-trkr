@@ -1,6 +1,6 @@
 # Suite quality audit: KohdaLab TRKR / 品質点検
 
-2026-11-05 · Unreleased branch `codex/suite-quality-audit` / 未公開の作業ブランチ
+2026-11-05 · Release preparation for 0.4.10 / 0.4.10公開準備
 
 Base / 基点: `712d9ed6b3a1aa51c986c7f2f2d992f4eb4165db`. This records source and software checks, not hardware qualification or a published release. / ソースとソフトウェア検証の記録であり、実機認定や公開済みリリースの記録ではありません。
 
