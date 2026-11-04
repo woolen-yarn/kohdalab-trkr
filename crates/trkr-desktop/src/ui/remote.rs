@@ -301,6 +301,11 @@ impl Bridge {
                     owner.policy = policy;
                 } else {
                     self.idle(app)?;
+                    if app.snapshot_copy.is_some() {
+                        return Err(
+                            "Wait for the GUI snapshot copy before acquiring Python control".into(),
+                        );
+                    }
                     if app.dialog.is_some() || app.initialize_axis.is_some() {
                         return Err("Close the GUI dialog before acquiring Python control".into());
                     }

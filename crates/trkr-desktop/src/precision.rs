@@ -89,7 +89,7 @@ impl<'a> Form<'a> {
             .inner
             .clicked()
     }
-    pub fn text(&mut self, name: &str, local: Rect, value: &mut String) {
+    pub fn text(&mut self, name: &str, local: Rect, value: &mut String) -> egui::Response {
         let r = self.at(name, local);
         self.ui
             .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
@@ -104,8 +104,12 @@ impl<'a> Form<'a> {
                         .min_size(r.size())
                         .vertical_align(egui::Align::Center)
                         .desired_width(r.width()),
-                );
-            });
+                )
+            })
+            .inner
+    }
+    pub fn path(&mut self, name: &str, local: Rect, value: &mut String) {
+        self.text(name, local, value).on_hover_text(value.as_str());
     }
     pub fn editable_combo(
         &mut self,

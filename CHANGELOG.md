@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased / 未公開
+
+- Ignore empty home-directory environment values and use the valid platform fallback consistently in the GUI and common Python client. / GUIと共通Pythonクライアントで、空のホーム環境変数を除外して有効な代替先を使います。
+- Search only newly received bytes for the common API response delimiter, preserving existing size limits and error handling. / 共通APIの受信済みデータを繰り返し走査せず、新しい断片だけで区切りを検出します。サイズ制限とエラー処理は維持します。
+- Save CSV snapshots in a background worker with pending/completion/error feedback; prevent normal window closure during the copy. / CSVスナップショット保存をバックグラウンド化し、保存中・完了・失敗を表示します。コピー中の通常終了を防ぎます。
+- Preserve whitespace in selected paths and show full Config/Output paths on hover without changing field widths. / 選択パスの空白を保持し、入力欄の幅を変えずにConfig・Outputの全文をホバー表示します。
+
 ## 0.4.9
 
 - Use consistent Config, Output, snapshot-save and replay dialog titles across platforms; report cancellation rather than leaving an opening notice. / 各OSのConfig・Output・スナップショット保存・再表示ダイアログのタイトルを統一し、キャンセル完了をログへ表示。

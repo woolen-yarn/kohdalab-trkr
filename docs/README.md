@@ -40,3 +40,5 @@ English and Japanese share the links above. Machine-readable JSON evidence, sour
 
 - [Common GUI control / 共通GUI API](reference/common-control-api.md)
 - [Common API validation / 共通APIの検証](validation/common-control-api.md)
+
+- [Suite quality audit / 5アプリ品質点検](validation/suite-quality-audit.md)
