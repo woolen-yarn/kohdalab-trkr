@@ -10,9 +10,9 @@ Recording revision 6 retains the main/raw column schemas and adds `position_valu
 
 記録revision 6ではmain/rawの列構成を維持し、上記の装置生座標を`position_value`行へ明示します。機器・量・値・単位・測定点番号で抽出でき、生応答と元の座標オブジェクトも保持します。遅延pulseは装置読戻し、遅延mmは実効校正によるpulseからの換算として`value_origin`で区別します。未接続軸は捏造せず、pulseの0は有効値として保持し、記録のための追加照会はしません。同じ点のreadingに再掲された座標は明示行へ二重展開しません。キャッシュされた最終・直近座標には観測時刻不明を明記し、移動完了時刻を実読取時刻として扱いません。
 
-A scanner arrival mismatch now reports X/Y, requested sample µm, quantized native command, native readback, difference and allowed tolerance. The tolerance and stop-on-failure behavior are unchanged. The last saved point in a screenshot cannot identify the failed target; use the detailed error and raw/run files.
+A scanner arrival mismatch now reports X/Y, requested sample µm, quantized native command, native readback, difference and allowed tolerance. The physical tolerance and stop-on-failure behavior are unchanged. At the exact tolerance boundary, a bound of 8 × f64 epsilon × (absolute target + absolute readback + absolute native origin + tolerance) excludes only binary conversion/subtraction roundoff; errors outside that numerical bound still fail. For example, 0.053° − 0.052° evaluates as 0.0010000000000000009° rather than exact 0.001°. The last saved point in a screenshot cannot identify the failed target; use the detailed error and raw/run files.
 
-スキャナ到達エラーにはX/Y・要求µm・丸め後の装置指令・生読戻し・差・許容差を表示します。許容差や不一致時の停止処理は変更しません。画面の最後の保存点だけでは失敗点を特定できないため、詳細エラーとraw/runを確認します。
+スキャナ到達エラーにはX/Y・要求µm・丸め後の装置指令・生読戻し・差・許容差を表示します。物理的な許容差や不一致時の停止処理は変更しません。0.053°−0.052°が計算上0.0010000000000000009°になるような境界では、上記の機械精度に基づく換算・減算誤差だけを除外し、その外側は引き続き停止します。画面の最後の保存点だけでは失敗点を特定できないため、詳細エラーとraw/runを確認します。
 
 ## Stop and motion verification (0.4.1) / 停止・移動確認
 

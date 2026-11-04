@@ -1096,3 +1096,48 @@ fn recorded_position_preserves_axis_order_without_recording_idle_polls() {
         rig.position().unwrap();
     }
 }
+
+#[test]
+fn scanner_arrival_tolerance_boundary_ignores_only_arithmetic_roundoff() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log, &[]);
+    for scale in [698.1317007977318, 493.653659795374, -493.653659795374] {
+        let mut config = agap("U");
+        config.sample_um_per_unit = scale;
+        rig.scanners[0].as_mut().unwrap().config = config.clone();
+        for (target, measured) in [(0.052, 0.053), (-0.052, -0.053), (0.035, 0.034)] {
+            let requested = config.sample_um_from_raw(target);
+            let mut actual = Position {
+                physical: [None, Some(config.sample_um_from_raw(measured)), None],
+                x_scanner_deg: Some(measured),
+                ..Default::default()
+            };
+            rig.verify_targets(&actual, [None, Some(requested), None])
+                .unwrap();
+            let outside = measured + (measured - target).signum() * 1e-9;
+            actual.physical[1] = Some(config.sample_um_from_raw(outside));
+            actual.x_scanner_deg = Some(outside);
+            assert!(
+                rig.verify_targets(&actual, [None, Some(requested), None])
+                    .is_err()
+            );
+        }
+    }
+    let config = cc_with_hysteresis();
+    assert!(config.origin().abs() > 0.);
+    rig.scanners[0].as_mut().unwrap().config = config.clone();
+    let requested = config.sample_um_from_raw(0.052);
+    let mut actual = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.0522)), None],
+        x_scanner_mm: Some(0.0522),
+        ..Default::default()
+    };
+    rig.verify_targets(&actual, [None, Some(requested), None])
+        .unwrap();
+    actual.physical[1] = Some(config.sample_um_from_raw(0.052200001));
+    actual.x_scanner_mm = Some(0.052200001);
+    assert!(
+        rig.verify_targets(&actual, [None, Some(requested), None])
+            .is_err()
+    );
+}

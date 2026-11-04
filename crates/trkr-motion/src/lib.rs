@@ -1272,7 +1272,15 @@ impl MotionRig {
                         .unwrap_or(0.0001)
                         .max(0.0001);
                     let difference = (expected - measured).abs();
-                    if difference > allowed {
+                    // Comparing a difference of decimal encoder readings at
+                    // exactly one configured resolution can exceed `allowed`
+                    // by a few binary ULPs (e.g. 0.053 - 0.052 > 0.001).
+                    // Bound only conversion/subtraction roundoff; the physical
+                    // arrival tolerance remains the configured resolution.
+                    let roundoff = 8.
+                        * f64::EPSILON
+                        * (expected.abs() + measured.abs() + s.config.origin().abs() + allowed);
+                    if difference > allowed && difference - allowed > roundoff {
                         let axis = if i == 1 { "X" } else { "Y" };
                         let unit = s.config.pos_unit.as_deref().unwrap_or("native unit");
                         return Err(format!(

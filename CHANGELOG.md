@@ -4,7 +4,7 @@
 
 - Read only the selected XY or Rθ pair from LI5640; configure the display at connect/explicit mode change, never switch it per sample. Unacquired components remain blank in CSV and null in the API, with no reconstruction. / LI5640は選択した片側だけを取得し、接続・明示的な選択変更時のみ表示設定。未取得側はCSV空欄・API nullで計算補完しません。
 - Expose native delay pulse/mm and scanner mm/deg values as explicit raw CSV rows without extra instrument queries. / 遅延ステージのpulse・mm、スキャナのmm・degをraw CSVの明示行へ保存。追加の実機照会は行いません。
-- Report the scanner axis, commanded/read-back position, difference and unchanged tolerance when arrival verification fails. / 到達確認エラーに軸・装置指令値・読戻し値・差・既存許容差を表示。
+- Report the scanner axis, commanded/read-back position, difference and configured tolerance when arrival verification fails; avoid false boundary failures caused solely by binary arithmetic roundoff. / 到達確認エラーに軸・装置指令値・読戻し値・差・設定許容差を表示し、境界の浮動小数点計算誤差だけで失敗しないよう修正。
 
 ## 0.4.7
 
