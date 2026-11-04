@@ -146,12 +146,7 @@ if ($env:TRKR_DIALOG_VALIDATE_PATH_HELPERS -eq '1') {
   if ($null -ne $initialFileName) { [Console]::Out.Write($initialFileName) }
   exit 0
 }
-if ($kind -eq 'directory') {
-  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-  $dialog.Description = 'Choose output folder'
-  $dialog.ShowNewFolderButton = $true
-  if ($initialDirectory) { $dialog.SelectedPath = $initialDirectory }
-} elseif ($kind -eq 'save_csv') {
+if ($kind -eq 'save_csv') {
   $dialog = New-Object System.Windows.Forms.SaveFileDialog
   $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
   $dialog.DefaultExt = 'csv'
@@ -188,8 +183,7 @@ try {
   $owner.Activate()
   $owner.BringToFront()
   if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
-    if ($kind -eq 'directory') { $selection = $dialog.SelectedPath }
-    else { $selection = $dialog.FileName }
+    $selection = $dialog.FileName
   }
 } finally {
   $owner.Dispose()
@@ -200,9 +194,28 @@ if (-not [string]::IsNullOrWhiteSpace($selection)) {
 }
 "#;
 
+#[cfg(any(target_os = "windows", test))]
+fn existing_initial_directory(initial: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(initial);
+    path.ancestors()
+        .find(|candidate| !candidate.as_os_str().is_empty() && candidate.is_dir())
+        .map(PathBuf::from)
+}
+
 #[cfg(target_os = "windows")]
 fn windows_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
     use std::os::windows::process::CommandExt;
+
+    if kind == Kind::Directory {
+        // Match IV's native Explorer-style folder picker and title. Run inside
+        // TRKR rather than an external PowerShell process; open() already keeps
+        // this blocking dialog away from the egui update thread.
+        let mut dialog = rfd::FileDialog::new().set_title("Output directory");
+        if let Some(directory) = existing_initial_directory(initial) {
+            dialog = dialog.set_directory(directory);
+        }
+        return Ok(dialog.pick_folder());
+    }
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = Command::new("powershell");
@@ -324,6 +337,26 @@ fn linux_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
 mod tests {
     use std::path::PathBuf;
 
+    #[test]
+    fn initial_directory_preserves_literal_names_and_falls_back_for_missing_children() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("output [sample] 'test'");
+        std::fs::create_dir(&directory).unwrap();
+        assert_eq!(super::existing_initial_directory(""), None);
+        for path in [directory.clone(), directory.join("new/run")] {
+            assert_eq!(
+                super::existing_initial_directory(path.to_str().unwrap()),
+                Some(directory.clone())
+            );
+        }
+        let file = directory.join("run.csv");
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(
+            super::existing_initial_directory(file.to_str().unwrap()),
+            Some(directory)
+        );
+    }
+
     #[cfg(windows)]
     fn windows_path_helper_output(initial: &str) -> std::process::Output {
         std::process::Command::new("powershell.exe")
@@ -360,7 +393,6 @@ mod tests {
     #[test]
     fn windows_script_returns_the_selected_file_name() {
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.FileName"));
-        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.SelectedPath"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("UTF8Encoding"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("Set-StrictMode"));
     }

@@ -32,3 +32,6 @@ path = "src/main.rs"
 [[bin]]
 name = "kohdalab-trkr-demo"
 path = "src/demo_launcher.rs"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = { version = "0.17.2", default-features = false }

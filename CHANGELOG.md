@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased / 未公開
+
+- Match IV’s Windows Output folder picker: use the native Explorer-style dialog titled `Output directory`, with nearest-existing-folder fallback. / WindowsのOutput選択画面をIVと同じエクスプローラー形式・`Output directory`タイトルへ統一し、未作成パスは最寄りの既存フォルダーから開きます。
+
 ## 0.4.8
 
 - Keep Windows Config/Output choosers foregrounded with an owned dialog and use a literal-safe existing initial folder; preserve paths with brackets/apostrophes and hidden console startup. / WindowsのConfig・Output選択画面に前面表示用の所有ウィンドウを設け、未作成・特殊文字を含むパスも扱える初期フォルダー処理に修正。
