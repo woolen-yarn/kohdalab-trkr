@@ -6,6 +6,7 @@
 - Preserve whitespace in native file-picker results and show full Config/Output paths on hover without changing field widths. / ファイル選択結果の空白を保持し、入力欄の幅を変えずにConfig・Outputの全文をホバー表示します。
 - Ignore empty home environment values before choosing a valid alternative. The common Python client evaluates its fallback only when needed and refuses a relative fallback. / 空のホーム環境変数を除外して有効な代替先を使用します。共通Pythonクライアントも必要時だけフォールバックを評価し、相対パスを拒否します。
 - Avoid rescanning the entire accumulated API response for every network fragment. Existing size limits, timeouts and error reporting are retained. / API応答の受信断片ごとに全データを再走査する無駄を削減し、サイズ制限・タイムアウト・エラー処理を維持します。
+- Source ZIPs mark the documented native rebuild entry points executable even when produced from a Windows checkout, while retaining ordinary source-file modes. / Windowsチェックアウトから作成した場合も、ソースZIP内のネイティブ再ビルド用エントリーポイントを実行可能として記録し、通常のソースファイルのモードは維持します。
 
 ## Compatibility / 互換性
 

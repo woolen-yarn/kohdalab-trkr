@@ -21,9 +21,14 @@ def fixture_inputs(tmp_path: Path) -> dict[str, Path]:
             "native/kohdalab_gpib_helper.cpp",
             "native/agilent_82357b.cpp",
             "native/vendor/README.md",
+            "scripts/build_native.sh",
             "scripts/build_native_gpib.sh",
         ):
-            archive.writestr(name, "source")
+            info = zipfile.ZipInfo(name)
+            if name.endswith(".sh"):
+                info.create_system = 3
+                info.external_attr = 0o100755 << 16
+            archive.writestr(info, "source")
     licenses = tmp_path / "licenses"
     licenses.mkdir()
     (licenses / "LICENSE").write_text("MIT", encoding="utf-8")
@@ -92,6 +97,10 @@ def test_packager_contents_are_gpib_only(tmp_path: Path) -> None:
     assert (output / "support" / "licenses" / "trkr_portable_rust.md").is_file()
     assert (output / "support" / "licenses" / "python_compatibility_inventory.json").is_file()
     assert "\\n" not in (output / "README.txt").read_text(encoding="utf-8")
+    for source_name in ("SOURCE.zip", "TRKR-SOURCE.zip"):
+        with zipfile.ZipFile(output / "support" / source_name) as archive:
+            for script in ("scripts/build_native.sh", "scripts/build_native_gpib.sh"):
+                assert archive.getinfo(script).external_attr >> 16 == 0o100755
 
 
 def test_packager_includes_optional_visa_helper_and_source(tmp_path: Path) -> None:
@@ -155,6 +164,37 @@ def test_zip_headers_ignore_checkout_file_timestamps(tmp_path: Path) -> None:
         with zipfile.ZipFile(path,'w') as archive:module.zip_file(archive,source,'src/main.rs')
         archives.append(path.read_bytes())
     assert archives[0]==archives[1]
+
+
+def test_source_build_scripts_keep_execute_headers_without_checkout_mode_bits(tmp_path: Path) -> None:
+    """Windows checkouts do not expose Git's executable bits through stat()."""
+    import importlib.util
+
+    spec=importlib.util.spec_from_file_location('portable_package',SCRIPT)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    source=tmp_path/'build_native.sh';source.write_text('#!/usr/bin/env bash\n',encoding='utf-8')
+    source.chmod(0o644)
+    archive_path=tmp_path/'source.zip'
+    with zipfile.ZipFile(archive_path,'w') as archive:
+        module.zip_file(archive,source,'scripts/build_native.sh')
+        module.zip_file(archive,source,'scripts/build_native_gpib.sh')
+        module.zip_file(archive,source,'scripts/ordinary.sh')
+    with zipfile.ZipFile(archive_path) as archive:
+        assert archive.getinfo('scripts/build_native.sh').external_attr >> 16 == 0o100755
+        assert archive.getinfo('scripts/build_native_gpib.sh').external_attr >> 16 == 0o100755
+        assert archive.getinfo('scripts/ordinary.sh').external_attr >> 16 == 0o100644
+
+
+def test_application_source_marks_rebuild_entry_points_executable(tmp_path: Path) -> None:
+    import importlib.util
+
+    spec=importlib.util.spec_from_file_location('portable_package',SCRIPT)
+    module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+    archive_path=tmp_path/'SOURCE.zip'
+    module.application_source(archive_path)
+    with zipfile.ZipFile(archive_path) as archive:
+        for name in ('scripts/build_native.sh','scripts/build_native_gpib.sh'):
+            assert archive.getinfo(name).external_attr >> 16 == 0o100755
 
 
 def test_packaged_notebooks_prefer_the_bundled_client_over_an_old_import(tmp_path: Path) -> None:
