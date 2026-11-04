@@ -250,4 +250,8 @@ Windows Config **Browse** and Output **…** open native choosers with a centere
 
 WindowsのConfig **Browse**・Output **…** は中央・前面の所有ウィンドウを使う選択画面にし、保存先が未作成でも最寄りの既存フォルダーから開きます。角括弧・引用符をパスとして保持し、ファイル名とディレクトリを分離します。端末画面は出さず、キャンセルとエラーを区別します。Windows専用テストで実際のPowerShellパス処理を実行しますが、前面表示の実機確認とは区別します。
 
+In 0.4.9, Windows Output uses the same native Explorer-style `rfd` folder picker as IV, titled **Output directory**, within the TRKR process. Config, snapshot-save and replay dialogs have explicit task-specific titles on all platforms. macOS and Windows preserve nearest-existing-folder fallback for not-yet-created paths; cancellation is logged and does not change the selected path. Config/file selection on Windows retains the hidden-console PowerShell implementation; native folder cancellation follows IV's picker behavior. Interactive Windows appearance remains unverified locally.
+
+0.4.9ではWindowsのOutputをIVと同じ`rfd`のエクスプローラー形式・**Output directory**タイトルへ変更し、TRKRプロセス内で開きます。各OSのConfig・スナップショット保存・再表示ダイアログにも用途別タイトルを付けます。Mac・Windowsは未作成パスの最寄りの既存フォルダーから開き、キャンセルはログに表示して選択パスを変更しません。WindowsのConfig・ファイル選択は端末非表示PowerShell実装を維持し、フォルダー選択のキャンセルはIVと同じ扱いです。Windowsでの実画面確認はローカル未実施です。
+
 Sources: [Newport AG-M100D datasheet](https://www.newport.com.cn/medias/sys_master/images/images/hcf/hf6/9122779496478/CONEX-AG-M100D-Data-Sheet.pdf), [NF LI5640 GPIB manual](https://www.nfcorp.co.jp/english/sup/dl/manual/mi/e_li5640-4.pdf).

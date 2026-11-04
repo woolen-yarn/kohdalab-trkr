@@ -24,6 +24,15 @@ pub enum Kind {
 }
 
 impl Kind {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Config => "Configuration file",
+            Self::Directory => "Output directory",
+            Self::SaveCsv => "Save measurement snapshot",
+            Self::ReplayCsv => "Open replay CSV",
+        }
+    }
+
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     fn environment_value(self) -> &'static str {
         match self {
@@ -146,12 +155,7 @@ if ($env:TRKR_DIALOG_VALIDATE_PATH_HELPERS -eq '1') {
   if ($null -ne $initialFileName) { [Console]::Out.Write($initialFileName) }
   exit 0
 }
-if ($kind -eq 'directory') {
-  $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-  $dialog.Description = 'Choose output folder'
-  $dialog.ShowNewFolderButton = $true
-  if ($initialDirectory) { $dialog.SelectedPath = $initialDirectory }
-} elseif ($kind -eq 'save_csv') {
+if ($kind -eq 'save_csv') {
   $dialog = New-Object System.Windows.Forms.SaveFileDialog
   $dialog.Filter = 'CSV files (*.csv)|*.csv|All files (*.*)|*.*'
   $dialog.DefaultExt = 'csv'
@@ -172,6 +176,8 @@ if ($kind -eq 'directory') {
   if ($initialFileName) { $dialog.FileName = $initialFileName }
 }
 
+$dialog.Title = $env:TRKR_DIALOG_TITLE
+
 # This process has no application window of its own.  Give the dialog an
 # invisible, topmost WinForms owner so it is foregrounded instead of being
 # hidden behind the TRKR window.  The owner and dialog are always disposed.
@@ -188,8 +194,7 @@ try {
   $owner.Activate()
   $owner.BringToFront()
   if ($dialog.ShowDialog($owner) -eq [System.Windows.Forms.DialogResult]::OK) {
-    if ($kind -eq 'directory') { $selection = $dialog.SelectedPath }
-    else { $selection = $dialog.FileName }
+    $selection = $dialog.FileName
   }
 } finally {
   $owner.Dispose()
@@ -200,9 +205,28 @@ if (-not [string]::IsNullOrWhiteSpace($selection)) {
 }
 "#;
 
+#[cfg(any(target_os = "windows", target_os = "macos", test))]
+fn existing_initial_directory(initial: &str) -> Option<PathBuf> {
+    let path = PathBuf::from(initial);
+    path.ancestors()
+        .find(|candidate| !candidate.as_os_str().is_empty() && candidate.is_dir())
+        .map(PathBuf::from)
+}
+
 #[cfg(target_os = "windows")]
 fn windows_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
     use std::os::windows::process::CommandExt;
+
+    if kind == Kind::Directory {
+        // Match IV's native Explorer-style folder picker and title. Run inside
+        // TRKR rather than an external PowerShell process; open() already keeps
+        // this blocking dialog away from the egui update thread.
+        let mut dialog = rfd::FileDialog::new().set_title(kind.title());
+        if let Some(directory) = existing_initial_directory(initial) {
+            dialog = dialog.set_directory(directory);
+        }
+        return Ok(dialog.pick_folder());
+    }
 
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let mut command = Command::new("powershell");
@@ -215,6 +239,7 @@ fn windows_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> 
             WINDOWS_DIALOG_SCRIPT,
         ])
         .env("TRKR_DIALOG_KIND", kind.environment_value())
+        .env("TRKR_DIALOG_TITLE", kind.title())
         .env("TRKR_DIALOG_INITIAL", initial)
         .creation_flags(CREATE_NO_WINDOW);
     let output = command
@@ -226,32 +251,33 @@ fn windows_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> 
 #[cfg(target_os = "macos")]
 const MACOS_DIALOG_SCRIPT: &str = r#"
 set dialogKind to system attribute "TRKR_DIALOG_KIND"
+set dialogTitle to system attribute "TRKR_DIALOG_TITLE"
 set initialDir to system attribute "TRKR_DIALOG_INITIAL_DIR"
 set initialName to system attribute "TRKR_DIALOG_INITIAL_NAME"
 try
   if dialogKind is "directory" then
     if initialDir is not "" then
-      set picked to choose folder with prompt "Choose output folder" default location (POSIX file initialDir)
+      set picked to choose folder with prompt dialogTitle default location (POSIX file initialDir)
     else
-      set picked to choose folder with prompt "Choose output folder"
+      set picked to choose folder with prompt dialogTitle
     end if
   else if dialogKind is "save_csv" then
     if initialDir is not "" then
-      set picked to choose file name with prompt "Save CSV" default name initialName default location (POSIX file initialDir)
+      set picked to choose file name with prompt dialogTitle default name initialName default location (POSIX file initialDir)
     else
-      set picked to choose file name with prompt "Save CSV" default name initialName
+      set picked to choose file name with prompt dialogTitle default name initialName
     end if
   else if dialogKind is "replay_csv" then
     if initialDir is not "" then
-      set picked to choose file with prompt "Choose replay CSV" default location (POSIX file initialDir) of type {"public.comma-separated-values-text"}
+      set picked to choose file with prompt dialogTitle default location (POSIX file initialDir) of type {"public.comma-separated-values-text"}
     else
-      set picked to choose file with prompt "Choose replay CSV" of type {"public.comma-separated-values-text"}
+      set picked to choose file with prompt dialogTitle of type {"public.comma-separated-values-text"}
     end if
   else
     if initialDir is not "" then
-      set picked to choose file with prompt "Choose JSON profile" default location (POSIX file initialDir) of type {"public.json"}
+      set picked to choose file with prompt dialogTitle default location (POSIX file initialDir) of type {"public.json"}
     else
-      set picked to choose file with prompt "Choose JSON profile" of type {"public.json"}
+      set picked to choose file with prompt dialogTitle of type {"public.json"}
     end if
   end if
   return POSIX path of picked
@@ -266,6 +292,7 @@ fn macos_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
     let output = Command::new("osascript")
         .args(["-e", MACOS_DIALOG_SCRIPT])
         .env("TRKR_DIALOG_KIND", kind.environment_value())
+        .env("TRKR_DIALOG_TITLE", kind.title())
         .env("TRKR_DIALOG_INITIAL_DIR", initial_dir)
         .env("TRKR_DIALOG_INITIAL_NAME", initial_name)
         .output()
@@ -276,15 +303,9 @@ fn macos_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
 #[cfg(target_os = "macos")]
 fn macos_initial_location(initial: &str) -> (String, String) {
     let path = Path::new(initial);
-    let directory = if path.is_dir() {
-        Some(path)
-    } else {
-        path.parent()
-            .filter(|parent| !parent.as_os_str().is_empty())
-    }
-    .filter(|parent| parent.is_dir())
-    .map(|parent| parent.to_string_lossy().into_owned())
-    .unwrap_or_default();
+    let directory = existing_initial_directory(initial)
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let filename = path
         .file_name()
         .filter(|name| !name.is_empty())
@@ -296,7 +317,9 @@ fn macos_initial_location(initial: &str) -> (String, String) {
 #[cfg(all(unix, not(target_os = "macos")))]
 fn linux_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
     let mut command = Command::new("zenity");
-    command.arg("--file-selection");
+    command
+        .arg("--file-selection")
+        .arg(format!("--title={}", kind.title()));
     match kind {
         Kind::Config => {
             command.arg("--file-filter=JSON profile | *.json");
@@ -323,6 +346,26 @@ fn linux_dialog(kind: Kind, initial: &str) -> Result<Option<PathBuf>, String> {
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
+
+    #[test]
+    fn initial_directory_preserves_literal_names_and_falls_back_for_missing_children() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("output [sample] 'test'");
+        std::fs::create_dir(&directory).unwrap();
+        assert_eq!(super::existing_initial_directory(""), None);
+        for path in [directory.clone(), directory.join("new/run")] {
+            assert_eq!(
+                super::existing_initial_directory(path.to_str().unwrap()),
+                Some(directory.clone())
+            );
+        }
+        let file = directory.join("run.csv");
+        std::fs::write(&file, "").unwrap();
+        assert_eq!(
+            super::existing_initial_directory(file.to_str().unwrap()),
+            Some(directory)
+        );
+    }
 
     #[cfg(windows)]
     fn windows_path_helper_output(initial: &str) -> std::process::Output {
@@ -360,7 +403,6 @@ mod tests {
     #[test]
     fn windows_script_returns_the_selected_file_name() {
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.FileName"));
-        assert!(super::WINDOWS_DIALOG_SCRIPT.contains("$dialog.SelectedPath"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("UTF8Encoding"));
         assert!(super::WINDOWS_DIALOG_SCRIPT.contains("Set-StrictMode"));
     }
