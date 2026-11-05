@@ -1,4 +1,8 @@
 //! One persistent worker owns instruments, motion and acquisition.
+mod alignment;
+pub use alignment::{AlignmentAction, AlignmentUnit};
+mod connections;
+pub use connections::{DeviceState, MotionKind};
 mod execution;
 mod recording;
 mod status;
@@ -40,6 +44,8 @@ pub enum Source {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HardwareConfig {
+    #[serde(default)]
+    pub device_ids: crate::inventory::DeviceIds,
     pub model: Model,
     pub address: u8,
     pub motion: MotionConfig,
@@ -51,16 +57,6 @@ pub enum Device {
     T,
     X,
     Y,
-}
-impl Device {
-    fn index(self) -> usize {
-        match self {
-            Self::Lockin => 0,
-            Self::T => 1,
-            Self::X => 2,
-            Self::Y => 3,
-        }
-    }
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -99,6 +95,8 @@ pub enum ReadingOrigin {
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub registered_devices: Vec<DeviceState>,
     pub devices: [bool; 4],
     pub transport: String,
     pub running: bool,
@@ -336,6 +334,11 @@ fn expected_stop_error(error: &str) -> bool {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "event", content = "data", rename_all = "snake_case")]
 pub enum Event {
+    DirectionChanged {
+        kind: MotionKind,
+        id: String,
+        config: Box<MotionConfig>,
+    },
     Sample(Sample),
     /// A display-only lock-in read. It never contributes a scan row or CSV
     /// record, so the GUI may update its live trace independently.
@@ -360,6 +363,23 @@ pub enum Event {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "snake_case")]
 pub enum Command {
+    ConnectInventory {
+        inventory: crate::inventory::Inventory,
+    },
+    DisconnectAll,
+    ReverseDirection {
+        kind: MotionKind,
+        id: String,
+        axis: usize,
+    },
+    Alignment {
+        kind: MotionKind,
+        id: String,
+        action: AlignmentAction,
+    },
+    Select {
+        config: HardwareConfig,
+    },
     Connect {
         config: HardwareConfig,
         devices: Vec<Device>,
@@ -409,7 +429,11 @@ impl Command {
     fn is_job(&self) -> bool {
         matches!(
             self,
-            Self::Run { .. } | Self::Move { .. } | Self::Initialize { .. } | Self::Replay { .. }
+            Self::Alignment { .. }
+                | Self::Run { .. }
+                | Self::Move { .. }
+                | Self::Initialize { .. }
+                | Self::Replay { .. }
         )
     }
 }
@@ -419,8 +443,12 @@ impl Command {
 /// identifies the origin. Never infer a category from the displayed text.
 fn remote_failure_code(command: &Command) -> Option<&'static str> {
     Some(match command {
+        Command::ReverseDirection { .. } | Command::Alignment { .. } => "device_error",
         Command::Initialize { .. } => "initialization_failed",
-        Command::Connect { .. }
+        Command::ConnectInventory { .. }
+        | Command::DisconnectAll
+        | Command::Select { .. }
+        | Command::Connect { .. }
         | Command::Disconnect { .. }
         | Command::Read
         | Command::Move { .. }
@@ -433,6 +461,7 @@ fn remote_failure_code(command: &Command) -> Option<&'static str> {
 }
 
 pub struct Controller {
+    hold: alignment::HoldLease,
     pub events: Receiver<Event>,
     commands: Sender<(Command, Option<String>)>,
     cancel: Arc<AtomicBool>,
@@ -442,6 +471,16 @@ pub struct Controller {
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Controller {
+    pub fn clear_hold_lease(&self) {
+        self.hold.release();
+    }
+    pub fn renew_hold(&self) {
+        self.hold.renew();
+    }
+    pub fn release_hold(&self) {
+        self.hold.release();
+        self.stop();
+    }
     pub fn send(&self, command: Command) -> Result<(), String> {
         self.enqueue(command, None)
     }
@@ -517,8 +556,13 @@ fn controller_with_mode(read_only: bool) -> Controller {
     let working = busy.clone();
     let pending = Arc::new(AtomicUsize::new(0));
     let pending_worker = pending.clone();
+    let hold = alignment::HoldLease::default();
+    let worker_hold = hold.clone();
     let handle = thread::spawn(move || {
-        let mut session = Session::default();
+        let mut session = Session {
+            hold: worker_hold,
+            ..Session::default()
+        };
         let mut last_position = Instant::now() - Duration::from_millis(500);
         loop {
             let now = Instant::now();
@@ -526,7 +570,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
             let position_due = last_position + Duration::from_millis(500);
             let timeout = idle_refresh_timeout(
                 session.gpib.is_some(),
-                session.rig.is_some(),
+                !session.connections.motions.is_empty(),
                 lockin_due,
                 position_due,
                 now,
@@ -556,9 +600,12 @@ fn controller_with_mode(read_only: bool) -> Controller {
                             changed = true;
                         }
                     }
-                    if session.rig.is_some() && now >= position_due {
+                    if !session.connections.motions.is_empty() && now >= position_due {
                         last_position = now;
-                        if let Err(e) = session.read_position() {
+                        if let Err(e) = session
+                            .read_position()
+                            .and_then(|_| session.poll_registered_positions())
+                        {
                             let _ = send.send(Event::Error(e));
                         } else {
                             changed = true;
@@ -578,6 +625,13 @@ fn controller_with_mode(read_only: bool) -> Controller {
             }
             let job = cmd.is_job();
             let acquisition = matches!(cmd, Command::Run { .. } | Command::Replay { .. });
+            let context_only = matches!(
+                cmd,
+                Command::Select { .. }
+                    | Command::ReverseDirection { .. }
+                    | Command::ConnectInventory { .. }
+                    | Command::DisconnectAll
+            );
             let remote_failure_code = remote_failure_code(&cmd);
             session.failure_code = None;
             if job {
@@ -599,6 +653,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
             // Jobs own motion cleanup and its audit. Do not issue another
             // unrecorded STOP after their finalized result/metadata.
             if !job
+                && !context_only
                 && result.is_err()
                 && let Some(rig) = &mut session.rig
                 && let Err(stop) = rig.stop()
@@ -637,6 +692,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 let _ = send.send(Event::Error(error.clone()));
             }
             session.clear_failed_lockin();
+            session.refresh_device_states();
             if job {
                 session.state.running = false;
                 session.state.phase = if result.is_err() {
@@ -684,6 +740,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
         }
     });
     Controller {
+        hold,
         events,
         commands: tx,
         cancel,
@@ -695,6 +752,9 @@ fn controller_with_mode(read_only: bool) -> Controller {
 }
 #[derive(Default)]
 struct Session {
+    hold: alignment::HoldLease,
+    connections: connections::Connections,
+    connection_poll_index: usize,
     live: LiveMonitor,
     gpib: Option<Gpib>,
     rig: Option<MotionRig>,
@@ -707,6 +767,7 @@ struct Session {
 }
 impl Session {
     fn clear_failed_lockin(&mut self) -> bool {
+        let parked_failed = self.connections.clear_failed_lockins();
         if self.gpib.as_ref().is_some_and(Gpib::is_poisoned) {
             self.gpib = None;
             self.state.devices[0] = false;
@@ -717,80 +778,10 @@ impl Session {
             self.lockin_context = None;
             return true;
         }
-        false
+        parked_failed
     }
     fn connect(&mut self, config: HardwareConfig, devices: Vec<Device>) -> Result<(), String> {
-        // Reopening serial handles never initiates motion or homing.
-        if self.config.as_ref().is_some_and(|previous| {
-            previous.model != config.model || previous.address != config.address
-        }) {
-            self.lockin_context = None;
-        }
-        if devices.contains(&Device::Lockin) {
-            let changed = self
-                .config
-                .as_ref()
-                .is_none_or(|c| c.model != config.model || c.address != config.address);
-            if changed {
-                self.lockin_context = None;
-                self.gpib = None;
-                self.state.devices[0] = false;
-            }
-            if self.gpib.is_none() {
-                self.gpib = Some(Gpib::connect(config.address)?);
-                self.state.transport = self
-                    .gpib
-                    .as_ref()
-                    .map(|g| g.backend_name())
-                    .unwrap_or_default()
-                    .into();
-                self.state.devices[0] = true;
-            }
-        }
-        let mut mask = self.state.devices;
-        for d in &devices {
-            match d {
-                Device::T if config.motion.delay.is_none() => {
-                    return Err("No delay stage configured".into());
-                }
-                Device::X if config.motion.x.is_none() => {
-                    return Err("No X scanner configured".into());
-                }
-                Device::Y if config.motion.y.is_none() => {
-                    return Err("No Y scanner configured".into());
-                }
-                _ => {}
-            }
-        }
-        for d in devices {
-            mask[d.index()] = true;
-        }
-        let motion_changed = self
-            .config
-            .as_ref()
-            .is_none_or(|c| c.motion != config.motion);
-        if motion_changed || mask[1..] != self.state.devices[1..] {
-            self.rig = None;
-            self.state.delay_calibration = None;
-            self.state.devices[1..].fill(false);
-            let motion = filtered(&config.motion, &mask);
-            if motion.delay.is_some() || motion.x.is_some() || motion.y.is_some() {
-                self.rig = Some(MotionRig::open(&motion)?);
-            }
-            self.state.devices[1..].copy_from_slice(&mask[1..]);
-            self.state.delay_calibration = self
-                .rig
-                .as_ref()
-                .map(MotionRig::delay_calibration)
-                .transpose()?
-                .flatten();
-        }
-        if let Some(gpib) = &mut self.gpib {
-            lockin::select_mode(config.model, gpib, self.state.signal_mode)?;
-        }
-        self.config = Some(config);
-        self.read()?;
-        Ok(())
+        self.connect_registered(config, devices)
     }
     fn read(&mut self) -> Result<(), String> {
         self.read_lockin()?;
@@ -811,6 +802,7 @@ impl Session {
     fn read_position(&mut self) -> Result<(), String> {
         if let Some(rig) = &mut self.rig {
             self.state.position = rig.position()?;
+            self.sync_selected_readbacks();
         }
         Ok(())
     }
@@ -841,46 +833,17 @@ impl Session {
         send: &SyncSender<Event>,
     ) -> Result<Option<PathBuf>, String> {
         match cmd {
-            Command::Connect { config, devices } => self.connect(config, devices)?,
-            Command::Disconnect { devices } => {
-                let mut mask = self.state.devices;
-                for d in devices {
-                    mask[d.index()] = false;
-                }
-                if !mask[0] {
-                    self.gpib = None;
-                    self.state.devices[0] = false;
-                    self.state.transport.clear();
-                    self.state.signal = None;
-                    self.state.signal_origin = None;
-                    self.state.lockin = Value::Null;
-                    self.lockin_context = None;
-                }
-                if mask[1..] != self.state.devices[1..] {
-                    self.rig = None;
-                    self.state.delay_calibration = None;
-                    self.state.devices[1..].fill(false);
-                    if let Some(config) = &self.config {
-                        let motion = filtered(&config.motion, &mask);
-                        if motion.delay.is_some() || motion.x.is_some() || motion.y.is_some() {
-                            self.rig = Some(MotionRig::open(&motion)?);
-                        }
-                    }
-                    self.state.devices[1..].copy_from_slice(&mask[1..]);
-                    self.state.position = self
-                        .rig
-                        .as_mut()
-                        .map(|r| r.position())
-                        .transpose()?
-                        .unwrap_or_default();
-                    self.state.delay_calibration = self
-                        .rig
-                        .as_ref()
-                        .map(MotionRig::delay_calibration)
-                        .transpose()?
-                        .flatten();
-                }
+            Command::ConnectInventory { inventory } => self.connect_inventory(inventory)?,
+            Command::DisconnectAll => self.disconnect_all()?,
+            Command::ReverseDirection { kind, id, axis } => {
+                self.reverse_direction(kind, id, axis, send)?
             }
+            Command::Alignment { kind, id, action } => {
+                self.alignment(kind, id, action, cancel, send)?
+            }
+            Command::Connect { config, devices } => self.connect(config, devices)?,
+            Command::Select { config } => self.select_config(config)?,
+            Command::Disconnect { devices } => self.disconnect_registered(devices)?,
             Command::Read => self.read()?,
             Command::Move {
                 config,
@@ -2003,6 +1966,7 @@ mod remote_failure_tests {
     #[test]
     fn remote_failure_categories_follow_command_origin() {
         let config = HardwareConfig {
+            device_ids: Default::default(),
             model: Model::Sr7265,
             address: 0,
             motion: MotionConfig::default(),

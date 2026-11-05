@@ -500,6 +500,21 @@ class GuiClient:
             payload["devices"] = devices
         return self._job("connect", **payload)
 
+    def select_devices(self, *, lockin: str | None = None, delay: str | None = None,
+                       scanner: str | None = None, request_id: str | None = None) -> dict[str, Any]:
+        """Select registered measurement devices without closing other connections.
+
+        測定対象の登録IDを選択します。他の機器の接続は維持します。
+        Omitted IDs retain the current selection; use config() to inspect IDs.
+        """
+        payload: dict[str, Any] = {}
+        for name, value in (("lockin", lockin), ("delay", delay), ("scanner", scanner)):
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} must be a nonempty device ID")
+                payload[name] = value
+        return self._job("select_devices", request_id=request_id, **payload)
+
     def disconnect(self, devices: list[str] | None = None, *, request_id: str | None = None) -> dict[str, Any]:
         if devices is not None and (not isinstance(devices, list) or not all(isinstance(x, str) for x in devices)):
             raise TypeError("devices must be a list of strings or None")

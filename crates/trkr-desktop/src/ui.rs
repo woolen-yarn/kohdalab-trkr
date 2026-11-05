@@ -1,4 +1,6 @@
+mod alignment;
 mod demo;
+mod devices;
 mod eta;
 mod remote;
 use crate::{axis_choices, precision};
@@ -122,6 +124,12 @@ fn edit(ui: &mut egui::Ui, v: &mut String) {
     ui.add(egui::TextEdit::singleline(v).desired_width(ui.available_width().clamp(80.0, 220.0)));
 }
 pub struct App {
+    inventory: crate::inventory::Inventory,
+    alignment: alignment::AlignmentUi,
+    alignment_tab: bool,
+    stage_round_trips: u32,
+    stage_axis: u8,
+    scanner_direction: [i32; 2],
     remote: Option<remote::Bridge>,
     measurement_pending: bool,
     demo_viewer: bool,
@@ -244,6 +252,12 @@ impl App {
         p[4].fast = Axis::X;
         p[4].slow = Axis::Y;
         let mut app = Self {
+            inventory: Default::default(),
+            alignment: Default::default(),
+            alignment_tab: false,
+            stage_round_trips: 1,
+            stage_axis: 1,
+            scanner_direction: [0; 2],
             remote: None,
             measurement_pending: false,
             demo_viewer,
@@ -427,6 +441,9 @@ impl App {
         self.left_collapsed = state == "left-collapsed";
         self.devices_scrolled_smoke = state == "devices-scrolled";
         self.right_collapsed = state == "right-collapsed";
+        if state.starts_with("alignment-") {
+            self.enable_alignment_preview(state == "alignment-scanner");
+        }
         if let Some(smoke) = &mut self.smoke {
             smoke.layout_only = true;
             smoke.stage = SmokeStage::CaptureWorkflow {
@@ -506,6 +523,17 @@ impl App {
     }
     fn hydrate(&mut self) {
         self.settings.normalize_profile_aliases();
+        if let Ok(inventory) = crate::inventory::Inventory::from_profile(&self.settings.raw) {
+            self.inventory = inventory;
+        }
+        self.stage_round_trips =
+            self.raw_f64(&["instruments", "delay_stage", "t", "round_trips"], 1.) as u32;
+        self.stage_axis =
+            self.raw_f64(&["instruments", "delay_stage", "t", "controller_axis"], 1.) as u8;
+        for (i, axis) in ["x", "y"].into_iter().enumerate() {
+            self.scanner_direction[i] =
+                self.raw_f64(&["instruments", "scanner", axis, "direction"], 0.) as i32;
+        }
         for w in Workflow::ALL {
             if let Ok(p) = self.settings.plan(w) {
                 self.plans[Self::ix(w)] = p;
@@ -707,6 +735,25 @@ impl App {
             self.stage_draft = None;
             Self::path_set(
                 &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "round_trips"],
+                json!(self.stage_round_trips),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "controller_axis"],
+                json!(self.stage_axis),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
+                &["instruments", "delay_stage", "t", "axis_count"],
+                json!(if self.stage_model == "SHOT302GS" {
+                    2
+                } else {
+                    1
+                }),
+            );
+            Self::path_set(
+                &mut self.settings.raw,
                 &["instruments", "delay_stage", "t", "controller"],
                 json!(self.stage_model),
             );
@@ -733,6 +780,11 @@ impl App {
             self.scanner_configured[i] = true;
             self.scanner_draft[i] = None;
             let p = ["instruments", "scanner", key];
+            Self::path_set(
+                &mut self.settings.raw,
+                &[p[0], p[1], p[2], "direction"],
+                json!(self.scanner_direction[i]),
+            );
             Self::path_set(
                 &mut self.settings.raw,
                 &[p[0], p[1], p[2], "controller"],
@@ -807,12 +859,14 @@ impl App {
                 .set_plan(&plan)
                 .map_err(|error| format!("{} profile: {error}", workflow.name()))?;
         }
+        self.sync_inventory()?;
         self.settings.hardware().map(|_| ())
     }
     fn config(&mut self) -> Result<engine::HardwareConfig, String> {
         self.sync();
         let p = self.plan().clone();
         self.settings.set_plan(&p)?;
+        self.sync_inventory()?;
         self.settings.hardware()
     }
     fn source(&self) -> Source {
@@ -1082,6 +1136,9 @@ impl App {
                 remote.observe(&event);
             }
             match event {
+                Event::DirectionChanged { kind, id, config } => {
+                    self.apply_direction(kind, &id, *config)
+                }
                 Event::Sample(s) => {
                     self.snapshot.signal = Some(s.signal);
                     self.snapshot.position = s.position.clone();
@@ -1374,7 +1431,7 @@ impl App {
     }
     fn device_height(&self, index: usize) -> f32 {
         if self.device_expanded[index] {
-            [348., 336., 368., 368.][index]
+            [348., 400., 400., 400.][index]
         } else if index == 0 {
             234.
         } else {
@@ -1584,6 +1641,7 @@ impl App {
                 },
             );
             if self.device_expanded[0] {
+                form.enabled = !self.demo_viewer && !self.snapshot.devices[0];
                 let models = Model::ALL.map(|model| (model, model.name()));
                 form.label(
                     "lockin_model_label",
@@ -1608,6 +1666,7 @@ impl App {
                     &mut self.lockin_resource,
                     resources,
                 );
+                form.enabled = !self.demo_viewer;
                 read_settings = form.button(
                     "lockin_refresh_button",
                     precision::rect(w - 101., 98., 81., 26.),
@@ -1789,15 +1848,35 @@ impl App {
         let mut move_to = None;
         let mut move_corrected = false;
         let mut refresh = false;
+        let mut reverse_direction = false;
+        let previous_controller = if i == 0 {
+            self.stage_model.clone()
+        } else {
+            self.scanner_model[i - 1].clone()
+        };
+        let previous_actuator = if i == 0 {
+            self.stage_preset.clone()
+        } else {
+            self.scanner_actuator[i - 1].clone()
+        };
         {
             let mut form = precision::Form::new(ui, &mut self.geometry, rect.min);
             form.enabled = !self.demo_viewer;
             let w = rect.width();
-            form.group(
-                &format!("motion_{axis}_group"),
-                precision::rect(0., 0., w, rect.height()),
-                title,
-            );
+            if i == 0 {
+                form.group(
+                    &format!("motion_{axis}_group"),
+                    precision::rect(0., 0., w, rect.height()),
+                    title,
+                );
+            } else {
+                precision::record(form.geometry, &format!("motion_{axis}_group"), rect);
+                form.label(
+                    &format!("motion_{axis}_title"),
+                    precision::rect(11., 0., w - 22., 24.),
+                    title,
+                );
+            }
             form.toggle(
                 &format!("{axis}_device"),
                 precision::rect(11., 27., 71., 24.),
@@ -1835,52 +1914,73 @@ impl App {
                 },
             );
             if self.device_expanded[i + 1] {
+                // Configuration is fixed for a live connection. Direction has
+                // its own worker-confirmed coordinate-preserving update path.
+                let editable = !self.demo_viewer && !self.snapshot.devices[i + 1];
+                form.enabled = editable;
                 if i == 0 {
                     let controllers =
                         ["SHOT302GS", "GSC01", "GSC01A"].map(|name| (name.to_owned(), name));
-                    let stages = ["SGSP46-500", "OSMS20-35", "OSMS26-300", "OSMS33-600"]
-                        .map(|name| (name.to_owned(), name));
-                    let mut direction = self.stage_direction as f64;
+                    let mut direction = self.stage_direction;
                     form.label(
                         "t_controller_label",
-                        precision::rect(20., 66., 52., 26.),
+                        precision::rect(20., 66., 88., 26.),
                         "Controller",
                     );
                     form.combo(
                         "t_controller_combo",
-                        precision::rect(78., 66., w - 98., 26.),
+                        precision::rect(114., 66., w - 134., 26.),
                         &mut self.stage_model,
                         &controllers,
                     );
+                    let presets: Vec<_> = trkr_motion::catalog::delay_stages()
+                        .into_iter()
+                        .filter(|stage| stage.supports_controller(&self.stage_model))
+                        .collect();
+                    let stages: Vec<_> = presets
+                        .iter()
+                        .map(|stage| (stage.name.clone(), stage.name.as_str()))
+                        .collect();
+                    if editable
+                        && (previous_controller != self.stage_model || self.stage_preset.is_empty())
+                        && !stages.iter().any(|stage| stage.0 == self.stage_preset)
+                        && let Some(stage) = presets.first()
+                    {
+                        self.stage_preset = stage.name.clone();
+                    }
                     form.label(
                         "t_stage_label",
-                        precision::rect(20., 98., 52., 26.),
+                        precision::rect(20., 98., 88., 26.),
                         "Stage",
                     );
                     form.combo(
                         "t_stage_combo",
-                        precision::rect(78., 98., w - 98., 26.),
+                        precision::rect(114., 98., w - 134., 26.),
                         &mut self.stage_preset,
                         &stages,
                     );
                     form.label(
                         "t_direction_label",
-                        precision::rect(20., 130., 52., 26.),
+                        precision::rect(20., 130., 88., 26.),
                         "Direction",
                     );
-                    form.number(
+                    form.enabled = !self.demo_viewer;
+                    form.segments(
                         "t_direction_spin",
-                        precision::rect(78., 130., w - 98., 26.),
+                        precision::rect(114., 130., w - 134., 26.),
                         &mut direction,
-                        1.,
-                        0,
-                        true,
+                        &[(0, "Normal"), (1, "Reverse")],
                     );
-                    self.stage_direction = direction.round().clamp(0., 1.) as i32;
-                    form.label("t_port_label", precision::rect(20., 162., 52., 26.), "Port");
+                    reverse_direction =
+                        direction != self.stage_direction && self.snapshot.devices[1];
+                    if !self.snapshot.devices[1] {
+                        self.stage_direction = direction;
+                    }
+                    form.enabled = editable;
+                    form.label("t_port_label", precision::rect(20., 162., 88., 26.), "Port");
                     form.editable_combo(
                         "t_port_combo",
-                        precision::rect(78., 162., w - 185., 26.),
+                        precision::rect(114., 162., w - 221., 26.),
                         &mut self.stage_port,
                         &self.available_ports,
                     );
@@ -1890,22 +1990,53 @@ impl App {
                         "Refresh",
                         !self.snapshot.running,
                     );
-                    let width = (w - 110.) / 3.;
+                    form.label("t_axis_label", precision::rect(20., 194., 88., 26.), "Axis");
+                    let axes: Vec<_> = if self.stage_model == "SHOT302GS" {
+                        vec![(1, "1"), (2, "2")]
+                    } else {
+                        vec![(1, "1")]
+                    };
+                    if self.stage_model != "SHOT302GS" {
+                        self.stage_axis = 1;
+                    }
+                    form.segments(
+                        "t_axis_selector",
+                        precision::rect(114., 194., w - 134., 26.),
+                        &mut self.stage_axis,
+                        &axes,
+                    );
+                    form.label(
+                        "t_round_trips_label",
+                        precision::rect(20., 226., 88., 26.),
+                        "Round trips",
+                    );
+                    let mut trips = self.stage_round_trips as f64;
+                    form.number(
+                        "t_round_trips",
+                        precision::rect(114., 226., w - 134., 26.),
+                        &mut trips,
+                        1.,
+                        0,
+                        !self.snapshot.devices[1],
+                    );
+                    self.stage_round_trips = trips.round().clamp(1., u32::MAX as f64) as u32;
+                    form.enabled = !self.demo_viewer;
+                    let width = (w - 34.) / 3.;
                     connect = form.button(
                         "t_connect_button",
-                        precision::rect(78., 194., width, 26.),
+                        precision::rect(11., 258., width, 26.),
                         "Connect",
                         !self.snapshot.devices[i + 1],
                     );
                     disconnect = form.button(
                         "t_disconnect_button",
-                        precision::rect(84. + width, 194., width, 26.),
+                        precision::rect(17. + width, 258., width, 26.),
                         "Disconnect",
                         self.snapshot.devices[i + 1],
                     );
                     initialize = form.button(
                         "t_initialize_button",
-                        precision::rect(90. + width * 2., 194., width, 26.),
+                        precision::rect(23. + width * 2., 258., width, 26.),
                         "Initialize",
                         !self.source_demo && !self.snapshot.running,
                     );
@@ -1928,35 +2059,47 @@ impl App {
                         precision::rect(20., 98., 88., 26.),
                         "Actuator",
                     );
-                    form.text(
+                    let presets =
+                        trkr_motion::catalog::scanner_actuators_for(&self.scanner_model[scanner]);
+                    let choices: Vec<_> = presets
+                        .iter()
+                        .map(|p| (p.name.clone(), p.name.as_str()))
+                        .collect();
+                    if editable
+                        && (previous_controller != self.scanner_model[scanner]
+                            || self.scanner_actuator[scanner].is_empty())
+                        && !choices
+                            .iter()
+                            .any(|p| p.0 == self.scanner_actuator[scanner])
+                        && let Some(preset) = presets.first()
+                    {
+                        self.scanner_actuator[scanner] = preset.name.clone();
+                    }
+                    form.segments(
                         &format!("{axis}_actuator_combo"),
                         precision::rect(114., 98., w - 134., 26.),
                         &mut self.scanner_actuator[scanner],
+                        &choices,
                     );
                     form.label(
                         &format!("{axis}_axis_label"),
                         precision::rect(20., 130., 88., 26.),
                         "Axis",
                     );
-                    if self.scanner_model[scanner] == "CONEXCC" {
-                        let mut controller_axis =
-                            self.scanner_axis[scanner].parse::<f64>().unwrap_or(1.);
-                        form.number(
-                            &format!("{axis}_axis_spin"),
-                            precision::rect(114., 130., w - 134., 26.),
-                            &mut controller_axis,
-                            1.,
-                            0,
-                            true,
-                        );
-                        self.scanner_axis[scanner] = controller_axis.round().max(1.).to_string();
+                    let axes: Vec<(String, &str)> = if self.scanner_model[scanner] == "CONEXCC" {
+                        vec![("1".into(), "1")]
                     } else {
-                        form.text(
-                            &format!("{axis}_axis_spin"),
-                            precision::rect(114., 130., w - 134., 26.),
-                            &mut self.scanner_axis[scanner],
-                        );
+                        vec![("U".into(), "U"), ("V".into(), "V")]
+                    };
+                    if !axes.iter().any(|p| p.0 == self.scanner_axis[scanner]) {
+                        self.scanner_axis[scanner] = axes[0].0.clone();
                     }
+                    form.segments(
+                        &format!("{axis}_axis_spin"),
+                        precision::rect(114., 130., w - 134., 26.),
+                        &mut self.scanner_axis[scanner],
+                        &axes,
+                    );
                     form.label(
                         &format!("{axis}_scale_label"),
                         precision::rect(20., 162., 88., 26.),
@@ -1971,45 +2114,66 @@ impl App {
                         !self.snapshot.running,
                     );
                     form.label(
-                        &format!("{axis}_port_label"),
+                        &format!("{axis}_direction_label"),
                         precision::rect(20., 194., 88., 26.),
+                        "Direction",
+                    );
+                    let mut direction = self.scanner_direction[scanner];
+                    form.enabled = !self.demo_viewer;
+                    form.segments(
+                        &format!("{axis}_direction"),
+                        precision::rect(114., 194., w - 134., 26.),
+                        &mut direction,
+                        &[(0, "Normal"), (1, "Reverse")],
+                    );
+                    reverse_direction = direction != self.scanner_direction[scanner]
+                        && self.snapshot.devices[i + 1];
+                    if !self.snapshot.devices[i + 1] {
+                        self.scanner_direction[scanner] = direction;
+                    }
+                    form.enabled = editable;
+                    form.label(
+                        &format!("{axis}_port_label"),
+                        precision::rect(20., 226., 88., 26.),
                         "Port",
                     );
                     form.editable_combo(
                         &format!("{axis}_port_combo"),
-                        precision::rect(114., 194., w - 221., 26.),
+                        precision::rect(114., 226., w - 221., 26.),
                         &mut self.scanner_port[scanner],
                         &self.available_ports,
                     );
                     refresh = form.button(
                         &format!("{axis}_port_refresh_button"),
-                        precision::rect(w - 101., 194., 81., 26.),
+                        precision::rect(w - 101., 226., 81., 26.),
                         "Refresh",
                         !self.snapshot.running,
                     );
-                    let width = (w - 146.) / 3.;
+                    form.enabled = !self.demo_viewer;
+                    let width = (w - 34.) / 3.;
                     connect = form.button(
                         &format!("{axis}_connect_button"),
-                        precision::rect(114., 226., width, 26.),
+                        precision::rect(11., 258., width, 26.),
                         "Connect",
                         !self.snapshot.devices[i + 1],
                     );
                     disconnect = form.button(
                         &format!("{axis}_disconnect_button"),
-                        precision::rect(120. + width, 226., width, 26.),
+                        precision::rect(17. + width, 258., width, 26.),
                         "Disconnect",
                         self.snapshot.devices[i + 1],
                     );
                     initialize = form.button(
                         &format!("{axis}_initialize_button"),
-                        precision::rect(126. + width * 2., 226., width, 26.),
+                        precision::rect(23. + width * 2., 258., width, 26.),
                         "Initialize",
                         !self.source_demo && !self.snapshot.running,
                     );
                 }
             }
+            form.enabled = !self.demo_viewer;
             let rows_y = if self.device_expanded[i + 1] {
-                if i == 0 { 235. } else { 267. }
+                299.
             } else {
                 57.
             };
@@ -2098,6 +2262,66 @@ impl App {
                 if row == 2 && clicked {
                     move_corrected = true;
                 }
+            }
+        }
+        if i == 0
+            && previous_actuator != self.stage_preset
+            && let Some(object) = self
+                .settings
+                .raw
+                .pointer_mut("/instruments/delay_stage/t")
+                .and_then(Value::as_object_mut)
+        {
+            // A different stage must use its own travel and pulse calibration.
+            // Preserve experiment offsets and connection settings separately.
+            for key in [
+                "min_pulse",
+                "max_pulse",
+                "travel_mm",
+                "pos_um_per_pulse",
+                "screw_lead_mm_per_rev",
+                "step_angle_deg",
+                "zero_pos_mm",
+            ] {
+                object.remove(key);
+            }
+        }
+        if i > 0
+            && (previous_controller != self.scanner_model[i - 1]
+                || previous_actuator != self.scanner_actuator[i - 1])
+            && let Some(object) = self
+                .settings
+                .raw
+                .pointer_mut(&format!("/instruments/scanner/{axis}"))
+                .and_then(Value::as_object_mut)
+        {
+            for key in [
+                "pos_unit",
+                "min_pos",
+                "max_pos",
+                "origin_pos",
+                "resolution",
+                "min_step",
+                "position_tolerance",
+                "pos_digits",
+            ] {
+                object.remove(key);
+            }
+        }
+        if reverse_direction {
+            let (kind, id) = if i == 0 {
+                (
+                    engine::MotionKind::Delay,
+                    self.inventory.selected.delay.clone(),
+                )
+            } else {
+                (
+                    engine::MotionKind::Scanner,
+                    self.inventory.selected.scanner.clone(),
+                )
+            };
+            if let Err(error) = self.reverse_device_direction(kind, &id, i) {
+                self.note(error);
             }
         }
         if refresh {
@@ -2333,7 +2557,7 @@ impl App {
                     ui.put(
                         r,
                         egui::Button::new(workflow.name())
-                            .selected(workflow == selected)
+                            .selected(!self.alignment_tab && workflow == selected)
                             .min_size(r.size())
                             .corner_radius(6),
                     )
@@ -2342,8 +2566,23 @@ impl App {
                 .inner
             {
                 selected = workflow;
+                self.alignment_tab = false;
+                self.alignment_cancel_hold();
             }
             x += tab_widths[i];
+        }
+        let alignment_rect = rect(x + 3., area.min.y, 82., 24.);
+        if ui
+            .put(
+                alignment_rect,
+                egui::Button::new("Alignment").selected(self.alignment_tab),
+            )
+            .clicked()
+        {
+            self.alignment_tab = true;
+        }
+        if self.alignment_tab {
+            return;
         }
         self.switch_workflow(selected);
         if selected != plan.workflow {
@@ -2954,9 +3193,10 @@ impl App {
     fn session(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
         use precision::{Form, rect};
         let (browse, load, save, connect, disconnect);
+        let connected_hardware = self.any_hardware_connected();
         {
             let mut f = Form::new(ui, &mut self.geometry, area.min);
-            f.enabled = !self.snapshot.running;
+            f.enabled = !self.snapshot.running && !self.controller.has_pending();
             let inner = area.width() - 22.;
             let half = ((inner - 8.) / 2.).round();
             let browse_width = 70.;
@@ -2972,7 +3212,12 @@ impl App {
                 "Browse",
                 self.dialog.is_none() && self.snapshot_copy.is_none(),
             );
-            load = f.button("load_button", rect(11., 59., half, 26.), "Load", true);
+            load = f.button(
+                "load_button",
+                rect(11., 59., half, 26.),
+                "Load",
+                !connected_hardware,
+            );
             save = f.button(
                 "save_button",
                 rect(19. + half, 59., inner - 8. - half, 26.),
@@ -2998,7 +3243,14 @@ impl App {
             egui::Sense::hover(),
         )
         .context_menu(|ui| {
-            if !self.demo_viewer && ui.checkbox(&mut self.source_demo, "Demo mode").changed() {
+            if !self.demo_viewer
+                && ui
+                    .add_enabled(
+                        !self.any_hardware_connected(),
+                        egui::Checkbox::new(&mut self.source_demo, "Demo mode"),
+                    )
+                    .changed()
+            {
                 self.live.clear();
             }
             ui.label("GPIB hardware is selected when Connect is pressed.");
@@ -3030,10 +3282,26 @@ impl App {
         }
         if connect {
             self.source_demo = false;
-            self.connect(self.configured_devices());
+            if self.demo_viewer {
+                self.connect(self.configured_devices());
+            } else {
+                self.sync();
+                let result = self.sync_inventory().and_then(|_| {
+                    self.controller.send(Command::ConnectInventory {
+                        inventory: self.inventory.clone(),
+                    })
+                });
+                if let Err(error) = result {
+                    self.note(error);
+                }
+            }
         }
         if disconnect {
-            self.disconnect(vec![Device::Lockin, Device::T, Device::X, Device::Y]);
+            if self.demo_viewer {
+                self.disconnect(vec![Device::Lockin, Device::T, Device::X, Device::Y]);
+            } else if let Err(error) = self.controller.send(Command::DisconnectAll) {
+                self.note(error);
+            }
         }
     }
     fn toggle_right_panel(&mut self, ctx: &egui::Context, viewport: egui::Rect) {
@@ -3324,6 +3592,12 @@ impl eframe::App for App {
         self.poll_remote();
         self.poll_dialog();
         self.poll_snapshot_copy();
+        if !self.alignment_tab
+            || self.python_locked()
+            || ctx.input(|i| !i.focused || i.viewport().close_requested())
+        {
+            self.alignment_cancel_hold();
+        }
         if self.snapshot_copy.is_some() && ctx.input(|input| input.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.note("Wait for the snapshot copy to finish before closing.");
@@ -3410,12 +3684,20 @@ impl eframe::App for App {
                                     scroll = scroll.vertical_scroll_offset(200.);
                                 }
                                 scroll.show(ui, |ui| {
-                                    if self.snapshot.running && !self.demo_viewer {
+                                    if (self.snapshot.running || self.controller.has_pending())
+                                        && !self.demo_viewer
+                                    {
                                         ui.disable();
                                     }
                                     let available = ui.max_rect();
                                     let origin = available.min + Vec2::new(9., 0.);
                                     let mut y = origin.y;
+                                    self.device_selector(
+                                        ui,
+                                        devices::DeviceClass::Lockin,
+                                        precision::rect(origin.x, y, card_width, 26.),
+                                    );
+                                    y += 30.;
                                     self.lockin(
                                         ui,
                                         precision::rect(
@@ -3426,21 +3708,83 @@ impl eframe::App for App {
                                         ),
                                     );
                                     y += self.device_height(0) + 8.;
-                                    for (i, title, d) in [
-                                        (0, "Delay Stage", Device::T),
-                                        (1, "Scanner X", Device::X),
-                                        (2, "Scanner Y", Device::Y),
-                                    ] {
-                                        let height = self.device_height(i + 1);
-                                        self.motion(
-                                            ui,
-                                            i,
-                                            title,
-                                            d,
-                                            precision::rect(origin.x, y, card_width, height),
-                                        );
-                                        y += height + 8.;
-                                    }
+                                    self.device_selector(
+                                        ui,
+                                        devices::DeviceClass::Delay,
+                                        precision::rect(origin.x, y, card_width, 26.),
+                                    );
+                                    y += 30.;
+                                    self.motion(
+                                        ui,
+                                        0,
+                                        "Delay Stage",
+                                        Device::T,
+                                        precision::rect(
+                                            origin.x,
+                                            y,
+                                            card_width,
+                                            self.device_height(1),
+                                        ),
+                                    );
+                                    y += self.device_height(1) + 8.;
+                                    self.device_selector(
+                                        ui,
+                                        devices::DeviceClass::Scanner,
+                                        precision::rect(origin.x, y, card_width, 26.),
+                                    );
+                                    y += 30.;
+                                    let scanner_area = precision::rect(
+                                        origin.x,
+                                        y,
+                                        card_width,
+                                        self.device_height(2) + self.device_height(3) + 8.,
+                                    );
+                                    precision::record(
+                                        &mut self.geometry,
+                                        "scanner_group",
+                                        scanner_area,
+                                    );
+                                    ui.painter().rect(
+                                        scanner_area,
+                                        10.,
+                                        PANEL,
+                                        Stroke::new(1_f32, BORDER),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    self.motion(
+                                        ui,
+                                        1,
+                                        "X",
+                                        Device::X,
+                                        precision::rect(
+                                            origin.x,
+                                            y,
+                                            card_width,
+                                            self.device_height(2),
+                                        ),
+                                    );
+                                    y += self.device_height(2) + 4.;
+                                    ui.painter().line_segment(
+                                        [
+                                            egui::pos2(origin.x + 10., y),
+                                            egui::pos2(origin.x + card_width - 10., y),
+                                        ],
+                                        Stroke::new(1_f32, BORDER),
+                                    );
+                                    y += 4.;
+                                    self.motion(
+                                        ui,
+                                        2,
+                                        "Y",
+                                        Device::Y,
+                                        precision::rect(
+                                            origin.x,
+                                            y,
+                                            card_width,
+                                            self.device_height(3),
+                                        ),
+                                    );
+                                    y += self.device_height(3) + 8.;
                                     ui.set_min_size(Vec2::new(available.width(), y - origin.y));
                                 });
                             },
@@ -3513,6 +3857,16 @@ impl eframe::App for App {
                     );
                 }
                 self.measure(ui, columns.measurement);
+                if self.alignment_tab {
+                    self.alignment_view(
+                        ui,
+                        egui::Rect::from_min_max(
+                            columns.measurement.min + Vec2::new(0., 30.),
+                            columns.plots.max,
+                        ),
+                    );
+                    return;
+                }
                 self.plot_toolbar(ui, columns.toolbar);
                 precision::record(
                     &mut self.geometry,

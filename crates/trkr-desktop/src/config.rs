@@ -199,6 +199,10 @@ impl Settings {
         validate_application(&raw)?;
         normalize_measurement_alias(&mut raw);
         validate_profile_shape(&raw)?;
+        if raw.get("device_inventory").is_some() {
+            crate::inventory::Inventory::from_profile(&raw)?.project_selected(&mut raw)?;
+        }
+
         normalize_profile_aliases(&mut raw);
         let settings = Self { raw };
         settings.hardware()?;
@@ -283,6 +287,15 @@ impl Settings {
         let motion = MotionConfig { delay, x, y };
         motion.validate()?;
         Ok(HardwareConfig {
+            device_ids: self
+                .raw
+                .get("device_inventory")
+                .and_then(|v| v.get("selected"))
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|e| format!("Device selection: {e}"))?
+                .unwrap_or_default(),
             model,
             address,
             motion,

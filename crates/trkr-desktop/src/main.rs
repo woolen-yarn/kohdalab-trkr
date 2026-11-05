@@ -6,6 +6,7 @@ mod compatibility;
 mod config;
 mod engine;
 mod file_dialog;
+mod inventory;
 mod live;
 mod live_view;
 mod lockin;
@@ -106,6 +107,8 @@ fn layout_capture(
         "devices-scrolled",
         "rotated",
         "rotated-reverse",
+        "alignment-delay",
+        "alignment-scanner",
     ]
     .contains(&state)
     {
@@ -321,7 +324,7 @@ fn profile_json(path: &std::path::Path) -> Result<(), String> {
 fn cli(args: &[String]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
+            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated|alignment-delay|alignment-scanner]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
         );
         return Ok(());
     }

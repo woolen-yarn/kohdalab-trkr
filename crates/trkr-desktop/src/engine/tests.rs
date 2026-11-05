@@ -1,6 +1,7 @@
 use super::*;
 fn config() -> HardwareConfig {
     HardwareConfig {
+        device_ids: Default::default(),
         model: Model::Sr830,
         address: 12,
         motion: MotionConfig::default(),

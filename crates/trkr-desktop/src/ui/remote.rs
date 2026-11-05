@@ -228,9 +228,9 @@ impl Bridge {
                 return Ok(json!({
                     "protocol":"kohdalab-control","control_protocol":1,
                     "application":"kohdalab-trkr","application_version":env!("CARGO_PKG_VERSION"),
-                    "api_version":1,"methods":["control.describe","control.status","control.plan","control.config","control.output","control.acquire","control.heartbeat","control.release","control.result","control.configure","control.set_plan","control.set_output","control.connect","control.disconnect","control.start","control.stop","control.move","control.initialize","control.read","control.lockin_settings","control.set_lockin","control.auto_lockin"],
+                    "api_version":1,"methods":["control.describe","control.status","control.plan","control.config","control.output","control.acquire","control.heartbeat","control.release","control.result","control.configure","control.set_plan","control.set_output","control.connect","control.select_devices","control.disconnect","control.start","control.stop","control.move","control.initialize","control.read","control.lockin_settings","control.set_lockin","control.auto_lockin"],
                     "safety":{"lease_timeout_seconds":6,"heartbeat_seconds":2,"on_disconnect":"continue","on_release":"continue","stop_requires_lease":true,"stop_policy_defaults":{"stop_on_disconnect":false,"stop_on_error":false,"stop_on_timeout":false}},
-                    "native":{"actions":["status","plan","config","output","result","acquire","heartbeat","release","start","stop","connect","disconnect","move","initialize","read","lockin_settings","set_lockin","auto_lockin"]}
+                    "native":{"actions":["status","plan","config","output","result","acquire","heartbeat","release","start","stop","connect","select_devices","disconnect","move","initialize","read","lockin_settings","set_lockin","auto_lockin"]}
                 }));
             }
             "control_status" => {
@@ -394,6 +394,7 @@ impl Bridge {
                 | "move"
                 | "initialize"
                 | "connect"
+                | "select_devices"
                 | "disconnect"
                 | "read"
                 | "lockin_settings"
@@ -431,7 +432,7 @@ impl Bridge {
                     Some(Value::String(s)) if s == "hardware" => false,
                     _ => return Err("source must be demo or hardware".into()),
                 };
-                if source != app.source_demo && app.snapshot.devices.iter().any(|d| *d) {
+                if source != app.source_demo && app.any_hardware_connected() {
                     return Err("Disconnect devices before changing Demo/hardware source".into());
                 }
                 let loaded = if action == "load_config" {
@@ -446,7 +447,7 @@ impl Bridge {
                     None
                 };
                 if let Some((settings, path)) = loaded {
-                    if app.snapshot.devices.iter().any(|d| *d) {
+                    if app.any_hardware_connected() {
                         return Err(
                             "Disconnect devices before replacing the hardware profile".into()
                         );
@@ -462,7 +463,7 @@ impl Bridge {
                         "Python configuration applied".into()
                     });
                 }
-                if source && app.snapshot.devices.iter().any(|d| *d) {
+                if source && app.any_hardware_connected() {
                     return Err("Disconnect hardware before selecting Demo".into());
                 }
                 app.source_demo = source;
@@ -556,11 +557,49 @@ impl Bridge {
             if action == "connect" && app.source_demo {
                 return Err("Select hardware source before connecting devices".into());
             }
+            let selection_rollback = (action == "select_devices").then(|| app.settings.clone());
             let command = match action {
+                "select_devices" => {
+                    app.sync();
+                    app.sync_inventory()?;
+                    let mut inventory = app.inventory.clone();
+                    for (field, target) in [
+                        ("lockin", &mut inventory.selected.lockin),
+                        ("delay", &mut inventory.selected.delay),
+                        ("scanner", &mut inventory.selected.scanner),
+                    ] {
+                        if let Some(value) = body.get(field).filter(|v| !v.is_null()) {
+                            *target = value
+                                .as_str()
+                                .filter(|s| !s.trim().is_empty())
+                                .ok_or("Device IDs must be nonempty strings")?
+                                .to_owned();
+                        }
+                    }
+                    inventory.validate()?;
+                    let mut profile = app.settings.raw.clone();
+                    inventory.project_selected(&mut profile)?;
+                    let settings = Settings::from_value(profile)?;
+                    let config = settings.hardware()?;
+                    app.settings = settings;
+                    app.hydrate();
+                    app.live.clear();
+                    Command::Select { config }
+                }
+                "connect" if body.get("devices").is_none_or(Value::is_null) => {
+                    app.sync();
+                    app.sync_inventory()?;
+                    Command::ConnectInventory {
+                        inventory: app.inventory.clone(),
+                    }
+                }
                 "connect" => Command::Connect {
                     config: app.config()?,
                     devices: devices(body, app.configured_devices())?,
                 },
+                "disconnect" if body.get("devices").is_none_or(Value::is_null) => {
+                    Command::DisconnectAll
+                }
                 "disconnect" => Command::Disconnect {
                     devices: devices(body, vec![Device::Lockin, Device::T, Device::X, Device::Y])?,
                 },
@@ -617,7 +656,13 @@ impl Bridge {
                 _ => return Err("Unknown GUI API action".into()),
             };
             let motion = matches!(command, Command::Move { .. } | Command::Initialize { .. });
-            app.controller.send_remote(id.clone(), command)?;
+            if let Err(error) = app.controller.send_remote(id.clone(), command) {
+                if let Some(settings) = selection_rollback {
+                    app.settings = settings;
+                    app.hydrate();
+                }
+                return Err(error.into());
+            }
             if motion {
                 app.snapshot.running = true;
             }
@@ -1006,6 +1051,46 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn selecting_inventory_devices_is_correlated_and_never_opens_hardware() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let original = app.inventory.selected.clone();
+        let mut scanner = app.inventory.scanners[0].clone();
+        scanner.id = "scanner-2".into();
+        scanner.name = "Second scanner".into();
+        scanner.zero_um = [21., -3.];
+        for axis in [&mut scanner.x, &mut scanner.y].into_iter().flatten() {
+            axis.port = "NOT_A_REAL_SERIAL_PORT".into();
+        }
+        app.inventory.scanners.push(scanner);
+        app.inventory
+            .project_selected(&mut app.settings.raw)
+            .unwrap();
+        let request = json!({"action":"select_devices", "scanner":"scanner-2",
+            "request_id":uuid::Uuid::new_v4().to_string()});
+        let receipt = call(&mut bridge, &mut app, &request).unwrap();
+        finish(&mut app, &mut bridge);
+        let result = bridge.run(receipt["id"].as_str().unwrap()).unwrap();
+        assert_eq!(result["status"], "completed");
+        assert_eq!(app.inventory.selected.scanner, "scanner-2");
+        assert_eq!(app.inventory.selected.delay, original.delay);
+        assert_eq!(app.inventory.selected.lockin, original.lockin);
+        assert_eq!(app.plan().zero[1..], [21., -3.]);
+        assert!(!app.any_hardware_connected());
+        assert_eq!(call(&mut bridge, &mut app, &request).unwrap(), result);
+        assert!(
+            call(
+                &mut bridge,
+                &mut app,
+                &json!({"action":"select_devices", "scanner":"missing",
+            "request_id":uuid::Uuid::new_v4().to_string()})
+            )
+            .is_err()
+        );
+        assert_eq!(app.inventory.selected.scanner, "scanner-2");
+    }
+
     #[test]
     fn startup_profile_reports_the_explicit_file_instead_of_the_default() {
         let mut app = demo_app();

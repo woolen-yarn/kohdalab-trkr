@@ -1,5 +1,8 @@
 //! Portable motion configuration and protocol exports.
+mod pool;
 pub mod protocol;
+pub use pool::MotionPortPool;
+pub mod catalog;
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
@@ -49,6 +52,11 @@ pub struct DelayConfig {
     pub zero_pos_mm: Option<f64>,
     #[serde(default)]
     pub direction: i32,
+    /// Number of optical round trips produced by one physical stage travel.
+    /// Older configurations omitted this field and therefore retain one round
+    /// trip (the historical factor of two in the delay conversion).
+    #[serde(default = "one_round_trip")]
+    pub round_trips: u32,
 }
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct ScannerConfig {
@@ -80,6 +88,10 @@ pub struct ScannerConfig {
         alias = "sample_um_per_actuator_deg"
     )]
     pub sample_um_per_unit: f64,
+    /// Coordinate direction.  A negative legacy scale is intentionally still
+    /// accepted; the effective sign is the product of both settings.
+    #[serde(default)]
+    pub direction: i32,
     #[serde(default)]
     pub pos_digits: Option<u8>,
     #[serde(default)]
@@ -156,6 +168,9 @@ fn sbaud() -> u32 {
 fn one() -> f64 {
     1.0
 }
+fn one_round_trip() -> u32 {
+    1
+}
 fn axis() -> u8 {
     1
 }
@@ -190,6 +205,7 @@ impl Default for DelayConfig {
             read_termination: crlf(),
             zero_pos_mm: None,
             direction: 0,
+            round_trips: 1,
         }
     }
 }
@@ -208,6 +224,7 @@ impl Default for ScannerConfig {
             max_pos: None,
             origin_pos: None,
             sample_um_per_unit: 1.0,
+            direction: 0,
             pos_digits: None,
             resolution: None,
             min_step: None,
@@ -268,21 +285,17 @@ impl DelayConfig {
     pub fn normalized(&self) -> Result<Self, String> {
         let mut c = self.clone();
         c.controller = canonical(&c.controller);
-        let model = c.model()?;
+        c.model()?;
         if let Some(stage) = &c.stage {
-            let (travel, lead, shot_only) = match canonical(stage).as_str() {
-                "SGSP46500" => (500., 10., true),
-                "OSMS2035" => (35., 1., false),
-                "OSMS26300" => (300., 2., false),
-                "OSMS33600" => (600., 10., true),
-                _ => return Err(format!("Unknown delay stage {stage}")),
-            };
-            if shot_only && model != DelayModel::Shot302Gs {
-                return Err(format!("{stage} requires SHOT302GS"));
+            let preset = catalog::delay_stage(stage)
+                .ok_or_else(|| format!("Unknown delay stage {stage}"))?;
+            if !preset.supports_controller(&c.controller) {
+                return Err(format!("{stage} is incompatible with {}", c.controller));
             }
-            c.travel_mm.get_or_insert(travel);
-            c.screw_lead_mm_per_rev.get_or_insert(lead);
-            c.step_angle_deg.get_or_insert(0.72);
+            c.travel_mm.get_or_insert(preset.travel_mm);
+            c.screw_lead_mm_per_rev
+                .get_or_insert(preset.screw_lead_mm_per_rev);
+            c.step_angle_deg.get_or_insert(preset.step_angle_deg);
         }
         if c.port.trim().is_empty() {
             return Err("Delay stage serial port is required".into());
@@ -293,6 +306,17 @@ impl DelayConfig {
         }
         if ![0, 1].contains(&c.direction) {
             return Err("Delay direction must be 0 or 1".into());
+        }
+        if c.round_trips == 0 {
+            return Err("Delay round_trips must be at least one".into());
+        }
+        let supported_axes = if c.model()? == DelayModel::Shot302Gs {
+            2
+        } else {
+            1
+        };
+        if c.controller_axis > supported_axes || c.axis_count > supported_axes {
+            return Err("Axis is not supported by the delay controller".into());
         }
         if c.baudrate == 0
             || c.axis_count == 0
@@ -327,6 +351,10 @@ impl DelayConfig {
         if let Some(t) = c.travel_mm {
             positive(t, "Stage travel")?;
         }
+        // A direction reversal may preserve the displayed coordinate by
+        // moving the coordinate origin outside the physical travel.  Targets
+        // remain bounded in `pulse`, so the origin itself is not a motion
+        // request and must not be rejected here.
         if let Some(z) = c.zero_pos_mm {
             finite(z, "Delay origin")?;
         }
@@ -351,7 +379,7 @@ impl DelayConfig {
         positive(v, "Delay pulse calibration")?;
         Ok(v)
     }
-    fn limits(&self, micro: u32) -> Result<(f64, f64), String> {
+    pub fn native_limits_mm(&self, micro: u32) -> Result<(f64, f64), String> {
         let unit = self.um_per_pulse(micro)? / 1000.;
         let min = self.min_pulse.unwrap_or(0) as f64 * unit;
         let max = self
@@ -365,27 +393,33 @@ impl DelayConfig {
         Ok((min, max))
     }
     fn origin(&self, micro: u32) -> Result<f64, String> {
-        let (min, max) = self.limits(micro)?;
+        let (min, max) = self.native_limits_mm(micro)?;
         let zero = self.zero_pos_mm.unwrap_or((min + max) / 2.);
-        if !(min..=max).contains(&zero) {
-            return Err("Delay origin outside travel".into());
-        }
         Ok(zero)
     }
     fn sign(&self) -> f64 {
         if self.direction == 0 { 1. } else { -1. }
     }
+    /// Optical path multiplier.  One round trip retains the historical
+    /// factor of two; additional passes scale every delay conversion.
+    pub fn optical_path_multiplier(&self) -> f64 {
+        2. * f64::from(self.round_trips)
+    }
     fn ps_from_mm(&self, mm: f64, micro: u32) -> Result<f64, String> {
         finite(mm, "Stage position")?;
-        Ok(self.sign() * 2. * (mm - self.origin(micro)?) / LIGHT_MM_PER_PS)
+        Ok(
+            self.sign() * self.optical_path_multiplier() * (mm - self.origin(micro)?)
+                / LIGHT_MM_PER_PS,
+        )
     }
     fn to_mm(&self, ps: f64, micro: u32) -> Result<f64, String> {
         finite(ps, "Delay position")?;
-        Ok(self.origin(micro)? + self.sign() * ps * LIGHT_MM_PER_PS / 2.)
+        Ok(self.origin(micro)?
+            + self.sign() * ps * LIGHT_MM_PER_PS / self.optical_path_multiplier())
     }
     fn pulse(&self, ps: f64, micro: u32) -> Result<i64, String> {
         let mm = self.to_mm(ps, micro)?;
-        let (min, max) = self.limits(micro)?;
+        let (min, max) = self.native_limits_mm(micro)?;
         if mm < min - 1e-12 || mm > max + 1e-12 {
             return Err(format!(
                 "Delay target {ps} ps is outside travel {min}..{max} mm"
@@ -400,8 +434,35 @@ impl DelayConfig {
     pub fn measurement_ps_from_mm(&self, mm: f64) -> Result<f64, String> {
         self.normalized()?.ps_from_mm(mm, 1)
     }
+    pub fn measurement_ps_from_mm_with_micro(&self, mm: f64, micro: u32) -> Result<f64, String> {
+        if micro == 0 {
+            return Err("Invalid microstep division".into());
+        }
+        self.normalized()?.ps_from_mm(mm, micro)
+    }
     pub fn mm_from_measurement_ps(&self, ps: f64) -> Result<f64, String> {
         self.normalized()?.to_mm(ps, 1)
+    }
+    /// Return a reversed coordinate configuration that leaves the displayed
+    /// value at `current_mm` unchanged and never sends a motion command.
+    pub fn reversed_preserving_display_at_mm(&self, current_mm: f64) -> Result<Self, String> {
+        self.reversed_preserving_display_at_mm_with_micro(current_mm, 1)
+    }
+    /// As [`Self::reversed_preserving_display_at_mm`], using the controller's
+    /// observed microstep division when pulse limits define the travel.
+    pub fn reversed_preserving_display_at_mm_with_micro(
+        &self,
+        current_mm: f64,
+        microstep_division: u32,
+    ) -> Result<Self, String> {
+        if microstep_division == 0 {
+            return Err("Delay microstep division must be at least one".into());
+        }
+        let mut next = self.normalized()?;
+        finite(current_mm, "Current delay position")?;
+        next.zero_pos_mm = Some(2. * current_mm - next.origin(microstep_division)?);
+        next.direction = 1 - next.direction;
+        Ok(next)
     }
     /// Scale available before a stage is opened. The controller-reported
     /// microstep division is intentionally absent here.
@@ -411,7 +472,9 @@ impl DelayConfig {
             (Some(lead), Some(angle)) => Some(1000. * lead * angle / 360.),
             _ => None,
         };
-        let full_step_ps = full_step_um.map(|um| (2. * um / 1000. / LIGHT_MM_PER_PS).abs());
+        let optical_multiplier = config.optical_path_multiplier();
+        let full_step_ps =
+            full_step_um.map(|um| (optical_multiplier * um / 1000. / LIGHT_MM_PER_PS).abs());
         Ok(DelayCalibration {
             configuration: Some(config.clone()),
             controller: config.controller,
@@ -421,7 +484,7 @@ impl DelayConfig {
             effective_pos_um_per_pulse: config.pos_um_per_pulse,
             effective_ps_per_pulse: config
                 .pos_um_per_pulse
-                .map(|um| (2. * um / 1000. / LIGHT_MM_PER_PS).abs()),
+                .map(|um| (optical_multiplier * um / 1000. / LIGHT_MM_PER_PS).abs()),
             microstep_division: None,
             full_step_ps,
         })
@@ -433,12 +496,12 @@ impl ScannerConfig {
         c.controller = canonical(&c.controller);
         let model = c.model()?;
         if let Some(actuator) = &c.actuator {
-            let descriptor = actuator_descriptor(actuator)
+            let descriptor = catalog::scanner_actuator(actuator)
                 .ok_or_else(|| format!("Unknown scanner actuator {actuator}"))?;
-            if model != descriptor.controller {
+            if !descriptor.supports_controller(&c.controller) {
                 return Err(format!("{actuator} controller mismatch"));
             }
-            c.pos_unit.get_or_insert(descriptor.native_unit.into());
+            c.pos_unit.get_or_insert(descriptor.native_unit.clone());
             c.min_pos.get_or_insert(descriptor.minimum);
             c.max_pos.get_or_insert(descriptor.maximum);
             c.resolution.get_or_insert(descriptor.resolution);
@@ -452,6 +515,9 @@ impl ScannerConfig {
         }
         if c.baudrate == 0 || c.controller_address == 0 {
             return Err("Invalid scanner baud rate or address".into());
+        }
+        if ![0, 1].contains(&c.direction) {
+            return Err("Scanner direction must be 0 or 1".into());
         }
         if model.capabilities().uses_named_axis {
             c.axis = match c.axis.to_ascii_uppercase().as_str() {
@@ -477,9 +543,6 @@ impl ScannerConfig {
         }
         let origin = c.origin_pos.unwrap_or((min + max) / 2.);
         finite(origin, "Scanner origin")?;
-        if !(min..=max).contains(&origin) {
-            return Err("Scanner origin outside travel".into());
-        }
         c.origin_pos = Some(origin);
         finite(c.sample_um_per_unit, "Scanner sample scale")?;
         if c.sample_um_per_unit == 0. {
@@ -540,11 +603,41 @@ impl ScannerConfig {
         self.origin_pos
             .unwrap_or((self.min_pos.unwrap_or(0.) + self.max_pos.unwrap_or(0.)) / 2.)
     }
+    /// Native travel bounds. The coordinate origin can be outside these
+    /// limits after a direction change that preserves the displayed value.
+    pub fn native_limits(&self) -> Result<(f64, f64), String> {
+        Ok((
+            self.min_pos.ok_or("Scanner minimum position is required")?,
+            self.max_pos.ok_or("Scanner maximum position is required")?,
+        ))
+    }
+    fn coordinate_scale(&self) -> f64 {
+        let direction = if self.direction == 0 { 1. } else { -1. };
+        direction * self.sample_um_per_unit
+    }
     pub fn sample_um_from_raw(&self, raw: f64) -> f64 {
-        (raw - self.origin()) * self.sample_um_per_unit
+        (raw - self.origin()) * self.coordinate_scale()
     }
     pub fn raw_from_sample_um(&self, um: f64) -> f64 {
-        self.origin() + um / self.sample_um_per_unit
+        self.origin() + um / self.coordinate_scale()
+    }
+    /// Return a reversed coordinate configuration that leaves the displayed
+    /// value at `current_raw` unchanged and never moves the scanner.
+    pub fn reversed_preserving_display_at_raw(&self, current_raw: f64) -> Result<Self, String> {
+        let mut next = self.normalized()?;
+        finite(current_raw, "Current scanner position")?;
+        next.origin_pos = Some(2. * current_raw - next.origin());
+        next.direction = 1 - next.direction;
+        // Preserve the mechanical approach side when only the coordinate sign changes.
+        next.software_hysteresis.direction = Some(
+            if next.hysteresis_sign()? < 0. {
+                "positive"
+            } else {
+                "negative"
+            }
+            .into(),
+        );
+        Ok(next)
     }
     fn digits(&self) -> usize {
         self.pos_digits.unwrap_or_else(|| {
@@ -604,37 +697,6 @@ impl ScannerConfig {
     }
 }
 
-/// Defaults that belong to a physical actuator rather than a particular
-/// experiment configuration.  New actuators extend this table without
-/// duplicating their limits and native unit through normalization code.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct ActuatorDescriptor {
-    native_unit: &'static str,
-    minimum: f64,
-    maximum: f64,
-    resolution: f64,
-    controller: ScannerModel,
-}
-
-fn actuator_descriptor(actuator: &str) -> Option<ActuatorDescriptor> {
-    match canonical(actuator).as_str() {
-        "TRA12CC" => Some(ActuatorDescriptor {
-            native_unit: "mm",
-            minimum: 0.,
-            maximum: 12.,
-            resolution: 0.0002,
-            controller: ScannerModel::ConexCc,
-        }),
-        "AGM100D" => Some(ActuatorDescriptor {
-            native_unit: "deg",
-            minimum: -0.75,
-            maximum: 0.75,
-            resolution: 0.001,
-            controller: ScannerModel::ConexAgap,
-        }),
-        _ => None,
-    }
-}
 impl MotionConfig {
     pub fn validate(&self) -> Result<(), String> {
         if let Some(c) = &self.delay {
@@ -849,11 +911,13 @@ impl Bus for Port {
         self.frame(command)
     }
 }
+#[derive(Clone)]
 struct Delay {
     config: DelayConfig,
     port: usize,
     micro: u32,
 }
+#[derive(Clone)]
 struct Scanner {
     config: ScannerConfig,
     port: usize,
@@ -876,6 +940,12 @@ pub struct MotionRig {
 }
 impl MotionRig {
     pub fn open(config: &MotionConfig) -> Result<Self, String> {
+        Self::open_with_pool(config, &mut MotionPortPool::default())
+    }
+    pub fn open_with_pool(
+        config: &MotionConfig,
+        pool: &mut MotionPortPool,
+    ) -> Result<Self, String> {
         config.validate()?;
         let mut rig = Self {
             ports: vec![],
@@ -885,8 +955,9 @@ impl MotionRig {
         let mut ports: HashMap<String, (usize, u32, f64, bool)> = HashMap::new();
         if let Some(c) = &config.delay {
             let c = c.normalized()?;
-            let mut port = Port::open(
+            let mut port = pool.open(
                 &c.port,
+                &c.controller,
                 c.baudrate,
                 c.timeout,
                 &c.write_termination,
@@ -898,7 +969,7 @@ impl MotionRig {
                 c.port.trim().to_ascii_uppercase(),
                 (0, c.baudrate, c.timeout, true),
             );
-            rig.ports.push(Box::new(port));
+            rig.ports.push(port);
             rig.delay = Some(Delay {
                 config: c,
                 port: 0,
@@ -916,9 +987,14 @@ impl MotionRig {
                     *index
                 } else {
                     let index = rig.ports.len();
-                    rig.ports.push(Box::new(Port::open(
-                        &c.port, c.baudrate, c.timeout, "\r\n", "\r\n",
-                    )?));
+                    rig.ports.push(pool.open(
+                        &c.port,
+                        &c.controller,
+                        c.baudrate,
+                        c.timeout,
+                        "\r\n",
+                        "\r\n",
+                    )?);
                     ports.insert(key, (index, c.baudrate, c.timeout, false));
                     index
                 };
@@ -938,6 +1014,48 @@ impl MotionRig {
         }
         rig.position()?;
         Ok(rig)
+    }
+    /// Assemble selected axes from persistent connections, without opening or moving hardware.
+    pub fn selected_view(delay: Option<&Self>, scanner: Option<&Self>) -> Result<Self, String> {
+        let mut view = Self {
+            ports: vec![],
+            delay: None,
+            scanners: [None, None],
+        };
+        if let Some(source) = delay
+            && let Some(d) = &source.delay
+        {
+            let mut d = d.clone();
+            let port = source.ports[d.port]
+                .shared_clone()
+                .ok_or("Connection is not shareable")?;
+            d.port = view.ports.len();
+            view.ports.push(port);
+            view.delay = Some(d);
+        }
+        if let Some(source) = scanner {
+            let mut remap = HashMap::new();
+            for (i, scanner) in source.scanners.iter().enumerate() {
+                if let Some(scanner) = scanner {
+                    let mut s = scanner.clone();
+                    let index = if let Some(index) = remap.get(&s.port) {
+                        *index
+                    } else {
+                        let index = view.ports.len();
+                        view.ports.push(
+                            source.ports[s.port]
+                                .shared_clone()
+                                .ok_or("Connection is not shareable")?,
+                        );
+                        remap.insert(s.port, index);
+                        index
+                    };
+                    s.port = index;
+                    view.scanners[i] = Some(s);
+                }
+            }
+        }
+        Ok(view)
     }
     /// Normalized settings actually used by this connection, including defaults.
     pub fn recording_configuration(&self) -> MotionConfig {
@@ -963,8 +1081,11 @@ impl MotionRig {
         };
         let config = &delay.config;
         let effective_pos_um_per_pulse = config.um_per_pulse(delay.micro)?;
-        let effective_ps_per_pulse =
-            (2. * effective_pos_um_per_pulse / 1000. / LIGHT_MM_PER_PS).abs();
+        let effective_ps_per_pulse = (config.optical_path_multiplier()
+            * effective_pos_um_per_pulse
+            / 1000.
+            / LIGHT_MM_PER_PS)
+            .abs();
         Ok(Some(DelayCalibration {
             configuration: Some(config.clone()),
             controller: config.controller.clone(),
@@ -1025,7 +1146,9 @@ impl MotionRig {
                     let minimum = if i == 0 {
                         let d = self.delay.as_ref().ok_or("Delay stage not connected")?;
                         d.config.pulse(*v, d.micro)?;
-                        2. * d.config.um_per_pulse(d.micro)? / 1000. / LIGHT_MM_PER_PS
+                        d.config.optical_path_multiplier() * d.config.um_per_pulse(d.micro)?
+                            / 1000.
+                            / LIGHT_MM_PER_PS
                     } else {
                         let s = self.scanners[i - 1]
                             .as_ref()

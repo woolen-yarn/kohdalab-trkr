@@ -635,7 +635,7 @@ fn active_delay_refuses_home_without_sending_h_and_stops() {
     assert!(error.contains("already moving or homing"));
     let commands = log.lock().unwrap();
     assert!(!commands.iter().any(|command| command.starts_with("H:")));
-    assert!(commands.contains(&"L:E".into()));
+    assert!(commands.contains(&"L:1".into()));
 }
 #[test]
 fn spatial_return_goes_100_um_below_target_before_reaching_zero() {
@@ -889,7 +889,7 @@ fn delay_readback_mismatch_stops_motion() {
     );
     let commands = log.lock().unwrap();
     assert!(commands.iter().any(|command| command == "A:1+P12500"));
-    assert!(commands.windows(1).any(|command| command == ["L:E"]));
+    assert!(commands.windows(1).any(|command| command == ["L:1"]));
 }
 
 #[test]

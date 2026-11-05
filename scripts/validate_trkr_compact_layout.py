@@ -205,6 +205,16 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
                 if group is not None and control is not None and not _inside(control, group):
                     errors.append(f"{name} is outside its motion group")
 
+        if "scanner_group" in geometry:
+            scanner = _rect(geometry, "scanner_group", errors)
+            x_region = _rect(geometry, "motion_x_group", errors)
+            y_region = _rect(geometry, "motion_y_group", errors)
+            for axis, region in (("x", x_region), ("y", y_region)):
+                if scanner is not None and region is not None and not _inside(region, scanner):
+                    errors.append(f"{axis} controls are outside the combined Scanner group")
+            if x_region is not None and y_region is not None and x_region[1] + x_region[3] > y_region[1]:
+                errors.append("Scanner X/Y regions overlap")
+
         lockin_device = _rect(geometry, "lockin_device", errors)
         lockin_name = _rect(geometry, "lockin_name", errors)
         if lockin is not None and lockin_device is not None:

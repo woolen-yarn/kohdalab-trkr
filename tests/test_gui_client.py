@@ -16,6 +16,18 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
+def test_select_devices_is_additive_and_rejects_empty_ids(api_module, monkeypatch):
+    client = api_module.GuiClient(timeout=1)
+    sent = []
+    monkeypatch.setattr(client, "_job", lambda action, **kwargs: sent.append((action, kwargs)) or {"id": "selection"})
+    assert client.select_devices(scanner="scanner-2")["id"] == "selection"
+    assert sent == [("select_devices", {"request_id": None, "scanner": "scanner-2"})]
+    for invalid in ("", " ", 2):
+        with pytest.raises(ValueError):
+            client.select_devices(delay=invalid)
+    assert len(sent) == 1
+
+
 @pytest.fixture
 def api_module():
     spec = importlib.util.spec_from_file_location(
