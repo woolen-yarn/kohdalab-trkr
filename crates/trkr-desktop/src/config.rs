@@ -80,6 +80,8 @@ fn home_from_environment(
     home: Option<&std::ffi::OsStr>,
     windows: bool,
 ) -> PathBuf {
+    let userprofile = userprofile.filter(|path| !path.is_empty());
+    let home = home.filter(|path| !path.is_empty());
     let selected = if windows {
         userprofile.or(home)
     } else {

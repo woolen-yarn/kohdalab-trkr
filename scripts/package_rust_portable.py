@@ -16,6 +16,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# Source rebuild entry points must stay executable after a Windows checkout,
+# where the filesystem does not retain Git's executable bit.  Keep this small
+# explicit allowlist rather than requiring a `.git` directory in a source kit.
+SOURCE_EXECUTABLES = frozenset({
+    "scripts/build_native.sh",
+    "scripts/build_native_gpib.sh",
+})
+
 
 def collect_rust_notices(destination: Path, target: str | None) -> None:
     command = [
@@ -56,12 +64,24 @@ def collect_rust_notices(destination: Path, target: str | None) -> None:
     )
 
 
+def archive_mode(path: Path, name: str | Path) -> int:
+    """Return the portable ZIP mode for one member.
+
+    The source rebuild entry points are a versioned distribution contract, not
+    a property of the host filesystem.  Other files retain their checkout mode.
+    """
+    member = str(name).replace("\\", "/")
+    if member in SOURCE_EXECUTABLES:
+        return 0o100755
+    return 0o100755 if path.stat().st_mode & 0o111 else 0o100644
+
+
 def zip_file(archive: zipfile.ZipFile, path: Path, name: str | Path) -> None:
     """Keep source/portable archive headers independent of checkout times."""
     epoch=max(315532800, int(os.environ.get("SOURCE_DATE_EPOCH", "315532800")))
-    info=zipfile.ZipInfo(str(name).replace(os.sep, "/"), datetime.fromtimestamp(epoch,timezone.utc).timetuple()[:6])
+    info=zipfile.ZipInfo(str(name).replace("\\", "/"), datetime.fromtimestamp(epoch,timezone.utc).timetuple()[:6])
     info.create_system=3
-    info.external_attr=(0o100755 if path.stat().st_mode & 0o111 else 0o100644)<<16
+    info.external_attr=archive_mode(path, name)<<16
     info.compress_type=zipfile.ZIP_DEFLATED
     archive.writestr(info,path.read_bytes())
 

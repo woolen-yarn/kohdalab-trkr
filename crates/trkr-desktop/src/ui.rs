@@ -187,6 +187,7 @@ pub struct App {
     right_was_maximized: bool,
     map_cache: presentation::MapCache,
     dialog: Option<PendingDialog>,
+    snapshot_copy: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
     initialize_axis: Option<usize>,
     initialize_skip_home: bool,
     plot_history: crate::plot_history::History,
@@ -311,6 +312,7 @@ impl App {
             right_was_maximized: false,
             map_cache: [None, None],
             dialog: None,
+            snapshot_copy: None,
             initialize_axis: None,
             initialize_skip_home: false,
             plot_history: crate::plot_history::History::default(),
@@ -2235,7 +2237,7 @@ impl App {
         self.map_cache = [None, None];
     }
     fn begin_dialog(&mut self, kind: DialogKind, initial: String) {
-        if self.dialog.is_none() {
+        if self.dialog.is_none() && self.snapshot_copy.is_none() {
             self.note(format!("Opening {}…", kind.title().to_lowercase()));
             self.dialog = Some(PendingDialog {
                 kind,
@@ -2268,22 +2270,46 @@ impl App {
                         self.demo_select(dialog.workflow, path);
                     }
                     DialogKind::SaveCsv => {
-                        let result = dialog
-                            .source
-                            .as_ref()
-                            .ok_or_else(|| "No recorded CSV available".to_string())
-                            .and_then(|source| {
-                                copy_complete_csv(source, &path, self.snapshot.running)
-                            });
-                        match result {
-                            Ok(()) => self.note(format!("Saved snapshot: {}", path.display())),
-                            Err(error) => self.note(error),
+                        if let Some(source) = dialog.source {
+                            self.begin_snapshot_copy(source, path);
+                        } else {
+                            self.note("No recorded CSV available");
                         }
                     }
                 },
                 Ok(None) => self.note("Selection cancelled"),
                 Err(error) => self.note(error),
             }
+        }
+    }
+    fn begin_snapshot_copy(&mut self, source: PathBuf, destination: PathBuf) {
+        if self.snapshot_copy.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let run_active = self.snapshot.running;
+        self.note("Saving snapshot…");
+        self.snapshot_copy = Some(receiver);
+        std::thread::spawn(move || {
+            let result = copy_complete_csv(&source, &destination, run_active).map(|()| destination);
+            let _ = sender.send(result);
+        });
+    }
+    fn poll_snapshot_copy(&mut self) {
+        let Some(receiver) = &self.snapshot_copy else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Snapshot copy worker closed unexpectedly".into())
+            }
+        };
+        self.snapshot_copy = None;
+        match result {
+            Ok(path) => self.note(format!("Saved snapshot: {}", path.display())),
+            Err(error) => self.note(format!("Save snapshot failed: {error}")),
         }
     }
     fn measure(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
@@ -2534,7 +2560,7 @@ impl App {
                 rect(side_x + 11., 39., 24., 26.),
                 "Dir",
             );
-            form.text(
+            form.path(
                 "output_dir_edit",
                 rect(side_x + 41., 39., side - 112., 26.),
                 &mut output.dir,
@@ -2544,7 +2570,7 @@ impl App {
                 "output_browse_button",
                 rect(side_x + side - 65., 39., 54., 26.),
                 "…",
-                true,
+                self.dialog.is_none() && self.snapshot_copy.is_none(),
             );
             form.enabled = !running && !self.demo_viewer;
             form.label(
@@ -2596,7 +2622,13 @@ impl App {
             save = form.button(
                 "save_rows_button",
                 rect(side_x + 23. + first + second, 147., third, 26.),
-                if self.demo_viewer { "Load" } else { "Save Now" },
+                if self.demo_viewer {
+                    "Load"
+                } else if self.snapshot_copy.is_some() {
+                    "Saving…"
+                } else {
+                    "Save Now"
+                },
                 if self.demo_viewer {
                     !running
                         && self.demo.pending.is_none()
@@ -2605,6 +2637,8 @@ impl App {
                             .is_empty()
                 } else {
                     self.output_paths[Self::ix(self.workflow)].is_some()
+                        && self.dialog.is_none()
+                        && self.snapshot_copy.is_none()
                 },
             );
             precision::record(
@@ -2927,7 +2961,7 @@ impl App {
             let half = ((inner - 8.) / 2.).round();
             let browse_width = 70.;
             f.group("session_group", rect(0., 0., area.width(), 128.), "Config");
-            f.text(
+            f.path(
                 "config_path",
                 rect(11., 27., inner - browse_width - 8., 26.),
                 &mut self.config_path,
@@ -2936,7 +2970,7 @@ impl App {
                 "browse_button",
                 rect(area.width() - 11. - browse_width, 27., browse_width, 26.),
                 "Browse",
-                true,
+                self.dialog.is_none() && self.snapshot_copy.is_none(),
             );
             load = f.button("load_button", rect(11., 59., half, 26.), "Load", true);
             save = f.button(
@@ -3289,6 +3323,11 @@ impl eframe::App for App {
         self.receive();
         self.poll_remote();
         self.poll_dialog();
+        self.poll_snapshot_copy();
+        if self.snapshot_copy.is_some() && ctx.input(|input| input.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.note("Wait for the snapshot copy to finish before closing.");
+        }
         if !self.python_locked() {
             self.initialize_confirmation(ctx);
         }

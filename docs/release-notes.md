@@ -1,22 +1,23 @@
-# KohdaLab TRKR 0.4.9
+# KohdaLab TRKR 0.4.10
 
 ## Changes / 変更点
 
-- Windows Output now uses IV's native Explorer-style folder picker, titled **Output directory**, instead of the legacy folder tree dialog. / WindowsのOutputを従来のツリー型からIVと同じエクスプローラー形式・**Output directory**タイトルへ変更します。
-- Config, Output, snapshot-save and Demo CSV dialogs have consistent task-specific titles across platforms. Snapshot saving remains **Save measurement snapshot**, reflecting TRKR's existing Save Now behavior. / Config・Output・スナップショット保存・Demo CSV読込の各ダイアログを用途別のタイトルへ統一します。TRKR固有のSave Nowは**Save measurement snapshot**とし、保存動作は維持します。
-- The log identifies the dialog being opened and records cancellation, rather than leaving an opening notice behind. / ログには開く画面の用途とキャンセル完了を表示し、開いているという表示が残らないようにします。
-- macOS now falls back to the nearest existing folder for a not-yet-created nested path, matching Windows. Literal bracket/apostrophe paths remain supported. / Macでも未作成の入れ子パスは最寄りの既存フォルダーから開き、角括弧・引用符を含むパスも維持します。
+- Save Now copies CSV snapshots and their companion records in the background, keeping the GUI responsive. A pending copy is visible, and ordinary window closure/API takeover waits until it finishes. Complete-row and no-overwrite guarantees remain in place. / Save NowのCSV・付随記録のコピーを非同期化し、画面の応答を維持します。保存中を表示し、コピー完了まで通常終了・API引継ぎを防ぎます。完結した行の保存と上書き防止を維持します。
+- Preserve whitespace in native file-picker results and show full Config/Output paths on hover without changing field widths. / ファイル選択結果の空白を保持し、入力欄の幅を変えずにConfig・Outputの全文をホバー表示します。
+- Ignore empty home environment values before choosing a valid alternative. The common Python client evaluates its fallback only when needed and refuses a relative fallback. / 空のホーム環境変数を除外して有効な代替先を使用します。共通Pythonクライアントも必要時だけフォールバックを評価し、相対パスを拒否します。
+- Avoid rescanning the entire accumulated API response for every network fragment. Existing size limits, timeouts and error reporting are retained. / API応答の受信断片ごとに全データを再走査する無駄を削減し、サイズ制限・タイムアウト・エラー処理を維持します。
+- Source ZIPs mark the documented native rebuild entry points executable even when produced from a Windows checkout, while retaining ordinary source-file modes. / Windowsチェックアウトから作成した場合も、ソースZIP内のネイティブ再ビルド用エントリーポイントを実行可能として記録し、通常のソースファイルのモードは維持します。
 
 ## Compatibility / 互換性
 
-Existing JSON profiles and measurement files remain compatible; no migration is required. Measurement, motion, lock-in acquisition, CSV/API, ownership and Stop behavior are unchanged. Windows adds only the same `rfd` version used by IV, with existing locked dependency versions retained. File selection remains asynchronous so the GUI keeps updating; cancelling does not change the path. The current release's configuration and result directories are retained.
+Existing JSON profiles, CSV files and Notebook API calls remain compatible; no migration is needed. Measurement values, units, calibration, stage/scanner motion, lock-in acquisition and Stop protection are unchanged. Update the packaged client alongside the application when using Python.
 
-既存JSON設定・測定ファイルはそのまま利用でき、移行は不要です。測定・移動・ロックイン取得・CSV/API・排他制御・停止動作は変更しません。WindowsはIVと同じ`rfd`バージョンを使い、既存の依存バージョンは維持します。選択画面は非同期で開き、キャンセルしてもパスを変更しません。設定・結果の保存場所も維持します。
+既存JSON設定・CSV・Notebook APIは互換で、移行は不要です。測定値・単位・校正・ステージ／スキャナ移動・ロックイン取得・Stop保護は変更しません。Python利用時はアプリと同梱クライアントを一緒に更新してください。
 
 ## Validation and downloads / 検証・配布
 
-Targeted tests cover initial-folder fallback and literal paths; release CI runs Windows, macOS and Linux tests, strict lints and packaging checks. It builds Windows x64 Setup/portable ZIP and macOS Apple silicon DMG/ZIP and checks the isolated Windows installer lifecycle. Corresponding source/build kits, provenance and SHA-256 manifests accompany the packages. Actual GUI synthetic smoke covers all five workflows; this does not claim interactive Windows chooser or physical-instrument qualification.
+Local software checks cover Rust, Python, packaging, async-copy completion/error and shared path resolution. Actual GUI simulation covers all five measurement tabs. Release CI checks Windows/macOS/Linux and builds Windows x64 Setup/portable ZIP and macOS Apple silicon DMG/ZIP, with corresponding source, licenses, provenance and SHA-256 manifests. Windows test fixtures use native absolute paths. These checks do not claim physical-instrument qualification.
 
-初期フォルダーのフォールバック・特殊文字パスをテストし、CIで3OSのテスト・Clippy・配布チェックを行います。Windows x64インストーラー／portable ZIP、Mac Apple silicon DMG／ZIPを作成し、隔離したWindowsでインストール・削除を確認します。対応ソース・来歴・SHA-256一覧を同梱します。実GUIの合成データで全5測定を確認しますが、Windows選択画面の実画面・実機測定の検証とは区別します。
+ローカルではRust・Python・配布・非同期保存の完了／失敗・共通パス処理を検証し、実GUIの模擬データで5測定タブを確認します。公開CIはWindows・macOS・Linuxを検証し、Windows x64インストーラー／portable ZIP、Mac Apple silicon DMG／ZIPと、対応ソース・権利表記・来歴・SHA-256一覧を作成します。Windowsのテスト条件もOSに適した絶対パスへ修正しました。実機測定の認定を意味するものではありません。
 
-Windows artifacts remain unsigned; macOS bundles use ad hoc signing and are not notarized. / Windows版は未署名、macOS版はアドホック署名で公証はありません。
+Windows packages are unsigned. macOS bundles use ad hoc signing and are not notarized. / Windows版は未署名、macOS版はアドホック署名で公証はありません。

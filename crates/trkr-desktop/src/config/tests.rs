@@ -405,6 +405,30 @@ fn config_home_selection_prefers_platform_native_environment() {
 }
 
 #[test]
+fn config_home_selection_ignores_empty_environment_values() {
+    use std::ffi::OsStr;
+    use std::path::PathBuf;
+    for windows in [false, true] {
+        assert_eq!(
+            super::home_from_environment(Some(OsStr::new("")), Some(OsStr::new("home")), windows),
+            PathBuf::from("home")
+        );
+        assert_eq!(
+            super::home_from_environment(
+                Some(OsStr::new("profile")),
+                Some(OsStr::new("")),
+                windows
+            ),
+            PathBuf::from("profile")
+        );
+        assert_eq!(
+            super::home_from_environment(Some(OsStr::new("")), None, windows),
+            std::env::temp_dir()
+        );
+    }
+}
+
+#[test]
 fn startup_uses_only_the_trkr_specific_profile() {
     let root = tempfile::tempdir().unwrap();
     let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));

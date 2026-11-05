@@ -92,7 +92,10 @@ fn completed_path(
             format!("file dialog failed: {error}")
         });
     }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let selected = String::from_utf8_lossy(&output.stdout);
+    // osascript/zenity append one newline. Spaces belong to the selected path,
+    // and a path may itself end in a newline, so do not trim arbitrary whitespace.
+    let selected = selected.strip_suffix('\n').unwrap_or(&selected);
     if selected.is_empty() {
         Ok(None)
     } else {
@@ -495,5 +498,28 @@ mod tests {
             super::completed_path(output(1, b""), Some(1)).unwrap(),
             None
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn selected_paths_keep_whitespace_and_only_drop_the_dialog_line_ending() {
+        for (stdout, expected) in [
+            ("/tmp/measurement \n", "/tmp/measurement "),
+            (" /tmp/measurement \n", " /tmp/measurement "),
+            ("/tmp/measurement\n\n", "/tmp/measurement\n"),
+            ("/tmp/measurement\t\n", "/tmp/measurement\t"),
+            ("C:\\Data\\measurement.csv", "C:\\Data\\measurement.csv"),
+        ] {
+            assert_eq!(
+                super::completed_path(output(0, stdout.as_bytes()), None).unwrap(),
+                Some(PathBuf::from(expected))
+            );
+        }
+        for stdout in [b"".as_slice(), b"\n"] {
+            assert_eq!(
+                super::completed_path(output(0, stdout), None).unwrap(),
+                None
+            );
+        }
     }
 }

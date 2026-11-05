@@ -301,6 +301,11 @@ impl Bridge {
                     owner.policy = policy;
                 } else {
                     self.idle(app)?;
+                    if app.snapshot_copy.is_some() {
+                        return Err(
+                            "Wait for the GUI snapshot copy before acquiring Python control".into(),
+                        );
+                    }
                     if app.dialog.is_some() || app.initialize_axis.is_some() {
                         return Err("Close the GUI dialog before acquiring Python control".into());
                     }
@@ -776,11 +781,20 @@ mod tests {
     fn finish(app: &mut App, bridge: &mut Bridge) {
         let deadline = Instant::now() + Duration::from_secs(5);
         while bridge.active.is_some() {
+            // Apply the existing overall deadline to the wait. A separate
+            // two-second idle limit can fail during legitimate durable saves
+            // even when the job completes within the five-second budget.
             let event = app
                 .controller
                 .events
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "timed out waiting for active remote completion: {error}; active={:?}, pending={}",
+                        bridge.active,
+                        app.controller.has_pending()
+                    )
+                });
             bridge.observe(&event);
             if matches!(event, Event::Finished(_)) {
                 app.measurement_pending = false;

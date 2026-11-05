@@ -173,6 +173,55 @@ fn srkr_2d_exposes_one_shared_theta_on_u_for_both_axis_orders() {
     assert_eq!(scan_unit(Axis::U), "µm");
 }
 #[test]
+fn snapshot_copy_keeps_pending_state_until_completion_and_reports_worker_failure() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.snapshot_copy = Some(receiver);
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_some());
+    app.begin_snapshot_copy("unused.csv".into(), "unused-copy.csv".into());
+    sender.send(Err("test write failure".into())).unwrap();
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_none());
+    assert_eq!(app.status, "Save snapshot failed: test write failure");
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.snapshot_copy = Some(receiver);
+    drop(sender);
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_none());
+    assert!(app.status.contains("worker closed unexpectedly"));
+}
+
+#[test]
+fn asynchronous_snapshot_copies_complete_rows_and_reports_success_only_when_finished() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.csv");
+    let destination = directory.path().join("copy.csv");
+    std::fs::write(&source, "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial").unwrap();
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.snapshot.running = true;
+    app.begin_snapshot_copy(source.clone(), destination.clone());
+    assert_eq!(app.status, "Saving snapshot…");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.snapshot_copy.is_some() && Instant::now() < deadline {
+        app.poll_snapshot_copy();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.snapshot_copy.is_none());
+    assert!(app.status.starts_with("Saved snapshot:"));
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\n"
+    );
+    assert!(
+        std::fs::read_to_string(source)
+            .unwrap()
+            .ends_with("partial")
+    );
+}
+
+#[test]
 fn save_now_preserves_complete_rows_and_refuses_overwrite() {
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source.csv");
