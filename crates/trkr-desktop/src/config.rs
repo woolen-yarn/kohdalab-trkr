@@ -204,6 +204,7 @@ impl Settings {
         normalize_measurement_alias(&mut raw);
         validate_profile_shape(&raw)?;
         let inventory = Inventory::from_profile(&raw)?;
+        crate::alignment_config::AlignmentLayout::from_profile(&raw, &inventory)?;
         validate_workflow_device_ids(&raw, &inventory)?;
         if raw.get("device_inventory").is_some() {
             inventory.project_selected(&mut raw)?;

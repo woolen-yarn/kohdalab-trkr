@@ -603,6 +603,7 @@ impl App {
         if let Ok(inventory) = crate::inventory::Inventory::from_profile(&self.settings.raw) {
             self.inventory = inventory;
         }
+        self.hydrate_alignment();
         self.stage_round_trips =
             self.raw_f64(&["instruments", "delay_stage", "t", "round_trips"], 1.) as u32;
         self.stage_axis =
@@ -933,6 +934,7 @@ impl App {
         self.sync();
         self.sync_inventory()?;
         self.refresh_plan_coordinates()?;
+        self.sync_alignment()?;
         for workflow in Workflow::ALL {
             let index = Self::ix(workflow);
             let plan = self.plans[index].clone();
@@ -2758,8 +2760,9 @@ impl App {
         let side_x = settings + 12.;
         let tc = self.workflow_time_constant(plan.workflow);
 
-        let hints_fast = self.scan_hints(plan.fast, &plan);
-        let hints_slow = self.scan_hints(plan.slow, &plan);
+        let hint_config = self.workflow_hardware(plan.workflow);
+        let hints_fast = self.scan_hints(plan.fast, &plan, hint_config.as_ref());
+        let hints_slow = self.scan_hints(plan.slow, &plan, hint_config.as_ref());
         let scan_column_width = ((settings - 24.) * 0.5).round();
         let availability = self.start_availability(&plan);
         let (start, stop, save, browse, settings_clicked);
@@ -3249,7 +3252,12 @@ impl App {
             })
     }
 
-    fn scan_hints(&self, axis: Axis, plan: &Plan) -> [String; 3] {
+    fn scan_hints(
+        &self,
+        axis: Axis,
+        plan: &Plan,
+        config: Option<&engine::HardwareConfig>,
+    ) -> [String; 3] {
         let unit = scan_unit(axis);
         if self.demo_viewer {
             let r = if axis == plan.fast {
@@ -3266,17 +3274,13 @@ impl App {
         if matches!(axis, Axis::U | Axis::V) {
             return std::array::from_fn(|_| "checks x/y".into());
         }
-        let config = self.workflow_hardware(plan.workflow);
-        let calibration = config
-            .as_ref()
-            .and_then(|config| self.workflow_delay_calibration(config));
+        let calibration = config.and_then(|config| self.workflow_delay_calibration(config));
         let t_step_hint = config
-            .as_ref()
             .and_then(|c| c.motion.delay.as_ref())
             .map(|d| delay_step_hint(d, calibration));
         let limits = config.and_then(|c| {
             if axis == Axis::T {
-                let mut d = c.motion.delay?.normalized().ok()?;
+                let mut d = c.motion.delay.as_ref()?.normalized().ok()?;
                 if let Some(cached) = calibration.filter(|c| c.configuration.as_ref() == Some(&d)) {
                     d.pos_um_per_pulse = cached.effective_pos_um_per_pulse.or(d.pos_um_per_pulse);
                 }
@@ -3296,9 +3300,13 @@ impl App {
                 Some((a.min(b), a.max(b), step))
             } else if matches!(axis, Axis::X | Axis::Y) {
                 let i = if axis == Axis::X { 1 } else { 2 };
-                let s = if i == 1 { c.motion.x? } else { c.motion.y? }
-                    .normalized()
-                    .ok()?;
+                let s = if i == 1 {
+                    c.motion.x.as_ref()?
+                } else {
+                    c.motion.y.as_ref()?
+                }
+                .normalized()
+                .ok()?;
                 let a = s.sample_um_from_raw(s.min_pos?) - plan.zero[i];
                 let b = s.sample_um_from_raw(s.max_pos?) - plan.zero[i];
                 Some((

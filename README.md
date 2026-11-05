@@ -63,7 +63,7 @@ TRKR saves its user profile at `~/.kohdalab/trkr/config/config.json` (`%USERPROF
 
 ## Development / 開発
 
-[Multiple devices and Alignment (development branch) / 複数機器とAlignment（開発ブランチ）](docs/guides/multiple-devices-alignment.md): per-measurement Settings and device selection, manual alignment and optical round trips. Not included in v0.4.10. / 測定ごとのSettings・機器選択、複数接続、手動アライメント、光路往復数。v0.4.10には未同梱です。
+[Multiple devices and Alignment / 複数機器とAlignment](docs/guides/multiple-devices-alignment.md): per-measurement Settings and device selection, manual alignment and optical round trips. / 測定ごとのSettings・機器選択、複数接続、手動アライメント、光路往復数。
 
 [Shared GPIB development mode / 複数アプリのGPIB共有・開発版](docs/development/shared-instruments.md) is opt-in; the separate hub executable is not bundled. / 任意の開発用接続であり、共有サービスの実行ファイルは同梱しません。
 

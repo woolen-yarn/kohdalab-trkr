@@ -563,6 +563,14 @@ fn settings_without_device(
         .map(|w| settings.workflow_device_ids(w).map(|ids| (w, ids)))
         .collect::<Result<_, _>>()?;
     let mut inventory = crate::inventory::Inventory::from_profile(&settings.raw)?;
+    let mut alignment =
+        crate::alignment_config::AlignmentLayout::from_profile(&settings.raw, &inventory)?;
+    match class {
+        DeviceClass::Delay => alignment.clear_device(engine::MotionKind::Delay, id),
+        DeviceClass::Scanner => alignment.clear_device(engine::MotionKind::Scanner, id),
+        DeviceClass::Lockin => {}
+    }
+    candidate.raw["alignment"] = alignment.value();
     let replacement = match class {
         DeviceClass::Lockin => {
             inventory.lockins.retain(|d| d.id != id);
@@ -619,9 +627,23 @@ mod tests {
         second.zero_um = [12., -8.];
         inventory.scanners.push(second);
         inventory.project_selected(&mut settings.raw).unwrap();
+        let layout =
+            crate::alignment_config::AlignmentLayout::from_profile(&settings.raw, &inventory)
+                .unwrap();
+        settings.raw["alignment"] = layout.value();
         let original = settings.workflow_device_ids(Workflow::Trkr).unwrap();
         let original_wait = settings.plan(Workflow::Trkr).unwrap().interval_s;
         let edited = settings_without_device(&settings, DeviceClass::Scanner, "scanner-1").unwrap();
+        let restored_layout = crate::alignment_config::AlignmentLayout::from_profile(
+            &edited.raw,
+            &crate::inventory::Inventory::from_profile(&edited.raw).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(restored_layout.delays, layout.delays);
+        assert_eq!(restored_layout.scanners.len(), 2);
+        assert_eq!(restored_layout.scanners[0].id, layout.scanners[0].id);
+        assert_eq!(restored_layout.scanners[0].device_id, None);
+        assert_eq!(restored_layout.scanners[1], layout.scanners[1]);
         for workflow in Workflow::ALL {
             let ids = edited.workflow_device_ids(workflow).unwrap();
             assert_eq!(ids.scanner, "scanner-2");

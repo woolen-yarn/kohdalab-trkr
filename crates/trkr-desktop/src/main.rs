@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+mod alignment_config;
 mod axis_choices;
 #[cfg(test)]
 mod compatibility;

@@ -1,13 +1,11 @@
 # Multiple devices and Alignment / 複数機器とアライメント
 
-Development branch feature; not included in the published v0.4.10 packages.
-
-開発ブランチの機能です。公開済みv0.4.10の配布物には含まれません。
+Introduced in v0.5.0. / v0.5.0で追加した機能です。
 
 ## Preview / 画面
 
-Development capture, 2026-11-05, macOS Retina 2×. Synthetic positions only;
-movement controls are disabled. / 2026-11-05の開発版・macOS Retina 2倍で撮影。
+v0.5.0 release-candidate capture, 2026-11-05, macOS Retina 2×. Synthetic positions only;
+movement controls are disabled. / 2026-11-05のv0.5.0公開候補・macOS Retina 2倍で撮影。
 合成位置を使用し、実機の移動操作は無効です。
 
 ![Two delay-stage panels / 2台の遅延ステージ](../images/alignment-delay-development.png)
@@ -143,15 +141,26 @@ rejected. A shared serial controller must use compatible communication settings.
 ## Alignment tab / Alignmentタブ
 
 Alignment is a separate tab alongside Signal Monitor/TRKR/SRKR/STRKR/SRKR 2D.
-Choose **Delay stages** for two horizontal stage panels or **Scanners** for
-four panels in a 2×2 arrangement. Each panel independently selects a registered
+Choose **Delay stages** for up to two horizontal stage panels or **Scanners** for
+up to four panels in a 2×2 arrangement. Each panel independently selects a registered
 device; changing a panel's device does not change the measurement selection.
 The original controls and Initialize buttons in the left panel remain available.
 
 AlignmentはSignal Monitor/TRKR/SRKR/STRKR/SRKR 2Dと並ぶ独立タブです。
-**Delay stages** では横長の2パネル、**Scanners** では2×2の4パネルを表示します。
+**Delay stages** では横長の最大2パネル、**Scanners** では2×2の最大4パネルを表示します。
 各パネルに登録済み機器を割り当てられ、測定対象の選択は変わりません。
 左パネルの従来の操作・Initializeボタンも引き続き使えます。
+
+Use **+ Add panel** to add an empty panel and **Delete** at its top right to
+remove it after confirmation. Deleting a panel retains the registered device,
+connection and measurement assignments. **Config → Save** stores the panel
+order, device selection, Unit and Step; even an entirely empty layout stays empty
+on reload. Removing a registered device clears only that device's panel binding.
+
+**+ Add panel** で空のパネルを追加し、右上の **Delete** で確認後に削除できます。
+パネルを削除しても機器登録・接続・測定の割当は残ります。**Config → Save** で
+パネルの順序・割当・Unit・Stepを保存し、パネルが0枚の場合も読み込み後に維持します。
+登録機器を削除した場合は、その機器のパネル割当だけを空欄にします。
 
 Choose **None** to leave an Alignment panel empty. Empty panels remain empty
 when changing views or adding/reordering devices. A device already assigned to
@@ -188,15 +197,15 @@ Step／Holdを実行できません。正の値を設定して移動します。
 | Stop | Cancel the active application motion. / アプリで進行中の移動を停止します。 |
 
 Delay shows the current position and rail in the selected unit only, between the
-left/right arrows. Scanner puts its coordinate graph on the left and the arrow
-pad on the right, with Stop in the middle. One Step value applies to both axes.
+left/right arrows. Scanner puts a square coordinate graph on the left and the X/Y values above
+the arrow pad on the right, with Stop in the middle. One Step value applies to both axes.
 Current values and graph/rail coordinates are recomputed from the latest device
 offset; editing an offset updates corrected coordinates immediately.
 **Options** opens a popup containing Direction and Initialize; opening it does
 not change the card height. Initialize retains its separate confirmation.
 
 Delayは選択した単位だけで現在値と位置バーを示し、その左右に移動ボタンを配置します。
-Scannerは左に座標グラフ、右に十字ボタン、十字の中央にStopを配置し、X/Yで共通のStepを
+Scannerは左に正方形の座標グラフ、右上にX/Y現在値、その下に十字ボタンと中央のStopを配置し、X/Yで共通のStepを
 使用します。現在値と目盛りは装置の最新offsetから算出し、offsetを編集すると補正座標も
 自動更新します。**Options** はDirectionとInitializeをまとめたポップアップで、
 カードの高さは変わりません。Initializeは別の確認画面を経て実行します。
@@ -304,3 +313,14 @@ screenshots and fake-controller tests do not qualify real motion on an apparatus
 
 自動試験と実機確認は区別しています。合成画面・模擬制御器の試験は実装の検証であり、
 実験装置での移動を実機確認済みとするものではありません。
+
+Alignment layout and motion are also exposed through the same GUI worker.
+See the [Python guide](../../bindings/python/README.md#alignment-from-python--pythonからのalignment)
+and [API reference](../reference/control-api.md#alignment-050--alignment050).
+Jog has a separate 300 ms keepalive deadline; normal measurement disconnect
+policies remain individually configurable.
+
+Alignmentのパネル設定・移動も同じGUI制御処理を通じてAPIから利用できます。
+[Pythonガイド](../../bindings/python/README.md#alignment-from-python--pythonからのalignment)と
+[API仕様](../reference/control-api.md#alignment-050--alignment050)を参照してください。
+Jogには独立した300 msの継続通知期限があり、通常測定の通信断時の動作設定は維持します。

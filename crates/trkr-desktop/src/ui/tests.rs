@@ -159,7 +159,11 @@ fn delay_step_hint_uses_actual_microstep_and_rejects_stale_identity() {
 fn scan_hints_and_tc_only_use_the_workflow_bound_devices() {
     let mut app = App::with_context(&egui::Context::default(), false);
     app.sync_all_plans().unwrap();
-    let baseline = app.scan_hints(Axis::T, app.plan());
+    let baseline = app.scan_hints(
+        Axis::T,
+        app.plan(),
+        app.workflow_hardware(app.workflow).as_ref(),
+    );
 
     let mut second_delay = app.inventory.delays[0].clone();
     second_delay.id = "delay-2".into();
@@ -190,7 +194,14 @@ fn scan_hints_and_tc_only_use_the_workflow_bound_devices() {
             .delay,
         "delay-2"
     );
-    assert_ne!(app.scan_hints(Axis::T, &plan), baseline);
+    assert_ne!(
+        app.scan_hints(
+            Axis::T,
+            &plan,
+            app.workflow_hardware(plan.workflow).as_ref()
+        ),
+        baseline
+    );
     app.snapshot.lockin["Time Constant"] = json!(0.25);
     assert_eq!(app.workflow_time_constant(Workflow::Trkr), None);
 }

@@ -1,8 +1,13 @@
 //! The GUI owns all hardware. A renewable Python lease serializes edits and
 //! operations; tagged worker completions cannot be confused with idle updates.
 use super::*;
+use crate::engine::AlignmentAction;
 use crate::remote::Server;
 const LEASE: Duration = Duration::from_secs(6);
+/// A Jog is continuous physical motion, unlike a finite measurement or Step.
+/// It therefore needs a short, operation-specific renewal independent of the
+/// ordinary Python ownership heartbeat.
+const ALIGNMENT_KEEPALIVE: Duration = Duration::from_millis(300);
 #[derive(Debug)]
 struct ApiError {
     code: &'static str,
@@ -56,6 +61,7 @@ pub(super) struct Bridge {
     used_ids: std::collections::HashSet<String>,
     owner: Option<Owner>,
     revoked: std::collections::HashSet<String>,
+    alignment_keepalive: Option<(String, Instant)>,
 }
 impl Bridge {
     fn new(server: Server) -> Self {
@@ -66,6 +72,7 @@ impl Bridge {
             used_ids: Default::default(),
             owner: None,
             revoked: Default::default(),
+            alignment_keepalive: None,
         }
     }
     fn tick(&mut self) {
@@ -98,6 +105,14 @@ impl Bridge {
             !o.released && Instant::now() >= o.until && o.policy.stop_on_disconnect
         }) {
             self.request_stop(app, "disconnect");
+        }
+        if self
+            .alignment_keepalive
+            .as_ref()
+            .is_some_and(|(_, until)| Instant::now() >= *until)
+        {
+            self.request_stop(app, "alignment_keepalive_expired");
+            self.alignment_keepalive = None;
         }
         self.tick();
     }
@@ -161,6 +176,7 @@ impl Bridge {
                     }
                 }
                 self.active = None;
+                self.alignment_keepalive = None;
             }
         }
         self.tick();
@@ -229,9 +245,9 @@ impl Bridge {
                 return Ok(json!({
                     "protocol":"kohdalab-control","control_protocol":1,
                     "application":"kohdalab-trkr","application_version":env!("CARGO_PKG_VERSION"),
-                    "api_version":1,"methods":["control.describe","control.status","control.plan","control.config","control.output","control.acquire","control.heartbeat","control.release","control.result","control.configure","control.set_plan","control.set_output","control.connect","control.select_devices","control.disconnect","control.start","control.stop","control.move","control.initialize","control.read","control.lockin_settings","control.set_lockin","control.auto_lockin"],
-                    "safety":{"lease_timeout_seconds":6,"heartbeat_seconds":2,"on_disconnect":"continue","on_release":"continue","stop_requires_lease":true,"stop_policy_defaults":{"stop_on_disconnect":false,"stop_on_error":false,"stop_on_timeout":false}},
-                    "native":{"actions":["status","plan","config","output","result","acquire","heartbeat","release","start","stop","connect","select_devices","disconnect","move","initialize","read","lockin_settings","set_lockin","auto_lockin"]}
+                    "api_version":1,"methods":["control.describe","control.status","control.plan","control.config","control.output","control.alignment_layout","control.acquire","control.heartbeat","control.release","control.result","control.configure","control.set_plan","control.set_output","control.set_alignment_layout","control.connect","control.select_devices","control.disconnect","control.start","control.stop","control.move","control.initialize","control.alignment","control.alignment_keepalive","control.alignment_reverse","control.read","control.lockin_settings","control.set_lockin","control.auto_lockin"],
+                    "safety":{"lease_timeout_seconds":6,"heartbeat_seconds":2,"on_disconnect":"continue","on_release":"continue","stop_requires_lease":true,"alignment_jog":{"keepalive_milliseconds":300,"renewal_recommended_milliseconds":100,"on_keepalive_expiry":"stop","on_release":"stop"},"stop_policy_defaults":{"stop_on_disconnect":false,"stop_on_error":false,"stop_on_timeout":false}},
+                    "native":{"actions":["status","plan","config","output","alignment_layout","result","acquire","heartbeat","release","start","stop","connect","select_devices","disconnect","move","initialize","alignment","alignment_keepalive","alignment_reverse","read","lockin_settings","set_lockin","auto_lockin"]}
                 }));
             }
             "control_status" => {
@@ -272,6 +288,7 @@ impl Bridge {
                     json!({"dir":o.dir,"filename":o.filename,"auto_timestamp_suffix":o.auto_timestamp_suffix}),
                 );
             }
+            "alignment_layout" => return Ok(app.alignment_layout_value()?),
             "result" => return self.run(body["run_id"].as_str().ok_or("Missing run_id")?),
             "acquire" => {
                 let id = body["client_id"].as_str().ok_or("Missing client_id")?;
@@ -356,9 +373,24 @@ impl Bridge {
                     return Err("release reason must be disconnect or python_error".into());
                 }
                 let policy = self.owner.as_ref().unwrap().policy;
-                if policy.stop_on_disconnect || (reason == "python_error" && policy.stop_on_error) {
+                let alignment_jog = self.alignment_keepalive.is_some();
+                if alignment_jog {
+                    // A held physical motion is deliberately different from a
+                    // measurement: releasing its owner must always stop it.
+                    self.request_stop(
+                        app,
+                        if reason == "python_error" {
+                            "alignment_python_error"
+                        } else {
+                            "alignment_owner_released"
+                        },
+                    );
+                } else if policy.stop_on_disconnect
+                    || (reason == "python_error" && policy.stop_on_error)
+                {
                     self.request_stop(app, reason);
                 }
+                self.alignment_keepalive = None;
                 self.owner.as_mut().unwrap().released = true;
                 self.tick();
                 let native = self.control();
@@ -373,6 +405,23 @@ impl Bridge {
             _ => {}
         }
         self.require_owner(body)?;
+        if action == "alignment_keepalive" {
+            let id = body["run_id"].as_str().ok_or("Missing run_id")?;
+            if self.active.as_deref() != Some(id)
+                || !self
+                    .alignment_keepalive
+                    .as_ref()
+                    .is_some_and(|(active, _)| active == id)
+            {
+                return Err(ApiError::new(
+                    "unknown_run",
+                    "Alignment Jog is no longer active",
+                ));
+            }
+            app.controller.renew_hold();
+            self.alignment_keepalive = Some((id.into(), Instant::now() + ALIGNMENT_KEEPALIVE));
+            return Ok(json!({"run_id":id,"alive":true,"keepalive_milliseconds":300}));
+        }
         if action == "stop" {
             let id = body["run_id"].as_str().ok_or("Missing run_id")?;
             let result = self.run(id)?;
@@ -386,6 +435,13 @@ impl Bridge {
                 };
             }
             self.request_stop(app, "requested");
+            if self
+                .alignment_keepalive
+                .as_ref()
+                .is_some_and(|(active, _)| active == id)
+            {
+                self.alignment_keepalive = None;
+            }
             return if common {
                 Ok(json!({"requested":true,"job_id":id,"cleanup":"pending","native":result}))
             } else {
@@ -398,6 +454,8 @@ impl Bridge {
             "start"
                 | "move"
                 | "initialize"
+                | "alignment"
+                | "alignment_reverse"
                 | "connect"
                 | "select_devices"
                 | "disconnect"
@@ -533,6 +591,10 @@ impl Bridge {
                 app.sync_output(w);
                 return self.handle(app, &json!({"action":"output","workflow":w.key()}));
             }
+            "set_alignment_layout" => {
+                let layout = body.get("layout").ok_or("Missing alignment layout")?;
+                return Ok(app.set_alignment_layout_value(layout)?);
+            }
             _ => {}
         }
         let id = id.ok_or("Unknown GUI API action")?;
@@ -662,10 +724,130 @@ impl Bridge {
                             move_to_origin: bool_field(body, "move_to_origin", true)?,
                         }
                     }
+                    "alignment" => {
+                        if app.source_demo {
+                            return Err("Alignment motion is unavailable in Demo mode".into());
+                        }
+                        let kind: engine::MotionKind = serde_json::from_value(body["kind"].clone())
+                            .map_err(|_| "kind must be delay or scanner")?;
+                        let device_id = body["device_id"]
+                            .as_str()
+                            .filter(|id| !id.trim().is_empty())
+                            .ok_or("device_id must be a nonempty registered device ID")?;
+                        let action: AlignmentAction =
+                            serde_json::from_value(body["motion"].clone())
+                                .map_err(|error| format!("Invalid alignment motion: {error}"))?;
+                        let axis = match &action {
+                            AlignmentAction::Step { axis, amount, .. }
+                            | AlignmentAction::Jog { axis, amount, .. } => {
+                                if !amount.is_finite() || *amount == 0. {
+                                    return Err(
+                                        "Alignment increment must be finite and nonzero".into()
+                                    );
+                                }
+                                *axis
+                            }
+                            AlignmentAction::End { axis, .. }
+                            | AlignmentAction::Initialize { axis, .. } => *axis,
+                        };
+                        let expected = match kind {
+                            engine::MotionKind::Delay => 0,
+                            engine::MotionKind::Scanner => {
+                                if !(1..=2).contains(&axis) {
+                                    return Err(
+                                        "Scanner alignment axis must be 1 (X) or 2 (Y)".into()
+                                    );
+                                }
+                                axis
+                            }
+                        };
+                        if axis != expected {
+                            return Err("Delay alignment axis must be 0 (t)".into());
+                        }
+                        let state = app
+                            .device_state(kind, device_id)
+                            .ok_or("Unknown alignment device ID")?;
+                        if !state.connected[axis] {
+                            return Err("Connect this alignment axis first".into());
+                        }
+                        Command::Alignment {
+                            kind,
+                            id: device_id.into(),
+                            action,
+                        }
+                    }
+                    "alignment_reverse" => {
+                        if app.source_demo {
+                            return Err("Alignment direction is unavailable in Demo mode".into());
+                        }
+                        let kind: engine::MotionKind = serde_json::from_value(body["kind"].clone())
+                            .map_err(|_| "kind must be delay or scanner")?;
+                        let device_id = body["device_id"]
+                            .as_str()
+                            .filter(|id| !id.trim().is_empty())
+                            .ok_or("device_id must be a nonempty registered device ID")?;
+                        let axis = body["axis"]
+                            .as_u64()
+                            .and_then(|axis| usize::try_from(axis).ok())
+                            .ok_or("axis must be an integer")?;
+                        match kind {
+                            engine::MotionKind::Delay if axis != 0 => {
+                                return Err("Delay alignment axis must be 0 (t)".into());
+                            }
+                            engine::MotionKind::Scanner if !(1..=2).contains(&axis) => {
+                                return Err("Scanner alignment axis must be 1 (X) or 2 (Y)".into());
+                            }
+                            _ => {}
+                        }
+                        let state = app
+                            .device_state(kind, device_id)
+                            .ok_or("Unknown alignment device ID")?;
+                        if !state.connected[axis] {
+                            return Err("Connect this alignment axis first".into());
+                        }
+                        Command::ReverseDirection {
+                            kind,
+                            id: device_id.into(),
+                            axis,
+                        }
+                    }
                     _ => return Err("Unknown GUI API action".into()),
                 };
-                let motion = matches!(command, Command::Move { .. } | Command::Initialize { .. });
-                app.controller.send_remote(id.clone(), command)?;
+                let alignment_jog = matches!(
+                    command,
+                    Command::Alignment {
+                        action: AlignmentAction::Jog { .. },
+                        ..
+                    }
+                );
+                let alignment_reverse = match &command {
+                    Command::ReverseDirection { kind, id, axis } => {
+                        Some((*kind, id.clone(), *axis))
+                    }
+                    _ => None,
+                };
+                let motion = matches!(
+                    command,
+                    Command::Move { .. } | Command::Initialize { .. } | Command::Alignment { .. }
+                );
+                if alignment_jog {
+                    // Renew before enqueue: the worker may begin before this call returns.
+                    app.controller.renew_hold();
+                }
+                if let Err(error) = app.controller.send_remote(id.clone(), command) {
+                    if alignment_jog {
+                        app.controller.clear_hold_lease();
+                    }
+                    return Err(error.into());
+                }
+                if alignment_jog {
+                    self.alignment_keepalive =
+                        Some((id.clone(), Instant::now() + ALIGNMENT_KEEPALIVE));
+                }
+                if let Some((kind, device_id, axis)) = alignment_reverse {
+                    app.device_feedback
+                        .pending_direction(kind, &device_id, axis);
+                }
                 if motion {
                     app.snapshot.running = true;
                 }
@@ -699,6 +881,7 @@ impl Bridge {
         if self.active.is_some() {
             app.controller.stop();
         }
+        self.alignment_keepalive = None;
         self.tick();
     }
 }
@@ -1045,6 +1228,11 @@ mod tests {
             "control.set_plan",
             "control.connect",
             "control.start",
+            "control.alignment_layout",
+            "control.set_alignment_layout",
+            "control.alignment",
+            "control.alignment_keepalive",
+            "control.alignment_reverse",
         ] {
             assert!(
                 description["methods"]
@@ -1054,6 +1242,218 @@ mod tests {
                     .any(|v| v == method)
             );
         }
+    }
+
+    #[test]
+    fn alignment_api_rejects_demo_invalid_motion_and_stale_keepalive_without_io() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let lease = acquired["lease"].clone();
+        let common = |motion| {
+            json!({"action":"alignment","_control_method":"alignment","client_id":A,
+                "lease":lease,"request_id":uuid::Uuid::new_v4().to_string(),
+                "kind":"scanner","device_id":"scanner-1","motion":motion})
+        };
+        let invalid = bridge.handle(
+            &mut app,
+            &common(json!({"action":"step","axis":1,"amount":0.0,"unit":"physical"})),
+        );
+        assert!(invalid.is_err());
+        let demo = bridge.handle(
+            &mut app,
+            &common(json!({"action":"step","axis":1,"amount":1.0,"unit":"physical"})),
+        );
+        assert!(demo.unwrap_err().message.contains("Demo mode"));
+        let stale = bridge.handle(
+            &mut app,
+            &json!({"action":"alignment_keepalive","_control_method":"alignment_keepalive",
+                "client_id":A,"lease":lease,"run_id":uuid::Uuid::new_v4().to_string()}),
+        );
+        assert_eq!(stale.unwrap_err().code, "unknown_run");
+        assert!(!app.any_hardware_connected());
+    }
+
+    #[test]
+    fn active_alignment_jog_stops_on_release_or_keepalive_expiry() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        bridge.active = Some("jog-1".into());
+        bridge
+            .runs
+            .push_back(json!({"id":"jog-1","status":"running","kind":"alignment",
+            "rows":0,"output":null,"error":null,"stop_requested":false,"stop_reason":null}));
+        bridge.alignment_keepalive =
+            Some(("jog-1".into(), Instant::now() - Duration::from_millis(1)));
+        bridge.poll_policy(&app);
+        assert_eq!(
+            bridge.run("jog-1").unwrap()["stop_reason"],
+            "alignment_keepalive_expired"
+        );
+        bridge.runs.back_mut().unwrap()["stop_requested"] = json!(false);
+        bridge.active = Some("jog-1".into());
+        bridge.alignment_keepalive =
+            Some(("jog-1".into(), Instant::now() + Duration::from_secs(1)));
+        bridge.owner = Some(Owner {
+            id: A.into(),
+            lease: "lease".into(),
+            label: "Python".into(),
+            until: Instant::now() + Duration::from_secs(1),
+            released: false,
+            policy: StopPolicy::default(),
+        });
+        let result = bridge.handle(
+            &mut app,
+            &json!({"action":"release","client_id":A,"reason":"disconnect"}),
+        );
+        assert!(result.is_ok());
+        assert_eq!(
+            bridge.run("jog-1").unwrap()["stop_reason"],
+            "alignment_owner_released"
+        );
+        assert!(bridge.alignment_keepalive.is_none());
+    }
+
+    #[test]
+    fn alignment_jog_ownership_duplicate_stop_and_terminal_guards_never_revive_it() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let lease = acquired["lease"].clone();
+        let id = uuid::Uuid::new_v4().to_string();
+        bridge.active = Some(id.clone());
+        bridge
+            .runs
+            .push_back(json!({"id":id,"status":"running","kind":"alignment",
+            "rows":0,"output":null,"error":null,"stop_requested":false,"stop_reason":null}));
+        let until = Instant::now() + Duration::from_secs(1);
+        bridge.alignment_keepalive = Some((id.clone(), until));
+
+        let wrong_owner = bridge.handle(
+            &mut app,
+            &json!({"action":"alignment_keepalive","_control_method":"alignment_keepalive",
+                "client_id":B,"lease":lease,"run_id":id}),
+        );
+        assert_eq!(wrong_owner.unwrap_err().code, "ownership_lost");
+        assert_eq!(bridge.alignment_keepalive.as_ref().unwrap().1, until);
+
+        // Duplicate IDs are resolved before command parsing/enqueueing, so a
+        // repeated Jog cannot extend the physical hold lease.
+        let duplicate = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"alignment","_control_method":"alignment","client_id":A,
+                    "lease":lease,"request_id":id,"kind":"scanner","device_id":"scanner-1",
+                    "motion":{"action":"jog","axis":1,"amount":1.0,"unit":"physical"}}),
+            )
+            .unwrap();
+        assert_eq!(duplicate["job_id"], id);
+        assert_eq!(bridge.alignment_keepalive.as_ref().unwrap().1, until);
+        assert!(!app.controller.has_pending());
+
+        bridge
+            .handle(
+                &mut app,
+                &json!({"action":"stop","_control_method":"stop","client_id":A,
+                    "lease":lease,"run_id":id}),
+            )
+            .unwrap();
+        assert!(bridge.alignment_keepalive.is_none());
+        assert_eq!(bridge.run(&id).unwrap()["stop_reason"], "requested");
+        let stopped_keepalive = bridge.handle(
+            &mut app,
+            &json!({"action":"alignment_keepalive","_control_method":"alignment_keepalive",
+                "client_id":A,"lease":lease,"run_id":id}),
+        );
+        assert_eq!(stopped_keepalive.unwrap_err().code, "unknown_run");
+
+        bridge.active = None;
+        bridge.runs.back_mut().unwrap()["status"] = json!("completed");
+        let terminal_keepalive = bridge.handle(
+            &mut app,
+            &json!({"action":"alignment_keepalive","_control_method":"alignment_keepalive",
+                "client_id":A,"lease":lease,"run_id":id}),
+        );
+        assert_eq!(terminal_keepalive.unwrap_err().code, "unknown_run");
+        assert!(!app.controller.has_pending());
+    }
+
+    #[test]
+    fn hardware_alignment_validation_and_layout_replacement_are_atomic_without_io() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        app.source_demo = false;
+        app.snapshot.registered_devices = vec![engine::DeviceState {
+            id: "scanner-1".into(),
+            kind: "scanner".into(),
+            connected: [false, true, false],
+            position: trkr_motion::Position::default(),
+            delay_calibration: None,
+            phase: "Ready".into(),
+        }];
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let lease = acquired["lease"].clone();
+        let request = |kind: Value, device_id: &str, axis: usize| {
+            json!({"action":"alignment","_control_method":"alignment","client_id":A,
+                "lease":lease,"request_id":uuid::Uuid::new_v4().to_string(),
+                "kind":kind,"device_id":device_id,
+                "motion":{"action":"step","axis":axis,"amount":1.0,"unit":"physical"}})
+        };
+        assert!(
+            bridge
+                .handle(&mut app, &request(json!("not_a_kind"), "scanner-1", 1))
+                .is_err()
+        );
+        assert!(
+            bridge
+                .handle(&mut app, &request(json!("scanner"), "missing", 1))
+                .unwrap_err()
+                .message
+                .contains("Unknown alignment device")
+        );
+        assert!(
+            bridge
+                .handle(&mut app, &request(json!("scanner"), "scanner-1", 0))
+                .unwrap_err()
+                .message
+                .contains("Scanner alignment axis")
+        );
+        assert!(
+            bridge
+                .handle(&mut app, &request(json!("scanner"), "scanner-1", 2))
+                .unwrap_err()
+                .message
+                .contains("Connect this alignment axis")
+        );
+        assert!(!app.controller.has_pending());
+
+        let original = app.settings.raw.clone();
+        let invalid_layout = json!({"delays":[],"scanners":[{
+            "id":"scanner-panel-1","device_id":"missing","unit":"physical","step":1.0
+        }]});
+        let rejected = bridge.handle(
+            &mut app,
+            &json!({"action":"set_alignment_layout","_control_method":"set_alignment_layout",
+                "client_id":A,"lease":lease,"layout":invalid_layout}),
+        );
+        assert!(rejected.is_err());
+        assert_eq!(app.settings.raw, original);
+        assert!(!app.controller.has_pending());
     }
     #[test]
     fn selecting_inventory_devices_is_correlated_and_never_opens_hardware() {

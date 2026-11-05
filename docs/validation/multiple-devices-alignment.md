@@ -1,15 +1,15 @@
 # Multiple devices and Alignment validation / 複数機器・Alignment検証
 
-Development branch based on `aff3794` (published v0.4.10), checked on 2026-11-05.
-This is feature-development evidence, not a hardware qualification or release record.
+v0.5.0 release candidate based on `aff3794` (v0.4.10), checked on 2026-11-05.
+This records local software checks; CI and published artifacts are verified separately.
 
-公開済みv0.4.10の`aff3794`を基点に、2026-11-05に開発ブランチを確認しました。
-本記録は機能開発の検証であり、実機の動作保証・公開済みリリースの記録ではありません。
+v0.4.10の`aff3794`を基点とするv0.5.0公開候補を2026-11-05に確認しました。
+本記録はローカルのソフトウェア検証です。CIと配布物は別途確認し、実機の動作保証ではありません。
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 384 passed, 0 failed / 成功384、失敗0 |
-| Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
+| Rust workspace tests | 389 passed, 0 failed / 成功389、失敗0 |
+| Python API, notebook, packaging and layout-validator tests | 68 passed, 0 failed / 成功68、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
 | Actual GUI, five measurement tabs × Scanner Device settings | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
@@ -18,7 +18,45 @@ This is feature-development evidence, not a hardware qualification or release re
 | Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
 | Physical instruments / 実機 | Not operated or qualified / 未操作・未検証 |
 
-## Selective Alignment panels / Alignmentパネルの選択
+## Panel lifecycle and public API / パネル管理と公開API
+
+The final scanner view uses a square graph at left, X/Y readbacks above the
+right-hand direction pad, and four complete cards at 1566×700 (Retina 2×).
+Delay shows two horizontal cards with Options and Delete in the same header positions.
+Five expanded-device measurement geometry captures pass.
+
+最終Scanner画面は左の正方形グラフ・右上X/Y値・右下十字操作で、1566×700（Retina 2倍）に
+4枚を表示できます。Delayの2枚もOptionsとDeleteの見出し位置を統一しました。
+Device展開中の測定5画面も配置検査に成功しました。
+
+Tests cover Add/Delete limits, stable panel identity, empty layouts, unique device
+assignments, finite nonnegative Step, Config roundtrip and atomic invalid-update
+rejection. Deleting a registered device clears only its panel binding and retains
+the other panel settings. One device-free layout model validates both GUI and API.
+
+Add／Deleteの枚数制限・安定したパネルID・空の配置・機器重複防止・Stepの有限／非負条件・
+保存再読込・不正変更時の旧設定保持を検証しました。登録機器削除時も対象割当だけを消し、
+ほかのパネル設定を維持します。GUIとAPIは同じパネル設定モデルで検証します。
+
+The new native/common API tests cover wrong owners/leases, duplicate Jog requests
+without renewal, Stop and terminal receipt non-revival, owner release, keepalive
+expiry, invalid kind/device/axis and unconnected targets. A separate code review
+found no remaining material issue; its deletion-persistence test suggestion was added.
+
+Native／共通APIでは操作権限・lease不一致、重複Jog要求による期限延長防止、Stop／完了後の
+再開拒否、権限解放・継続期限切れ、不正な種類／機器／軸、未接続を検証しました。
+独立レビューで残る重大な問題はなく、提案された削除時の設定保持テストを追加しました。
+
+The compiled v0.5.0 GUI integration passed empty/nonempty layouts with all three
+units, duplicate rejection without mutation, save/reload, advertised common
+methods, Demo/offline motion rejection, simulated TRKR/SRKR (three rows each),
+and GUI survival after Python closed. No instrument was connected by these checks.
+
+ビルドしたv0.5.0の実GUIで、3単位の空／非空パネル、重複拒否時の設定維持、保存再読込、
+共通APIの操作一覧、Demo／未接続での移動拒否、TRKR／SRKR各3点の模擬測定、
+Python終了後のGUI存続を確認しました。装置接続は行っていません。
+
+## Earlier selective-panel checks / 以前のパネル選択検証
 
 Alignment Step editing now stops at zero; negative keyboard input is clamped,
 positive input is preserved, and zero cannot start Step/Hold. The selectors allow

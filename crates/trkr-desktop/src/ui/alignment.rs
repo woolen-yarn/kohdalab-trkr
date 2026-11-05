@@ -4,6 +4,7 @@
 //! an engine command, so the regular worker retains exclusive serial access.
 
 use super::*;
+use crate::alignment_config::{AlignmentLayout, Panel};
 use crate::{
     engine::{AlignmentAction, AlignmentUnit, Command, DeviceState, MotionKind},
     inventory::{DelayEntry, DeviceIds, Inventory, LockinEntry, ScannerEntry},
@@ -62,14 +63,8 @@ struct InitializeTarget {
 /// display name or reorders the inventory.
 pub struct AlignmentUi {
     page: AlignmentPage,
-    delay_panels: [Option<String>; 2],
-    scanner_panels: [Option<String>; 4],
-    delay_panels_initialized: bool,
-    scanner_panels_initialized: bool,
-    delay_unit: [AlignmentUnit; 2],
-    scanner_unit: [AlignmentUnit; 4],
-    delay_step: [f64; 2],
-    scanner_step: [f64; 4],
+    layout: AlignmentLayout,
+    delete_panel: Option<(MotionKind, String)>,
     pressed: Option<PressedControl>,
     options: Option<OptionsTarget>,
     held: Option<HeldControl>,
@@ -83,14 +78,8 @@ impl Default for AlignmentUi {
     fn default() -> Self {
         Self {
             page: AlignmentPage::Delay,
-            delay_panels: Default::default(),
-            scanner_panels: Default::default(),
-            delay_panels_initialized: false,
-            scanner_panels_initialized: false,
-            delay_unit: [AlignmentUnit::Physical; 2],
-            scanner_unit: [AlignmentUnit::Physical; 4],
-            delay_step: [1.; 2],
-            scanner_step: [1.; 4],
+            layout: AlignmentLayout::default(),
+            delete_panel: None,
             pressed: None,
             options: None,
             held: None,
@@ -104,75 +93,23 @@ impl Default for AlignmentUi {
 
 impl AlignmentUi {
     pub(super) fn highlights(&self, kind: &str, id: &str) -> bool {
-        match (self.page, kind) {
-            (AlignmentPage::Delay, "delay") => self
-                .delay_panels
-                .iter()
-                .flatten()
-                .any(|selected| selected == id),
-            (AlignmentPage::Scanner, "scanner") => self
-                .scanner_panels
-                .iter()
-                .flatten()
-                .any(|selected| selected == id),
-            _ => false,
-        }
-    }
-    fn delay_id(&mut self, slot: usize, available: &[DeviceOption]) -> Option<String> {
-        reconcile_panels(
-            &mut self.delay_panels,
-            &mut self.delay_panels_initialized,
-            available,
-        );
-        self.delay_panels[slot].clone()
-    }
-
-    fn scanner_id(&mut self, slot: usize, available: &[DeviceOption]) -> Option<String> {
-        reconcile_panels(
-            &mut self.scanner_panels,
-            &mut self.scanner_panels_initialized,
-            available,
-        );
-        self.scanner_panels[slot].clone()
+        let panels = match (self.page, kind) {
+            (AlignmentPage::Delay, "delay") => &self.layout.delays,
+            (AlignmentPage::Scanner, "scanner") => &self.layout.scanners,
+            _ => return false,
+        };
+        panels
+            .iter()
+            .any(|panel| panel.device_id.as_deref() == Some(id))
     }
 }
 
-/// Assign defaults once. An explicit empty slot (or a removed device) must not
-/// silently acquire a new device on a later frame or inventory change.
-fn reconcile_panels<const N: usize>(
-    panels: &mut [Option<String>; N],
-    initialized: &mut bool,
-    available: &[DeviceOption],
-) {
-    let mut used = std::collections::HashSet::new();
-    for panel in panels.iter_mut() {
-        if panel.as_ref().is_some_and(|id| {
-            !available.iter().any(|option| &option.id == id) || !used.insert(id.clone())
-        }) {
-            *panel = None;
-        }
-    }
-    if !*initialized {
-        for panel in panels.iter_mut().filter(|panel| panel.is_none()) {
-            if let Some(option) = available.iter().find(|option| !used.contains(&option.id)) {
-                *panel = Some(option.id.clone());
-                used.insert(option.id.clone());
-            }
-        }
-        *initialized = true;
-    }
-}
-
-fn panel_options(
-    available: &[DeviceOption],
-    panels: &[Option<String>],
-    slot: usize,
-) -> Vec<DeviceOption> {
+fn panel_options(available: &[DeviceOption], panels: &[Panel], slot: usize) -> Vec<DeviceOption> {
     available
         .iter()
         .filter(|option| {
-            !panels.iter().enumerate().any(|(other, selected)| {
-                other != slot && selected.as_deref() == Some(option.id.as_str())
+            !panels.iter().enumerate().any(|(other, panel)| {
+                other != slot && panel.device_id.as_deref() == Some(option.id.as_str())
             })
         })
         .cloned()
@@ -217,6 +154,10 @@ enum Intent {
         id: String,
         axis: usize,
     },
+    DeletePanel {
+        kind: MotionKind,
+        id: String,
+    },
     Stop,
 }
 
@@ -244,6 +185,67 @@ struct StepControl<'a> {
 }
 
 impl App {
+    pub(super) fn hydrate_alignment(&mut self) {
+        match AlignmentLayout::from_profile(&self.settings.raw, &self.inventory) {
+            Ok(layout) => self.alignment.layout = layout,
+            Err(error) => {
+                self.alignment.layout = AlignmentLayout::default();
+                self.note(error);
+            }
+        }
+    }
+    pub(super) fn sync_alignment(&mut self) -> Result<(), String> {
+        self.alignment.layout.validate(&self.inventory)?;
+        self.settings.raw["alignment"] = self.alignment.layout.value();
+        Ok(())
+    }
+    pub(super) fn alignment_layout_value(&mut self) -> Result<Value, String> {
+        self.sync_alignment()?;
+        Ok(self.alignment.layout.value())
+    }
+    pub(super) fn set_alignment_layout_value(&mut self, value: &Value) -> Result<Value, String> {
+        let layout: AlignmentLayout =
+            serde_json::from_value(value.clone()).map_err(|error| format!("Alignment: {error}"))?;
+        layout.validate(&self.inventory)?;
+        self.alignment_cancel_hold();
+        self.alignment.options = None;
+        self.alignment.initialize = None;
+        self.alignment.delete_panel = None;
+        self.settings.raw["alignment"] = layout.value();
+        self.alignment.layout = layout;
+        Ok(self.alignment.layout.value())
+    }
+
+    fn alignment_delete_dialog(&mut self, ctx: &egui::Context) {
+        let Some((kind, id)) = self.alignment.delete_panel.clone() else {
+            return;
+        };
+        let editable = !self.demo_viewer
+            && !self.snapshot.running
+            && !self.controller.has_pending()
+            && !self.python_locked();
+        let mut remove = false;
+        let mut cancel = false;
+        let response = egui::Modal::new(egui::Id::new("delete-alignment-panel")).show(ctx, |ui| {
+            ui.set_width(300.);
+            ui.heading("Delete alignment panel?");
+            ui.label("The device remains registered. Its connection is unchanged.");
+            ui.add_space(10.);
+            ui.horizontal(|ui| {
+                cancel = ui.button("Cancel").clicked();
+                remove = ui
+                    .add_enabled(editable, egui::Button::new("Delete"))
+                    .clicked();
+            });
+        });
+        if remove {
+            self.alignment.layout.remove(kind, &id);
+            self.alignment.delete_panel = None;
+        } else if cancel || response.should_close() {
+            self.alignment.delete_panel = None;
+        }
+    }
+
     /// The root layout calls this instead of the plot area while Alignment is
     /// selected.  It intentionally keeps all configuration and device cards
     /// in their normal left/right panels.
@@ -253,7 +255,9 @@ impl App {
             || self.controller.has_pending()
             || self.python_locked()
             || self.alignment.options.is_some()
-            || self.alignment.initialize.is_some();
+            || self.alignment.initialize.is_some()
+            || self.alignment.delete_panel.is_some();
+        let previous_layout = self.alignment.layout.clone();
         let delay_options: Vec<_> = self
             .inventory
             .delays
@@ -276,6 +280,10 @@ impl App {
             .inventory
             .delays
             .iter()
+            .filter(|entry| {
+                self.alignment.page == AlignmentPage::Delay
+                    && self.alignment.highlights("delay", &entry.id)
+            })
             .map(|entry| DelayPanel {
                 option: DeviceOption {
                     id: entry.id.clone(),
@@ -289,6 +297,10 @@ impl App {
             .inventory
             .scanners
             .iter()
+            .filter(|entry| {
+                self.alignment.page == AlignmentPage::Scanner
+                    && self.alignment.highlights("scanner", &entry.id)
+            })
             .map(|entry| ScannerPanel {
                 option: DeviceOption {
                     id: entry.id.clone(),
@@ -313,7 +325,7 @@ impl App {
             if self.alignment.preview {
                 label(
                     ui,
-                    area.right_top() + Vec2::new(-228., 14.),
+                    area.min + Vec2::new(200., 14.),
                     "PREVIEW — synthetic positions · no hardware",
                     Color32::from_rgb(237, 174, 74),
                 );
@@ -340,6 +352,27 @@ impl App {
                 {
                     self.alignment.page = page;
                 }
+            }
+            let kind = if self.alignment.page == AlignmentPage::Delay {
+                MotionKind::Delay
+            } else {
+                MotionKind::Scanner
+            };
+            let can_add =
+                !locked && self.alignment.layout.panels(kind).len() < AlignmentLayout::limit(kind);
+            if button(
+                ui,
+                egui::Rect::from_min_size(
+                    area.right_top() + Vec2::new(-112., 8.),
+                    Vec2::new(100., 26.),
+                ),
+                "+ Add panel",
+                can_add,
+            )
+            .clicked()
+                && let Err(error) = self.alignment.layout.add(kind)
+            {
+                self.note(error);
             }
             let content = egui::Rect::from_min_max(
                 area.min + Vec2::new(10., 42.),
@@ -369,13 +402,13 @@ impl App {
                             AlignmentPage::Delay => {
                                 let gap = 8.;
                                 let mut y = content.min.y;
-                                for slot in 0..2 {
+                                for slot in 0..render.alignment.layout.delays.len() {
                                     let height = 216.;
                                     let rect = egui::Rect::from_min_size(
                                         egui::pos2(content.min.x, y),
                                         Vec2::new(content.width(), height),
                                     );
-                                    let id = render.alignment.delay_id(slot, &delay_options);
+                                    let id = render.alignment.layout.delays[slot].device_id.clone();
                                     let panel = id.as_deref().and_then(|id| {
                                         delays.iter().find(|panel| panel.option.id == id)
                                     });
@@ -388,11 +421,14 @@ impl App {
                                 let gap = 8.;
                                 let width = ((content.width() - gap) * 0.5).max(240.);
                                 let mut y = content.min.y;
-                                for row in 0..2 {
+                                for row in 0..render.alignment.layout.scanners.len().div_ceil(2) {
                                     let first = row * 2;
                                     let height = 282.;
                                     for column in 0..2 {
                                         let slot = first + column;
+                                        if slot >= render.alignment.layout.scanners.len() {
+                                            break;
+                                        }
                                         let rect = egui::Rect::from_min_size(
                                             egui::pos2(
                                                 content.min.x + column as f32 * (width + gap),
@@ -400,8 +436,9 @@ impl App {
                                             ),
                                             Vec2::new(width, height),
                                         );
-                                        let id =
-                                            render.alignment.scanner_id(slot, &scanner_options);
+                                        let id = render.alignment.layout.scanners[slot]
+                                            .device_id
+                                            .clone();
                                         let panel = id.as_deref().and_then(|id| {
                                             scanners.iter().find(|panel| panel.option.id == id)
                                         });
@@ -436,6 +473,10 @@ impl App {
         self.apply_alignment_intents(intents);
         self.alignment_options_dialog(ui.ctx());
         self.alignment_initialize_dialog(ui.ctx());
+        self.alignment_delete_dialog(ui.ctx());
+        if self.alignment.layout != previous_layout {
+            self.settings.raw["alignment"] = self.alignment.layout.value();
+        }
     }
 
     /// Called on tab changes, window focus loss, close, and pointer release.
@@ -462,9 +503,6 @@ impl App {
         self.alignment.preview = true;
         self.alignment.held = None;
         self.alignment.initialize = None;
-        self.alignment.delay_panels = [Some("delay-1".into()), Some("delay-2".into())];
-        self.alignment.scanner_panels =
-            std::array::from_fn(|index| Some(format!("scanner-{}", index + 1)));
 
         let delays: Vec<_> = (1..=2)
             .map(|index| {
@@ -507,6 +545,11 @@ impl App {
         self.inventory
             .project_selected(&mut self.settings.raw)
             .expect("valid preview inventory");
+        self.settings
+            .raw
+            .as_object_mut()
+            .unwrap()
+            .remove("alignment");
         self.hydrate();
         self.snapshot.running = false;
         self.snapshot.phase = "PREVIEW — no hardware".into();
@@ -526,7 +569,7 @@ impl App {
         });
     }
 
-    fn device_state(&self, kind: MotionKind, id: &str) -> Option<DeviceState> {
+    pub(super) fn device_state(&self, kind: MotionKind, id: &str) -> Option<DeviceState> {
         let kind = match kind {
             MotionKind::Delay => "delay",
             MotionKind::Scanner => "scanner",
@@ -597,6 +640,10 @@ impl App {
                     if let Err(error) = self.reverse_device_direction(kind, &id, axis) {
                         self.note(error);
                     }
+                }
+                Intent::DeletePanel { kind, id } => {
+                    self.alignment_cancel_hold();
+                    self.alignment.delete_panel = Some((kind, id));
                 }
                 Intent::Stop => {
                     self.alignment.pressed = None;
@@ -826,7 +873,7 @@ fn preview_device_states(inventory: &Inventory) -> Vec<DeviceState> {
 fn options_button(render: &mut RenderState<'_>, rect: egui::Rect, kind: MotionKind, id: &str) {
     if button(
         render.ui,
-        egui::Rect::from_min_size(rect.right_top() + Vec2::new(-84., 8.), Vec2::new(70., 26.)),
+        egui::Rect::from_min_size(rect.right_top() + Vec2::new(-144., 8.), Vec2::new(70., 26.)),
         "Options",
         !render.locked || render.alignment.preview,
     )
@@ -839,6 +886,27 @@ fn options_button(render: &mut RenderState<'_>, rect: egui::Rect, kind: MotionKi
     }
 }
 
+fn delete_panel_button(
+    render: &mut RenderState<'_>,
+    rect: egui::Rect,
+    kind: MotionKind,
+    slot: usize,
+) {
+    if button(
+        render.ui,
+        egui::Rect::from_min_size(rect.right_top() + Vec2::new(-68., 8.), Vec2::new(54., 26.)),
+        "Delete",
+        !render.locked,
+    )
+    .clicked()
+    {
+        render.intents.push(Intent::DeletePanel {
+            kind,
+            id: render.alignment.layout.panels(kind)[slot].id.clone(),
+        });
+    }
+}
+
 fn draw_delay_card(
     render: &mut RenderState<'_>,
     rect: egui::Rect,
@@ -847,17 +915,21 @@ fn draw_delay_card(
     panel: Option<&DelayPanel>,
 ) {
     card(render.ui, rect, "");
-    let options = panel_options(options, &render.alignment.delay_panels, slot);
-    let previous = render.alignment.delay_panels[slot].clone();
+    delete_panel_button(render, rect, MotionKind::Delay, slot);
+    let options = panel_options(options, &render.alignment.layout.delays, slot);
+    let previous = render.alignment.layout.delays[slot].device_id.clone();
     selector(
         render.ui,
         rect,
-        ("delay-select", slot),
-        &mut render.alignment.delay_panels[slot],
+        (
+            "delay-select",
+            render.alignment.layout.delays[slot].id.clone(),
+        ),
+        &mut render.alignment.layout.delays[slot].device_id,
         &options,
         render.locked,
     );
-    if previous != render.alignment.delay_panels[slot] {
+    if previous != render.alignment.layout.delays[slot].device_id {
         return;
     }
     let Some(panel) = panel else {
@@ -881,8 +953,11 @@ fn draw_delay_card(
     unit_selector(
         render.ui,
         egui::Rect::from_min_size(rect.min + Vec2::new(46., 48.), Vec2::new(138., 26.)),
-        ("delay-unit", slot),
-        &mut render.alignment.delay_unit[slot],
+        (
+            "delay-unit",
+            render.alignment.layout.delays[slot].id.clone(),
+        ),
+        &mut render.alignment.layout.delays[slot].unit,
         !render.locked,
         true,
     );
@@ -890,10 +965,10 @@ fn draw_delay_card(
     number(
         render.ui,
         egui::Rect::from_min_size(rect.min + Vec2::new(238., 48.), Vec2::new(100., 26.)),
-        &mut render.alignment.delay_step[slot],
+        &mut render.alignment.layout.delays[slot].step,
         !render.locked,
     );
-    let unit = render.alignment.delay_unit[slot];
+    let unit = render.alignment.layout.delays[slot].unit;
     let display = delay_display(panel, unit);
     render.ui.painter().text(
         rect.center_top() + Vec2::new(0., 86.),
@@ -907,7 +982,7 @@ fn draw_delay_card(
         rect.right_top() + Vec2::new(-112., 162.),
     );
     position_rail(render.ui, rail_rect, &display);
-    let amount = render.alignment.delay_step[slot];
+    let amount = render.alignment.layout.delays[slot].step;
     for (positive, x) in [(false, 60.), (true, rect.width() - 100.)] {
         motion_arrow_button(
             render,
@@ -987,17 +1062,21 @@ fn draw_scanner_card(
     panel: Option<&ScannerPanel>,
 ) {
     card(render.ui, rect, "");
-    let options = panel_options(options, &render.alignment.scanner_panels, slot);
-    let previous = render.alignment.scanner_panels[slot].clone();
+    delete_panel_button(render, rect, MotionKind::Scanner, slot);
+    let options = panel_options(options, &render.alignment.layout.scanners, slot);
+    let previous = render.alignment.layout.scanners[slot].device_id.clone();
     selector(
         render.ui,
         rect,
-        ("scanner-select", slot),
-        &mut render.alignment.scanner_panels[slot],
+        (
+            "scanner-select",
+            render.alignment.layout.scanners[slot].id.clone(),
+        ),
+        &mut render.alignment.layout.scanners[slot].device_id,
         &options,
         render.locked,
     );
-    if previous != render.alignment.scanner_panels[slot] {
+    if previous != render.alignment.layout.scanners[slot].device_id {
         return;
     }
     let Some(panel) = panel else {
@@ -1022,8 +1101,11 @@ fn draw_scanner_card(
     unit_selector(
         render.ui,
         egui::Rect::from_min_size(rect.min + Vec2::new(46., 48.), Vec2::new(unit_width, 26.)),
-        ("scanner-unit", slot),
-        &mut render.alignment.scanner_unit[slot],
+        (
+            "scanner-unit",
+            render.alignment.layout.scanners[slot].id.clone(),
+        ),
+        &mut render.alignment.layout.scanners[slot].unit,
         !render.locked,
         false,
     );
@@ -1035,19 +1117,19 @@ fn draw_scanner_card(
             rect.min + Vec2::new(step_x + 36., 48.),
             Vec2::new((rect.width() - step_x - 50.).min(100.), 26.),
         ),
-        &mut render.alignment.scanner_step[slot],
+        &mut render.alignment.layout.scanners[slot].step,
         !render.locked,
     );
-    let unit = render.alignment.scanner_unit[slot];
+    let unit = render.alignment.layout.scanners[slot].unit;
     let display = [
         scanner_display(panel, unit, 0),
         scanner_display(panel, unit, 1),
     ];
-    let graph_width = rect.width() - 186.;
+    let graph_size = (rect.width() - 186.).min(172.);
     for (axis, y) in [(0, 94.), (1, 114.)] {
         label(
             render.ui,
-            rect.min + Vec2::new(14., y),
+            rect.right_top() + Vec2::new(-160., y),
             &format!(
                 "{}  {}",
                 display[axis].label,
@@ -1058,13 +1140,10 @@ fn draw_scanner_card(
     }
     position_graph(
         render.ui,
-        egui::Rect::from_min_size(
-            rect.min + Vec2::new(14., 138.),
-            Vec2::new(graph_width, 114.),
-        ),
+        egui::Rect::from_min_size(rect.min + Vec2::new(14., 88.), Vec2::splat(graph_size)),
         &display,
     );
-    let center = rect.right_top() + Vec2::new(-88., 184.);
+    let center = rect.right_top() + Vec2::new(-88., 190.);
     let pad = Vec2::new(42., 40.);
     for (axis, positive, offset, direction) in [
         (1, false, Vec2::new(-46., 0.), (-1., 0.)),
@@ -1080,7 +1159,7 @@ fn draw_scanner_card(
                 kind: MotionKind::Scanner,
                 id: &panel.option.id,
                 axis,
-                amount: render.alignment.scanner_step[slot],
+                amount: render.alignment.layout.scanners[slot].step,
                 unit,
                 positive,
                 locked: render.locked || !axes[axis],
@@ -1100,7 +1179,7 @@ fn draw_scanner_card(
     }
     label(
         render.ui,
-        rect.min + Vec2::new(14., 262.),
+        rect.min + Vec2::new(14., 264.),
         "Click: step · Hold: move",
         MUTED,
     );
@@ -1296,12 +1375,12 @@ fn label(ui: &mut egui::Ui, position: egui::Pos2, text: &str, color: Color32) {
 }
 fn status(ui: &mut egui::Ui, rect: egui::Rect, connected: bool, phase: &str) {
     let color = if connected { READY } else { MUTED };
-    let left = rect.left() + 14. + ((rect.width() - 28.) * 0.45).min(230.) + 12.;
+    let left = rect.left() + 14. + ((rect.width() - 28.) * 0.36).min(230.) + 12.;
     ui.painter()
         .circle_filled(egui::pos2(left, rect.top() + 20.), 3., color);
     let text_rect = egui::Rect::from_min_max(
         egui::pos2(left + 8., rect.top() + 13.),
-        egui::pos2(rect.right() - 92., rect.top() + 35.),
+        egui::pos2(rect.right() - 152., rect.top() + 35.),
     );
     ui.painter()
         .with_clip_rect(ui.clip_rect().intersect(text_rect))
@@ -1336,7 +1415,7 @@ fn selector(
 ) {
     let field = egui::Rect::from_min_size(
         rect.min + Vec2::new(14., 7.),
-        Vec2::new(((rect.width() - 28.) * 0.45).min(230.), 28.),
+        Vec2::new(((rect.width() - 28.) * 0.36).min(230.), 28.),
     );
     ui.scope_builder(egui::UiBuilder::new().max_rect(field), |ui| {
         ui.add_enabled_ui(!locked, |ui| {
@@ -1383,6 +1462,9 @@ fn number(ui: &mut egui::Ui, rect: egui::Rect, value: &mut f64, enabled: bool) {
                 egui::DragValue::new(value)
                     .speed(0.1)
                     .range(0.0..=1e12)
+                    .custom_parser(|text| {
+                        text.parse::<f64>().ok().filter(|value| value.is_finite())
+                    })
                     .max_decimals(4),
             );
         });
@@ -1589,7 +1671,7 @@ fn position_graph(ui: &mut egui::Ui, rect: egui::Rect, display: &[PositionDispla
         Stroke::new(1_f32, BORDER),
         egui::StrokeKind::Inside,
     );
-    let area = rect.shrink2(Vec2::new(14., 16.));
+    let area = rect.shrink(16.);
     let limits: [[f64; 2]; 2] = std::array::from_fn(|axis| {
         display[axis]
             .limits
@@ -1684,93 +1766,67 @@ mod tests {
     }
 
     #[test]
-    fn panel_binding_uses_stable_id_not_display_order() {
-        let mut state = AlignmentUi::default();
-        state.scanner_panels[0] = Some("scanner-2".into());
-        let mut reversed = devices();
-        reversed.reverse();
-        assert_eq!(state.scanner_id(0, &reversed).as_deref(), Some("scanner-2"));
-    }
-
-    #[test]
-    fn stale_panel_binding_falls_back_to_available_device() {
-        let mut state = AlignmentUi::default();
-        state.delay_panels[0] = Some("removed".into());
-        let delay = vec![DeviceOption {
-            id: "delay-2".into(),
-            name: "Delay 2".into(),
-        }];
-        assert_eq!(state.delay_id(0, &delay).as_deref(), Some("delay-2"));
-    }
-
-    #[test]
-    fn cleared_panels_stay_empty_after_reordering_and_adding_devices() {
-        let mut state = AlignmentUi::default();
+    fn panel_candidates_follow_stable_device_ids_and_release_after_removal() {
+        let mut panels: Vec<Panel> = devices()
+            .iter()
+            .map(|device| Panel {
+                device_id: Some(device.id.clone()),
+                ..Panel::empty()
+            })
+            .collect();
+        panels.push(Panel::empty());
         let mut available = devices();
-        assert_eq!(state.delay_id(1, &available).as_deref(), Some("scanner-2"));
-        assert_eq!(
-            state.scanner_id(1, &available).as_deref(),
-            Some("scanner-2")
-        );
-        state.delay_panels[1] = None;
-        state.scanner_panels[1] = None;
         available.reverse();
-        available[0].name = "Renamed".into();
-        available.push(DeviceOption {
-            id: "scanner-3".into(),
-            name: "Scanner 3".into(),
-        });
-        for _ in 0..3 {
-            assert_eq!(state.delay_id(1, &available), None);
-            assert_eq!(state.scanner_id(1, &available), None);
-            assert_eq!(state.scanner_id(2, &available), None);
-        }
-        assert_eq!(state.delay_id(0, &available).as_deref(), Some("scanner-1"));
-        assert_eq!(
-            state.scanner_id(0, &available).as_deref(),
-            Some("scanner-1")
-        );
+        assert!(panel_options(&available, &panels, 2).is_empty());
+        assert_eq!(panel_options(&available, &panels, 0)[0].id, "scanner-1");
+        panels[1].device_id = None;
+        assert_eq!(panel_options(&available, &panels, 2)[0].id, "scanner-2");
+        panels.remove(0);
+        assert_eq!(panel_options(&available, &panels, 1).len(), 2);
     }
 
     #[test]
-    fn each_device_is_available_to_one_panel_and_can_be_reassigned_after_clearing() {
-        let mut state = AlignmentUi::default();
-        let available = devices();
-        state.scanner_id(0, &available);
-        assert!(panel_options(&available, &state.scanner_panels, 2).is_empty());
-        let own = panel_options(&available, &state.scanner_panels, 0);
-        assert_eq!(own.len(), 1);
-        assert_eq!(own[0].id, "scanner-1");
-        state.scanner_panels[1] = None;
-        let freed = panel_options(&available, &state.scanner_panels, 2);
-        assert_eq!(freed.len(), 1);
-        assert_eq!(freed[0].id, "scanner-2");
-        state.scanner_panels[2] = Some(freed[0].id.clone());
-        assert_eq!(state.scanner_id(1, &available), None);
-        assert_eq!(
-            state.scanner_id(2, &available).as_deref(),
-            Some("scanner-2")
-        );
-        assert!(panel_options(&available, &state.scanner_panels, 1).is_empty());
+    fn panel_layout_roundtrips_through_profile_and_api_rejects_invalid_replacement() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let original = app.alignment_layout_value().unwrap();
+        let mut changed = original.clone();
+        changed["delays"] = json!([]);
+        changed["scanners"][0]["unit"] = json!("corrected");
+        changed["scanners"][0]["step"] = json!(2.5);
+        let accepted = app.set_alignment_layout_value(&changed).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        app.sync_all_plans().unwrap();
+        app.settings.save(&path).unwrap();
+        app.settings = Settings::load(&path).unwrap();
+        app.hydrate();
+        assert_eq!(app.alignment_layout_value().unwrap(), accepted);
+        changed["scanners"][0]["device_id"] = json!("missing");
+        assert!(app.set_alignment_layout_value(&changed).is_err());
+        assert_eq!(app.alignment_layout_value().unwrap(), accepted);
+        assert_eq!(app.settings.raw["alignment"], accepted);
     }
 
     #[test]
-    fn removed_or_duplicate_bindings_clear_without_retargeting() {
-        let mut state = AlignmentUi::default();
-        let available = devices();
-        state.delay_id(0, &available);
-        state.scanner_id(0, &available);
-        state.scanner_panels[3] = Some("scanner-1".into());
-        assert_eq!(state.scanner_id(3, &available), None);
+    fn deleting_panel_does_not_delete_instrument_or_change_workflow_assignment() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let devices = serde_json::to_value(&app.inventory).unwrap();
+        let assignments: Vec<_> = Workflow::ALL
+            .into_iter()
+            .map(|w| app.settings.workflow_device_ids(w).unwrap())
+            .collect();
+        let key = app.alignment.layout.scanners[0].id.clone();
+        app.alignment.layout.remove(MotionKind::Scanner, &key);
+        app.sync_alignment().unwrap();
+        app.hydrate();
+        assert!(app.alignment.layout.scanners.is_empty());
+        assert_eq!(serde_json::to_value(&app.inventory).unwrap(), devices);
         assert_eq!(
-            state.scanner_id(0, &available).as_deref(),
-            Some("scanner-1")
-        );
-        assert_eq!(state.delay_id(0, &available[1..]), None);
-        assert_eq!(state.scanner_id(0, &available[1..]), None);
-        assert_eq!(
-            state.delay_id(1, &available[1..]).as_deref(),
-            Some("scanner-2")
+            Workflow::ALL
+                .into_iter()
+                .map(|w| app.settings.workflow_device_ids(w).unwrap())
+                .collect::<Vec<_>>(),
+            assignments
         );
     }
 
@@ -1801,7 +1857,7 @@ mod tests {
             repeat: false,
             modifiers,
         };
-        for (text, expected) in [("-5", 0.), ("0.125", 0.125)] {
+        for (text, expected) in [("-5", 0.), ("0.125", 0.125), ("NaN", 0.125)] {
             frame(vec![], Default::default());
             for pressed in [true, false] {
                 frame(
