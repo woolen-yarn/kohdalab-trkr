@@ -3,6 +3,10 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub trait Bus {
+    /// A second view of a connection owned by the same motion worker.
+    fn shared_clone(&self) -> Option<Box<dyn Bus + Send>> {
+        None
+    }
     fn begin_recording(&mut self) {}
     fn take_recording(&mut self) -> Vec<crate::MotionExchange> {
         Vec::new()
@@ -20,6 +24,9 @@ pub trait Bus {
 }
 
 impl<T: Bus + ?Sized> Bus for Box<T> {
+    fn shared_clone(&self) -> Option<Box<dyn Bus + Send>> {
+        (**self).shared_clone()
+    }
     fn begin_recording(&mut self) {
         (**self).begin_recording();
     }
@@ -125,8 +132,11 @@ pub fn delay_ready(bus: &mut impl Bus) -> Result<bool, String> {
 pub fn delay_stop(bus: &mut impl Bus, model: DelayModel, axis: u8) -> Result<(), String> {
     require_axis(axis)?;
     let command = match model {
-        DelayModel::Gsc01A => format!("L:{axis}"),
-        DelayModel::Shot302Gs | DelayModel::Gsc01 => "L:E".to_owned(),
+        // SHOT-302GS supports L:1/L:2 for an axis-local deceleration stop;
+        // L:E stops every axis and must remain reserved for an explicit
+        // controller-wide emergency operation. GSC01 is single-axis.
+        DelayModel::Shot302Gs | DelayModel::Gsc01A => format!("L:{axis}"),
+        DelayModel::Gsc01 => "L:E".to_owned(),
     };
     ack(bus.stop_query(&command)?, "L")
 }
@@ -441,6 +451,28 @@ mod tests {
         writes: Vec<String>,
         replies: VecDeque<Result<String, String>>,
     }
+    struct TwoAxisShotBus {
+        commands: Vec<String>,
+        moving: [bool; 2],
+    }
+    impl Bus for TwoAxisShotBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            Err(format!("unexpected query {command}"))
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            Err(format!("unexpected write {command}"))
+        }
+        fn stop_query(&mut self, command: &str) -> Result<String, String> {
+            self.commands.push(command.into());
+            match command {
+                "L:1" => self.moving[0] = false,
+                "L:2" => self.moving[1] = false,
+                "L:E" => self.moving = [false, false],
+                _ => return Err(format!("unexpected stop {command}")),
+            }
+            Ok("OK".into())
+        }
+    }
     impl FakeBus {
         fn new(replies: &[&str]) -> Self {
             Self {
@@ -466,6 +498,24 @@ mod tests {
         let mut b = FakeBus::new(&["OK", "OK"]);
         delay_start(&mut b, DelayModel::Shot302Gs, 1, -9).unwrap();
         assert_eq!(b.writes, ["A:1-P9", "G:"]);
+    }
+    #[test]
+    fn delay_stop_uses_the_narrowest_supported_scope() {
+        let mut shot = TwoAxisShotBus {
+            commands: vec![],
+            moving: [true, true],
+        };
+        delay_stop(&mut shot, DelayModel::Shot302Gs, 2).unwrap();
+        assert_eq!(shot.commands, ["L:2"]);
+        assert_eq!(shot.moving, [true, false]);
+
+        let mut gsc = FakeBus::new(&["OK"]);
+        delay_stop(&mut gsc, DelayModel::Gsc01, 1).unwrap();
+        assert_eq!(gsc.writes, ["L:E"]);
+
+        let mut gsc_a = FakeBus::new(&["OK"]);
+        delay_stop(&mut gsc_a, DelayModel::Gsc01A, 1).unwrap();
+        assert_eq!(gsc_a.writes, ["L:1"]);
     }
     #[test]
     fn microstep_tables() {

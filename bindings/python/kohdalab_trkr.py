@@ -492,6 +492,86 @@ class GuiClient:
         return self._job("initialize", axis=axis, home=home, move_to_origin=move_to_origin,
                          request_id=request_id)
 
+    def alignment_layout(self) -> dict[str, Any]:
+        """Return saved Alignment panel slots without changing connections."""
+        value = self._request("alignment_layout")
+        if not isinstance(value, dict) or not isinstance(value.get("delays"), list) or not isinstance(value.get("scanners"), list):
+            raise RuntimeError("Invalid Alignment layout from TRKR GUI")
+        return value
+
+    def set_alignment_layout(self, layout: dict[str, Any]) -> dict[str, Any]:
+        """Atomically replace saved Alignment slots; use None for an empty slot."""
+        if not isinstance(layout, dict):
+            raise TypeError("layout must be a dictionary")
+        self._ensure_control()
+        return self._request("set_alignment_layout", layout=layout)
+
+    @staticmethod
+    def _alignment_target(kind: str, device_id: str, axis: int) -> tuple[str, str, int]:
+        if kind not in {"delay", "scanner"}:
+            raise ValueError("kind must be 'delay' or 'scanner'")
+        if not isinstance(device_id, str) or not device_id.strip():
+            raise ValueError("device_id must be a nonempty string")
+        if isinstance(axis, bool) or not isinstance(axis, int) or axis not in {0, 1, 2}:
+            raise ValueError("axis must be 0 (t), 1 (x), or 2 (y)")
+        if (kind == "delay") != (axis == 0):
+            raise ValueError("delay uses axis 0; scanner uses axis 1 or 2")
+        return kind, device_id, axis
+
+    @staticmethod
+    def _alignment_increment(amount: float) -> float:
+        if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not math.isfinite(amount) or amount == 0:
+            raise ValueError("amount must be a finite nonzero number")
+        return float(amount)
+
+    def _alignment(self, kind: str, device_id: str, motion: dict[str, Any], *, request_id: str | None) -> dict[str, Any]:
+        return self._job("alignment", kind=kind, device_id=device_id, motion=motion, request_id=request_id)
+
+    def alignment_step(self, kind: str, device_id: str, axis: int, amount: float, *,
+                       unit: str = "physical", request_id: str | None = None) -> dict[str, Any]:
+        kind, device_id, axis = self._alignment_target(kind, device_id, axis)
+        amount = self._alignment_increment(amount)
+        if unit not in {"physical", "corrected", "native"}:
+            raise ValueError("unit must be physical, corrected, or native")
+        return self._alignment(kind, device_id, {"action": "step", "axis": axis, "amount": amount, "unit": unit}, request_id=request_id)
+
+    def alignment_jog(self, kind: str, device_id: str, axis: int, amount: float, *,
+                      unit: str = "physical", request_id: str | None = None) -> dict[str, Any]:
+        """Begin a bounded Jog. Call alignment_keepalive(run_id) about every 100 ms."""
+        kind, device_id, axis = self._alignment_target(kind, device_id, axis)
+        amount = self._alignment_increment(amount)
+        if unit not in {"physical", "corrected", "native"}:
+            raise ValueError("unit must be physical, corrected, or native")
+        return self._alignment(kind, device_id, {"action": "jog", "axis": axis, "amount": amount, "unit": unit}, request_id=request_id)
+
+    def alignment_keepalive(self, run_id: str) -> dict[str, Any]:
+        """Renew one active Alignment Jog; expiry stops it after 300 ms."""
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run_id must be a non-empty string")
+        self._ensure_control()
+        return self._request("alignment_keepalive", run_id=run_id)
+
+    def alignment_end(self, kind: str, device_id: str, axis: int, positive: bool, *,
+                      request_id: str | None = None) -> dict[str, Any]:
+        kind, device_id, axis = self._alignment_target(kind, device_id, axis)
+        if not isinstance(positive, bool):
+            raise TypeError("positive must be bool")
+        return self._alignment(kind, device_id, {"action": "end", "axis": axis, "positive": positive}, request_id=request_id)
+
+    def alignment_initialize(self, kind: str, device_id: str, axis: int, *, home: bool = False,
+                             move_to_origin: bool = True, request_id: str | None = None) -> dict[str, Any]:
+        kind, device_id, axis = self._alignment_target(kind, device_id, axis)
+        if not isinstance(home, bool) or not isinstance(move_to_origin, bool):
+            raise TypeError("home and move_to_origin must be bool")
+        return self._alignment(kind, device_id, {"action": "initialize", "axis": axis, "home": home, "move_to_origin": move_to_origin}, request_id=request_id)
+
+    def reverse_alignment_direction(self, kind: str, device_id: str, axis: int, *,
+                                    request_id: str | None = None) -> dict[str, Any]:
+        """Reverse one connected Alignment axis while preserving its displayed position."""
+        kind, device_id, axis = self._alignment_target(kind, device_id, axis)
+        return self._job("alignment_reverse", kind=kind, device_id=device_id,
+                         axis=axis, request_id=request_id)
+
     def connect(self, devices: list[str] | None = None, *, request_id: str | None = None) -> dict[str, Any]:
         if devices is not None and (not isinstance(devices, list) or not all(isinstance(x, str) for x in devices)):
             raise TypeError("devices must be a list of strings or None")
@@ -499,6 +579,27 @@ class GuiClient:
         if devices is not None:
             payload["devices"] = devices
         return self._job("connect", **payload)
+
+    def select_devices(self, *, lockin: str | None = None, delay: str | None = None,
+                       scanner: str | None = None, workflow: str | None = None,
+                       request_id: str | None = None) -> dict[str, Any]:
+        """Select registered devices for one measurement without closing connections.
+
+        指定した測定の登録IDを選択します。他の機器の接続は維持します。
+        Omitted IDs retain that measurement's selection. With no workflow, the
+        GUI's currently visible measurement is used; use config() to inspect IDs.
+        """
+        payload: dict[str, Any] = {}
+        for name, value in (("lockin", lockin), ("delay", delay), ("scanner", scanner)):
+            if value is not None:
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"{name} must be a nonempty device ID")
+                payload[name] = value
+        if workflow is not None:
+            if not isinstance(workflow, str) or not workflow.strip():
+                raise ValueError("workflow must be a nonempty string or None")
+            payload["workflow"] = workflow
+        return self._job("select_devices", request_id=request_id, **payload)
 
     def disconnect(self, devices: list[str] | None = None, *, request_id: str | None = None) -> dict[str, Any]:
         if devices is not None and (not isinstance(devices, list) or not all(isinstance(x, str) for x in devices)):

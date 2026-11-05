@@ -5,6 +5,7 @@
 ## User guides / 操作ガイド
 
 - [Quick start / はじめに](guides/quick-start.md)
+- [Multiple devices and Alignment — development branch / 複数機器とAlignment — 開発ブランチ](guides/multiple-devices-alignment.md)
 
 ## Development / 開発
 

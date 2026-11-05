@@ -10,3 +10,10 @@ profile; no instrument, user profile path, token, or real measurement is shown.
   anonymized app-owned `~/.kohdalab/trkr/config.json`.
 - `gui-srkr-2d.png` — SRKR 2D plot layout and independent axis controls,
   refreshed from the same isolated synthetic capture.
+
+- `alignment-delay-development.png` / `alignment-scanners-development.png` —
+  2026-11-05 development branch captures on macOS Retina (2×); 1566×700 and
+  1566×820 logical pixels. Two stages / four scanner pairs use synthetic
+  positions, with hardware controls disabled. These screens are not included
+  in published v0.4.10. / 開発ブランチの2台ステージ・4組スキャナ画面です。
+  合成位置を使用し実機操作は無効。公開済みv0.4.10には含まれません。

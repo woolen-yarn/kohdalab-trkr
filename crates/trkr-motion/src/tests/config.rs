@@ -122,20 +122,151 @@ fn hysteresis_applies_only_to_cc_and_is_bounded() {
 
 #[test]
 fn actuator_descriptors_keep_native_defaults_and_capabilities_together() {
-    let cc = actuator_descriptor("TRA-12CC").unwrap();
+    let cc = catalog::scanner_actuator("TRA-12CC").unwrap();
     assert_eq!(cc.native_unit, "mm");
     assert_eq!((cc.minimum, cc.maximum, cc.resolution), (0., 12., 0.0002));
-    assert!(cc.controller.capabilities().supports_home);
-    assert!(cc.controller.capabilities().supports_software_hysteresis);
+    assert!(cc.supports_controller("CONEXCC"));
 
-    let agap = actuator_descriptor("AG-M100D").unwrap();
+    let agap = catalog::scanner_actuator("AG-M100D").unwrap();
     assert_eq!(agap.native_unit, "deg");
     assert_eq!(
         (agap.minimum, agap.maximum, agap.resolution),
         (-0.75, 0.75, 0.001)
     );
-    assert!(agap.controller.capabilities().uses_named_axis);
-    assert!(!agap.controller.capabilities().supports_home);
+    assert!(agap.supports_controller("CONEXAGAP"));
+}
+
+#[test]
+fn delay_round_trips_apply_to_all_coordinate_scales() {
+    let mut one = stage();
+    one.direction = 0;
+    let mut three = one.clone();
+    three.round_trips = 3;
+    let mm = 300.;
+    assert!(
+        (three.ps_from_mm(mm, 10).unwrap() - 3. * one.ps_from_mm(mm, 10).unwrap()).abs() < 1e-12
+    );
+    let ps = three.ps_from_mm(mm, 10).unwrap();
+    assert!((three.to_mm(ps, 10).unwrap() - mm).abs() < 1e-12);
+    assert!(
+        DelayConfig {
+            round_trips: 0,
+            ..one
+        }
+        .normalized()
+        .is_err()
+    );
+}
+
+#[test]
+fn reversing_direction_preserves_displayed_position_without_motion() {
+    let c = DelayConfig {
+        port: "test".into(),
+        stage: Some("SGSP46-500".into()),
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let current_mm = 100.;
+    let displayed = c.ps_from_mm(current_mm, 1).unwrap();
+    let reversed = c.reversed_preserving_display_at_mm(current_mm).unwrap();
+    assert_eq!(reversed.direction, 1);
+    assert!((reversed.ps_from_mm(current_mm, 1).unwrap() - displayed).abs() < 1e-12);
+    assert!(reversed.zero_pos_mm.unwrap() < 0.);
+
+    let scanner = ScannerConfig {
+        port: "test".into(),
+        actuator: Some("TRA12CC".into()),
+        sample_um_per_unit: 10.,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let current_raw = 1.;
+    let displayed = scanner.sample_um_from_raw(current_raw);
+    let reversed = scanner
+        .reversed_preserving_display_at_raw(current_raw)
+        .unwrap();
+    assert_eq!(reversed.direction, 1);
+    assert!((reversed.sample_um_from_raw(current_raw) - displayed).abs() < 1e-12);
+    assert!(reversed.origin_pos.unwrap() < 0.);
+}
+
+#[test]
+fn scanner_direction_combines_once_with_legacy_signed_scale() {
+    let legacy = ScannerConfig {
+        port: "test".into(),
+        actuator: Some("TRA12CC".into()),
+        sample_um_per_unit: -10.,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let mut reversed = legacy.clone();
+    reversed.direction = 1;
+    let reversed = reversed.normalized().unwrap();
+    assert_eq!(legacy.sample_um_from_raw(7.), -10.);
+    assert_eq!(reversed.sample_um_from_raw(7.), 10.);
+}
+
+#[test]
+fn direction_reversal_preserves_native_compensation_approach_side() {
+    let mut config = ScannerConfig {
+        port: "fake".into(),
+        actuator: Some("TRA12CC".into()),
+        sample_um_per_unit: 500.,
+        software_hysteresis: Hysteresis {
+            enabled: true,
+            distance_um: Some(100.),
+            direction: Some("negative".into()),
+        },
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    for scale in [500., -500.] {
+        config.sample_um_per_unit = scale;
+        let current = 5.;
+        let displayed = config.sample_um_from_raw(current);
+        let native_before = config.raw_from_sample_um(config.approach(displayed).unwrap().unwrap());
+        let reversed = config.reversed_preserving_display_at_raw(current).unwrap();
+        let native_after =
+            reversed.raw_from_sample_um(reversed.approach(displayed).unwrap().unwrap());
+        assert!((native_before - native_after).abs() < 1e-12);
+        let restored = reversed
+            .reversed_preserving_display_at_raw(current)
+            .unwrap();
+        assert_eq!(restored.direction, config.direction);
+        assert_eq!(restored.origin_pos, config.origin_pos);
+    }
+}
+
+#[test]
+fn pulse_defined_origin_uses_the_observed_microstep_for_display() {
+    let config = DelayConfig {
+        port: "fake".into(),
+        stage: Some("SGSP46-500".into()),
+        max_pulse: Some(10_000),
+        round_trips: 2,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let (min, max) = config.native_limits_mm(10).unwrap();
+    assert_eq!(
+        config
+            .measurement_ps_from_mm_with_micro((min + max) / 2., 10)
+            .unwrap(),
+        0.
+    );
+    let reversed = config
+        .reversed_preserving_display_at_mm_with_micro(max * 0.75, 10)
+        .unwrap();
+    assert_eq!(
+        config.ps_from_mm(max * 0.75, 10).unwrap(),
+        reversed.ps_from_mm(max * 0.75, 10).unwrap()
+    );
+    assert!(config.measurement_ps_from_mm_with_micro(1., 0).is_err());
 }
 #[test]
 fn rejects_invalid_calibrations_before_serial_io() {

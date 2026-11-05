@@ -94,6 +94,60 @@ CSVを保存する場合は `run(..., output="new_run.csv")` と指定します�
 
 `run()` は同期処理です。並列の測定ジョブは同じクライアント内で直列化します。生の移動命令は `move(...)` の後に `wait_for_finished()` で完了を待ちます。
 
+## Alignment from Python / PythonからのAlignment
+
+The GUI owns all Alignment hardware motion. `alignment_layout()` returns the
+saved panel assignments, and `set_alignment_layout()` atomically replaces them;
+use `device_id: None` for an empty panel. The GUI rejects unknown IDs and a
+device assigned to two panels of the same kind. Alignment controls do not
+connect hardware or change a measurement tab's selected devices.
+
+Alignmentの装置操作もGUIが所有します。`alignment_layout()`で保存済みのパネル割当を読み、
+`set_alignment_layout()`で一括変更できます。空欄は`device_id: None`です。不明なIDや
+同種パネルでの重複はGUIが拒否します。Alignmentの割当変更では接続状態・測定タブの
+機器選択は変わりません。
+
+```python
+import time
+from kohdalab_trkr import GuiClient
+
+with GuiClient() as gui:
+    layout = gui.alignment_layout()
+    # Step/Jogの符号が方向を表す。GUIのStep欄と異なりAPIは符号付き移動量を受ける。
+    step = gui.alignment_step("scanner", "scanner-1", 1, +2.0)
+    gui.wait(step["id"])
+
+    # Jog is intentionally short-lived. Renew the same active run about every 100 ms.
+    jog = gui.alignment_jog("delay", "delay-1", 0, -1.0)
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            gui.alignment_keepalive(jog["id"])
+            time.sleep(0.1)
+    finally:
+        gui.stop_and_wait(jog["id"])
+```
+
+`alignment_jog()` stops if its keepalive is absent for 300 ms. Closing or
+releasing Python control also requests Stop for an active Jog even when the
+ordinary measurement policy is “continue”. `alignment_step()`, `alignment_end()`
+and `alignment_initialize()` create ordinary receipts and must be waited for.
+Demo mode and unconnected axes reject Alignment motion.
+
+`alignment_jog()`はkeepaliveが300 ms届かないと停止します。通常測定の継続設定とは別に、
+Python制御の解放・終了時も実行中JogへStopを要求します。`alignment_step()`、
+`alignment_end()`、`alignment_initialize()`は通常の実行レシートを返すため完了を待ちます。
+Demoモード・未接続軸ではAlignment移動を拒否します。
+
+`reverse_alignment_direction("scanner", "scanner-1", 1)` reverses the
+selected connected axis while preserving the displayed coordinate; it returns
+the same receipt shape as the other Alignment operations. `alignment_reverse`
+is also rejected in Demo mode or for an unconnected axis.
+
+`reverse_alignment_direction("scanner", "scanner-1", 1)`は、表示座標を維持したまま
+接続済みの対象軸のDirectionを反転し、他のAlignment操作と同じ形式のレシートを返します。
+Demoモード・未接続軸では拒否されます。
+
 ## 開いているGUIをPythonから制御する / External control of the open GUI
 
 通常のGUIもローカルAPIを公開します。すでに開いているGUIには、そのまま接続できます。Pythonから新規に起動する場合だけ`GuiClient.launch()`を使います。通常のGUI起動・表示・設定は変わりません。

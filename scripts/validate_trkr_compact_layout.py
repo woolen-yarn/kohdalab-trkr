@@ -156,8 +156,18 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
                         errors.append(f"{name} is outside Config row {row + 1}")
 
     if state != "left-collapsed":
+        if "device_add_footer" in geometry:
+            footer = _rect(geometry, "device_add_footer", errors)
+            viewport = _rect(geometry, "device_scroll_area", errors)
+            config = _rect(geometry, "session_group", errors)
+            if footer is not None and viewport is not None:
+                if footer[1] < viewport[1] + viewport[3] + 4.0:
+                    errors.append("Add device footer overlaps the scrollable cards")
+            if footer is not None and config is not None:
+                if abs(footer[0] - config[0]) > 0.01 or abs(footer[2] - config[2]) > 0.01:
+                    errors.append("Add device footer must align with Config")
         lockin = _rect(geometry, "lockin_group", errors)
-        expected_lockin_height = 348.0 if state in {"devices-expanded", "devices-scrolled"} else 234.0
+        expected_lockin_height = 348.0 if state in {"devices-expanded", "devices-scrolled", "devices-changed", "devices-scanner"} else 234.0
         if lockin is not None and abs(lockin[3] - expected_lockin_height) > 0.01:
             errors.append(
                 f"lockin_group height is {lockin[3]:g}, expected {expected_lockin_height:g}"
@@ -205,6 +215,16 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
                 if group is not None and control is not None and not _inside(control, group):
                     errors.append(f"{name} is outside its motion group")
 
+        if "scanner_group" in geometry:
+            scanner = _rect(geometry, "scanner_group", errors)
+            x_region = _rect(geometry, "motion_x_group", errors)
+            y_region = _rect(geometry, "motion_y_group", errors)
+            for axis, region in (("x", x_region), ("y", y_region)):
+                if scanner is not None and region is not None and not _inside(region, scanner):
+                    errors.append(f"{axis} controls are outside the combined Scanner group")
+            if x_region is not None and y_region is not None and x_region[1] + x_region[3] > y_region[1]:
+                errors.append("Scanner X/Y regions overlap")
+
         lockin_device = _rect(geometry, "lockin_device", errors)
         lockin_name = _rect(geometry, "lockin_name", errors)
         if lockin is not None and lockin_device is not None:
@@ -249,7 +269,7 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
 
 
 def _state_for(path: Path) -> str:
-    return next((state for state in ("devices-expanded", "devices-scrolled", "left-collapsed", "right-collapsed", "rotated-reverse", "rotated") if state in path.as_posix()), "")
+    return next((state for state in ("devices-expanded", "devices-scrolled", "devices-changed", "devices-scanner", "left-collapsed", "right-collapsed", "rotated-reverse", "rotated") if state in path.as_posix()), "")
 
 
 def _capture_files(paths: list[Path]) -> list[Path]:

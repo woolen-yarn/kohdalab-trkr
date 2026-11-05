@@ -146,3 +146,14 @@ def test_output_and_run_frames_have_outer_and_between_margins() -> None:
     assert MODULE.validate_geometry(payload) == []
     geometry["output_group"][1] -= 12
     assert any("frame margins" in error for error in MODULE.validate_geometry(payload))
+
+
+def test_combined_scanner_preserves_both_axis_regions():
+    payload = _payload()
+    geometry = payload["geometry"]
+    x = geometry["motion_x_group"]
+    y = geometry["motion_y_group"]
+    geometry["scanner_group"] = _rect(x[0], x[1], x[2], y[1] + y[3] - x[1])
+    assert MODULE.validate_geometry(payload) == []
+    geometry["scanner_group"][3] -= 1
+    assert any("y controls are outside the combined" in error for error in MODULE.validate_geometry(payload))

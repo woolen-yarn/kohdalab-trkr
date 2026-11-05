@@ -16,6 +16,21 @@ import pytest
 ROOT = Path(__file__).parents[1]
 
 
+def test_select_devices_is_additive_and_rejects_empty_ids(api_module, monkeypatch):
+    client = api_module.GuiClient(timeout=1)
+    sent = []
+    monkeypatch.setattr(client, "_job", lambda action, **kwargs: sent.append((action, kwargs)) or {"id": "selection"})
+    assert client.select_devices(scanner="scanner-2", workflow="srkr")["id"] == "selection"
+    assert sent == [("select_devices", {"request_id": None, "scanner": "scanner-2", "workflow": "srkr"})]
+    for invalid in ("", " ", 2):
+        with pytest.raises(ValueError):
+            client.select_devices(delay=invalid)
+    for invalid in ("", " ", 2):
+        with pytest.raises(ValueError):
+            client.select_devices(workflow=invalid)
+    assert len(sent) == 1
+
+
 @pytest.fixture
 def api_module():
     spec = importlib.util.spec_from_file_location(
@@ -231,6 +246,56 @@ def test_control_lease_and_full_gui_surface(api_module, server, tmp_path):
     })
     client.close()
     assert rpc.requests[-1]["action"] == "release"
+
+
+def test_alignment_api_layout_motion_keepalive_and_validation(api_module, server, tmp_path):
+    layout = {
+        "delays": [{"id": "delay-panel-1", "device_id": "delay-1", "unit": "physical", "step": 1.0}],
+        "scanners": [{"id": "scanner-panel-1", "device_id": "scanner-1", "unit": "corrected", "step": 2.0}],
+    }
+
+    def handler(request):
+        action = request["action"]
+        if action in {"acquire", "heartbeat"}:
+            return {"ok": True, "result": {"owned": True, "client_id": request["client_id"],
+                "status": "python", "active_run": None}}
+        if action == "release":
+            return {"ok": True, "result": {"owned": False, "client_id": None,
+                "status": "idle", "active_run": None}}
+        if action == "alignment_layout":
+            return {"ok": True, "result": layout}
+        if action == "set_alignment_layout":
+            return {"ok": True, "result": request["layout"]}
+        if action == "alignment_keepalive":
+            return {"ok": True, "result": {"run_id": request["run_id"], "alive": True,
+                "keepalive_milliseconds": 300}}
+        return {"ok": True, "result": {"id": request["request_id"], "status": "running",
+            "rows": 0, "output": None, "error": None, "kind": action}}
+
+    rpc = server(handler)
+    client = api_module.GuiClient(descriptor(tmp_path / "session.json", rpc.port))
+    assert client.alignment_layout() == layout
+    assert client.set_alignment_layout(layout) == layout
+    step = client.alignment_step("scanner", "scanner-1", 1, -2.0, unit="corrected")
+    jog = client.alignment_jog("delay", "delay-1", 0, 1.0)
+    assert client.alignment_keepalive(jog["id"])["alive"] is True
+    assert client.alignment_end("scanner", "scanner-1", 2, True)["kind"] == "alignment"
+    assert client.alignment_initialize("delay", "delay-1", 0, home=True)["kind"] == "alignment"
+    assert client.reverse_alignment_direction("scanner", "scanner-1", 1)["kind"] == "alignment_reverse"
+    motions = [request for request in rpc.requests if request["action"] == "alignment"]
+    assert motions[0]["motion"] == {"action": "step", "axis": 1, "amount": -2.0, "unit": "corrected"}
+    assert motions[1]["motion"]["action"] == "jog" and motions[1]["motion"]["amount"] == 1.0
+    assert all("request_id" in request for request in motions)
+    assert next(request for request in rpc.requests if request["action"] == "alignment_reverse")["axis"] == 1
+    before = len(rpc.requests)
+    with pytest.raises(ValueError, match="finite nonzero"):
+        client.alignment_step("scanner", "scanner-1", 1, 0.0)
+    with pytest.raises(ValueError, match="delay uses axis"):
+        client.alignment_jog("delay", "delay-1", 1, 1.0)
+    with pytest.raises(ValueError, match="unit"):
+        client.alignment_step("scanner", "scanner-1", 1, 1.0, unit="wrong")
+    assert len(rpc.requests) == before
+    client.close()
 
 
 def test_revoked_lease_refuses_future_mutation(api_module, server, tmp_path):

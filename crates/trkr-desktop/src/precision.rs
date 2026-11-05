@@ -77,14 +77,19 @@ impl<'a> Form<'a> {
                 if !enabled || !self.enabled {
                     ui.disable();
                 }
-                ui.put(
+                let response = ui.put(
                     r,
                     egui::Button::new(text)
                         .fill(fill)
                         .min_size(r.size())
                         .corner_radius(6)
                         .truncate(),
-                )
+                );
+                if name == "start_button" {
+                    response.on_hover_text("Start · Ctrl+Enter")
+                } else {
+                    response
+                }
             })
             .inner
             .clicked()
@@ -281,6 +286,41 @@ impl<'a> Form<'a> {
             },
         );
     }
+    pub fn segments<T: PartialEq + Clone>(
+        &mut self,
+        name: &str,
+        local: Rect,
+        value: &mut T,
+        options: &[(T, &str)],
+    ) {
+        let r = self.at(name, local);
+        let width = (r.width() - 3. * (options.len().saturating_sub(1)) as f32)
+            / options.len().max(1) as f32;
+        for (i, (v, label)) in options.iter().enumerate() {
+            let segment = Rect::from_min_size(
+                r.min + Vec2::new(i as f32 * (width + 3.), 0.),
+                Vec2::new(width, r.height()),
+            );
+            let clicked = self
+                .ui
+                .scope(|ui| {
+                    if !self.enabled {
+                        ui.disable();
+                    }
+                    ui.put(
+                        segment,
+                        egui::Button::new(*label)
+                            .selected(value == v)
+                            .min_size(segment.size()),
+                    )
+                    .clicked()
+                })
+                .inner;
+            if clicked {
+                *value = v.clone();
+            }
+        }
+    }
     pub fn group(&mut self, name: &str, local: Rect, title: &str) {
         let r = self.at(name, local);
         self.ui.painter().rect(
@@ -365,7 +405,7 @@ impl Columns {
         let h = viewport.height();
         let left = if left_collapsed { 40. } else { 384. };
         let right = if collapsed { 27. } else { Self::RIGHT_WIDTH };
-        let top = 226.;
+        let top = 235.;
         let center_width = (w - left - right - 32.).max(Self::WIDTH);
         let c = rect(left + 16., 8., center_width, h - 16.);
         let measurement = rect(c.min.x + 9., 17., c.width() - 18., top);

@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::sync::{Arc, Mutex, Weak};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -98,16 +99,30 @@ impl From<TransportError> for String {
 }
 
 pub struct Gpib {
+    session: Arc<Mutex<Session>>,
+    address: u8,
+    backend: &'static str,
+}
+
+/// One serialized helper process.  Address is deliberately kept out of this
+/// state so native GPIB views may share a single adapter without resetting it.
+struct Session {
     child: Child,
     input: std::process::ChildStdin,
     lines: Receiver<Result<String, String>>,
     // The direct helper owns this compatibility lease. The opt-in instrument
     // hub owns it instead, so clients may share one controller safely.
-    _lease: Option<File>,
-    address: u8,
-    backend: &'static str,
+    _lease: Option<Arc<File>>,
     poisoned: bool,
     cancelled_reply_deadline: Option<Instant>,
+}
+
+#[derive(Default)]
+pub struct GpibPool {
+    native: Option<Weak<Mutex<Session>>>,
+    visa: std::collections::HashMap<String, Weak<Mutex<Session>>>,
+    visa_lease: Option<Weak<File>>,
+    hub: std::collections::HashMap<u8, Weak<Mutex<Session>>>,
 }
 
 impl Gpib {
@@ -183,7 +198,25 @@ impl Gpib {
         if !helper.is_file() {
             return Err(format!("GPIB helper was not found: {}", helper.display()));
         }
-        let lease = Some(acquire_lease()?);
+        Self::spawn_helper_with_lease(
+            helper,
+            address,
+            args,
+            backend,
+            Some(Arc::new(acquire_lease()?)),
+        )
+    }
+
+    fn spawn_helper_with_lease(
+        helper: &Path,
+        address: u8,
+        args: &[String],
+        backend: &'static str,
+        lease: Option<Arc<File>>,
+    ) -> Result<Self, String> {
+        if !helper.is_file() {
+            return Err(format!("GPIB helper was not found: {}", helper.display()));
+        }
         Self::spawn_process(helper, address, args, backend, lease)
     }
 
@@ -206,7 +239,7 @@ impl Gpib {
         address: u8,
         args: &[String],
         backend: &'static str,
-        lease: Option<File>,
+        lease: Option<Arc<File>>,
     ) -> Result<Self, String> {
         let mut command = Command::new(helper);
         command.args(args);
@@ -255,37 +288,44 @@ impl Gpib {
                 }
             }
         });
-        let gpib = Self {
+        let session = Session {
             child,
             input,
             lines,
             _lease: lease,
-            address,
-            backend,
             poisoned: false,
             cancelled_reply_deadline: None,
         };
-        let startup = gpib.receive(STARTUP_TIMEOUT)?;
+        let startup = session.receive(STARTUP_TIMEOUT)?;
         let (status, payload) = parse_frame(&startup)?;
         if status != "OK" || !payload.is_empty() {
             return Err(format!("GPIB helper startup failed: {startup}"));
         }
-        Ok(gpib)
+        Ok(Self {
+            session: Arc::new(Mutex::new(session)),
+            address,
+            backend,
+        })
     }
 
     pub fn write(&mut self, command: &str) -> Result<(), String> {
-        self.request("WRITE", command.as_bytes()).map(|_| ())
+        self.session()?
+            .request(self.address, "WRITE", command.as_bytes(), None)
+            .map(|_| ())
     }
 
     pub fn query(&mut self, command: &str) -> Result<String, String> {
-        let bytes = self.request("QUERY", command.as_bytes())?;
+        let bytes = self
+            .session()?
+            .request(self.address, "QUERY", command.as_bytes(), None)?;
         String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
     }
 
     /// Return promptly on Stop while retaining the in-flight reply for recovery.
     /// No further commands are allowed until that exact reply has been retired.
     pub fn write_cancellable(&mut self, command: &str, cancel: &AtomicBool) -> Result<(), String> {
-        self.request_cancellable("WRITE", command.as_bytes(), Some(cancel))
+        self.session()?
+            .request(self.address, "WRITE", command.as_bytes(), Some(cancel))
             .map(|_| ())
     }
     pub fn query_cancellable(
@@ -293,18 +333,123 @@ impl Gpib {
         command: &str,
         cancel: &AtomicBool,
     ) -> Result<String, String> {
-        let bytes = self.request_cancellable("QUERY", command.as_bytes(), Some(cancel))?;
+        let bytes =
+            self.session()?
+                .request(self.address, "QUERY", command.as_bytes(), Some(cancel))?;
         String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
     }
     /// Prevent further I/O when an interrupted device protocol left state uncertain.
     pub fn invalidate(&mut self) {
-        self.poisoned = true;
-        let _ = self.child.kill();
+        self.session_mut().invalidate();
     }
     /// Retire exactly one cancelled helper reply after motion has stopped.
     /// A healthy late response is discarded, never used as a subsequent value.
     /// Real transport/protocol failures still invalidate the session.
     pub fn finish_cancelled_request(&mut self) -> Result<(), String> {
+        self.session_mut().finish_cancelled_request()
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.session()
+            .map(|session| session.poisoned)
+            .unwrap_or(true)
+    }
+    fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, String> {
+        self.session
+            .lock()
+            .map_err(|_| "GPIB session worker failed".into())
+    }
+    fn session_mut(&mut self) -> std::sync::MutexGuard<'_, Session> {
+        self.session.lock().expect("GPIB session worker failed")
+    }
+}
+
+impl GpibPool {
+    /// Connect one address through this worker-owned pool. Native GPIB views
+    /// share one helper/session; VISA sessions remain resource-bound.
+    pub fn connect(&mut self, address: u8) -> Result<Gpib, String> {
+        let (native, visa) = helper_paths();
+        self.connect_with_paths(address, native, visa)
+    }
+
+    fn connect_with_paths(
+        &mut self,
+        address: u8,
+        native: Option<PathBuf>,
+        visa: Option<PathBuf>,
+    ) -> Result<Gpib, String> {
+        validate_address(address)?;
+        if let Some(config) = hub_config()? {
+            if let Some(session) = self.hub.get(&address).and_then(Weak::upgrade) {
+                return Ok(Gpib {
+                    session,
+                    address,
+                    backend: "instrument hub",
+                });
+            }
+            let gpib = Gpib::spawn_hub_proxy(address, &config, native.as_deref())?;
+            self.hub.insert(address, Arc::downgrade(&gpib.session));
+            return Ok(gpib);
+        }
+        if let Some(visa_helper) = visa {
+            let resources = visa_resources(&visa_helper)?;
+            let requested = format!("GPIB0::{address}::INSTR");
+            let mut other_gpib = Vec::new();
+            for resource in resources {
+                if resource.eq_ignore_ascii_case(&requested) {
+                    let key = resource.to_ascii_uppercase();
+                    if let Some(session) = self.visa.get(&key).and_then(Weak::upgrade) {
+                        return Ok(Gpib {
+                            session,
+                            address: 0,
+                            backend: "official VISA",
+                        });
+                    }
+                    let lease = match self.visa_lease.as_ref().and_then(Weak::upgrade) {
+                        Some(lease) => lease,
+                        None => Arc::new(acquire_lease()?),
+                    };
+                    let gpib = Gpib::spawn_helper_with_lease(
+                        &visa_helper,
+                        0,
+                        &[resource],
+                        "official VISA",
+                        Some(lease.clone()),
+                    )?;
+                    self.visa.insert(key, Arc::downgrade(&gpib.session));
+                    self.visa_lease = Some(Arc::downgrade(&lease));
+                    return Ok(gpib);
+                }
+                if is_gpib_resource(&resource) {
+                    other_gpib.push(resource);
+                }
+            }
+            if !other_gpib.is_empty() {
+                return Err(format!(
+                    "Official VISA found GPIB resource(s) {}, but not {requested}; refusing to open the native GPIB adapter",
+                    other_gpib.join(", ")
+                ));
+            }
+        }
+        if let Some(session) = self.native.as_ref().and_then(Weak::upgrade) {
+            return Ok(Gpib {
+                session,
+                address,
+                backend: "native",
+            });
+        }
+        let native = native.ok_or_else(|| String::from(TransportError::NativeHelperNotFound))?;
+        let gpib = Gpib::open(native, address)?;
+        self.native = Some(Arc::downgrade(&gpib.session));
+        Ok(gpib)
+    }
+}
+
+impl Session {
+    fn invalidate(&mut self) {
+        self.poisoned = true;
+        let _ = self.child.kill();
+    }
+    fn finish_cancelled_request(&mut self) -> Result<(), String> {
         let Some(deadline) = self.cancelled_reply_deadline.take() else {
             return Ok(());
         };
@@ -333,14 +478,9 @@ impl Gpib {
         }
         result
     }
-    pub fn is_poisoned(&self) -> bool {
-        self.poisoned
-    }
-    fn request(&mut self, operation: &str, payload: &[u8]) -> Result<Vec<u8>, String> {
-        self.request_cancellable(operation, payload, None)
-    }
-    fn request_cancellable(
+    fn request(
         &mut self,
+        address: u8,
         operation: &str,
         payload: &[u8],
         cancel: Option<&AtomicBool>,
@@ -357,11 +497,7 @@ impl Gpib {
         if payload.len() > 4096 {
             return Err(TransportError::CommandTooLong.into());
         }
-        let frame = format!(
-            "{operation} {} 10000 {}\n",
-            self.address,
-            encode_hex(payload)
-        );
+        let frame = format!("{operation} {} 10000 {}\n", address, encode_hex(payload));
         let deadline = Instant::now() + COMMAND_TIMEOUT;
         let result = (|| {
             self.input
@@ -432,16 +568,14 @@ impl Gpib {
     }
 }
 
-impl Drop for Gpib {
+impl Drop for Session {
     fn drop(&mut self) {
         if self.poisoned {
             let _ = self.child.kill();
             let _ = self.child.wait();
             return;
         }
-        let _ = self
-            .input
-            .write_all(format!("EXIT {} 1000 -\n", self.address).as_bytes());
+        let _ = self.input.write_all(b"EXIT 0 1000 -\n");
         let _ = self.input.flush();
         for _ in 0..20 {
             if self.child.try_wait().ok().flatten().is_some() {
@@ -835,11 +969,20 @@ mod tests {
         let mut gpib = Gpib::open(&helper, 12).unwrap();
         let (sender, receiver) = mpsc::sync_channel(1);
         sender.send(Ok("KIV\tOK\t6f6c64".into())).unwrap();
-        gpib.lines = receiver;
-        gpib.cancelled_reply_deadline = Some(Instant::now() - Duration::from_secs(1));
+        {
+            let mut session = gpib.session.lock().unwrap();
+            session.lines = receiver;
+            session.cancelled_reply_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
         gpib.finish_cancelled_request().unwrap();
         assert!(!gpib.is_poisoned());
-        assert!(gpib.cancelled_reply_deadline.is_none());
+        assert!(
+            gpib.session
+                .lock()
+                .unwrap()
+                .cancelled_reply_deadline
+                .is_none()
+        );
     }
 
     #[test]
@@ -856,9 +999,11 @@ mod tests {
             );
             let mut gpib = Gpib::open(&helper, 12).unwrap();
             // Model a sent request cancelled before its reply arrives.
-            gpib.input.write_all(b"QUERY 12 10000 58\n").unwrap();
-            gpib.input.flush().unwrap();
-            gpib.cancelled_reply_deadline = Some(Instant::now() + Duration::from_secs(2));
+            let mut session = gpib.session.lock().unwrap();
+            session.input.write_all(b"QUERY 12 10000 58\n").unwrap();
+            session.input.flush().unwrap();
+            session.cancelled_reply_deadline = Some(Instant::now() + Duration::from_secs(2));
+            drop(session);
             assert!(gpib.finish_cancelled_request().is_err());
             assert!(gpib.is_poisoned());
         }
@@ -897,7 +1042,7 @@ mod tests {
         assert!(stopped_at.lock().unwrap().unwrap().elapsed() < Duration::from_secs(1));
         assert!(!gpib.is_poisoned());
         assert!(gpib.query("XY.\r").unwrap_err().contains("pending"));
-        gpib.cancelled_reply_deadline = Some(Instant::now());
+        gpib.session.lock().unwrap().cancelled_reply_deadline = Some(Instant::now());
         assert!(gpib.finish_cancelled_request().is_err());
         assert!(gpib.is_poisoned());
         assert!(gpib.query("XY.\r").unwrap_err().contains("reconnect"));
@@ -941,6 +1086,94 @@ mod tests {
         let mut gpib = Gpib::open(&helper, 7).unwrap();
         assert_eq!(gpib.query("READ?").unwrap(), "READY?");
         gpib.write("CONF").unwrap();
+    }
+
+    #[test]
+    fn native_pool_shares_one_helper_across_addresses_and_releases_on_last_drop() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-native.sh");
+        let starts = dir.path().join("starts.txt");
+        let wire = dir.path().join("wire.txt");
+        let exited = dir.path().join("exited.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '{}'\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in QUERY*) printf 'KIV\\tOK\\t6f6b\\n' ;; EXIT*) : > '{}'; exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+                starts.display(),
+                wire.display(),
+                exited.display(),
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, Some(helper.clone()), None)
+            .unwrap();
+        let mut second = pool
+            .connect_with_paths(13, Some(helper.clone()), None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1);
+        assert_eq!(first.query("A?").unwrap(), "ok");
+        assert_eq!(second.query("B?").unwrap(), "ok");
+        let sent = std::fs::read_to_string(&wire).unwrap();
+        assert!(sent.lines().any(|line| line.starts_with("QUERY 12 10000")));
+        assert!(sent.lines().any(|line| line.starts_with("QUERY 13 10000")));
+
+        let mut other_pool = GpibPool::default();
+        assert!(
+            other_pool
+                .connect_with_paths(14, Some(helper.clone()), None)
+                .is_err()
+        );
+        drop(first);
+        assert_eq!(second.query("C?").unwrap(), "ok");
+        assert!(!exited.exists());
+        drop(second);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !exited.exists() {
+            assert!(Instant::now() < deadline, "pooled helper did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn cancelled_native_view_blocks_other_addresses_until_reply_is_retired() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-cancel.sh");
+        let marker = dir.path().join("started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\n: > '{}'\nsleep 0.1\nprintf 'KIV\\tOK\\t6f6c64\\n'\nIFS= read -r line\nprintf 'KIV\\tOK\\t6672657368\\n'\nwhile IFS= read -r line; do :; done\n",
+                marker.display(),
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, Some(helper.clone()), None)
+            .unwrap();
+        let mut second = pool.connect_with_paths(13, Some(helper), None).unwrap();
+        let token = Arc::new(AtomicBool::new(false));
+        let cancel = token.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        assert!(
+            first
+                .query_cancellable("first", &token)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        stopper.join().unwrap();
+        assert!(second.query("must wait").unwrap_err().contains("pending"));
+        first.finish_cancelled_request().unwrap();
+        assert_eq!(second.query("second").unwrap(), "fresh");
     }
 
     #[test]
@@ -1016,7 +1249,7 @@ mod tests {
             gpib.query("READ?").unwrap_err(),
             "Malformed GPIB helper frame"
         );
-        assert!(gpib.poisoned);
+        assert!(gpib.is_poisoned());
         assert_eq!(
             gpib.query("READ?").unwrap_err(),
             "GPIB session has failed; reconnect before further I/O"
@@ -1072,6 +1305,71 @@ mod tests {
                 .unwrap()
                 .starts_with("QUERY 0 10000")
         );
+    }
+
+    #[test]
+    fn visa_pool_keeps_two_resource_helpers_alive_under_one_lease() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-visa.sh");
+        let starts = dir.path().join("resources.txt");
+        let wire = dir.path().join("wire.txt");
+        let resources =
+            encode_hex(b"GPIB0::12::INSTR\tOfficial VISA\nGPIB0::13::INSTR\tOfficial VISA\n");
+        executable(
+            &helper,
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = --list ]; then printf 'KIV\tOK\t{}\n'; exit 0; fi
+printf '%s\n' "$1" >> '{}'
+case "$1" in GPIB0::12::INSTR) reply=3132 ;; GPIB0::13::INSTR) reply=3133 ;; *) exit 1 ;; esac
+printf 'KIV\tOK\t-\n'
+while IFS= read -r line; do
+ printf '%s %s\n' "$1" "$line" >> '{}'
+ case "$line" in QUERY*) printf 'KIV\tOK\t%s\n' "$reply" ;; EXIT*) exit 0 ;; *) printf 'KIV\tOK\t-\n' ;; esac
+done
+"#,
+                resources,
+                starts.display(),
+                wire.display()
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, None, Some(helper.clone()))
+            .unwrap();
+        let mut second = pool
+            .connect_with_paths(13, None, Some(helper.clone()))
+            .unwrap();
+        assert_eq!(first.query("first").unwrap(), "12");
+        assert_eq!(second.query("second").unwrap(), "13");
+        assert_eq!(first.query("still first").unwrap(), "12");
+        let started = std::fs::read_to_string(&starts).unwrap();
+        assert_eq!(
+            started.lines().collect::<Vec<_>>(),
+            ["GPIB0::12::INSTR", "GPIB0::13::INSTR"]
+        );
+        let sent = std::fs::read_to_string(&wire).unwrap();
+        assert!(sent.contains("GPIB0::12::INSTR QUERY 0 10000"));
+        assert!(sent.contains("GPIB0::13::INSTR QUERY 0 10000"));
+        let mut other_pool = GpibPool::default();
+        assert!(
+            other_pool
+                .connect_with_paths(12, None, Some(helper.clone()))
+                .is_err()
+        );
+        drop(first);
+        assert_eq!(second.query("still second").unwrap(), "13");
+        assert!(
+            other_pool
+                .connect_with_paths(12, None, Some(helper.clone()))
+                .is_err()
+        );
+        drop(second);
+        let mut next = other_pool
+            .connect_with_paths(12, None, Some(helper))
+            .unwrap();
+        assert_eq!(next.query("new owner").unwrap(), "12");
     }
 
     #[test]

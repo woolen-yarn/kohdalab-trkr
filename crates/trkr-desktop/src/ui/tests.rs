@@ -154,6 +154,57 @@ fn delay_step_hint_uses_actual_microstep_and_rejects_stale_identity() {
     other.axis_count = 2;
     assert!(delay_step_hint(&other, Some(&actual)).starts_with("full "));
 }
+
+#[test]
+fn scan_hints_and_tc_only_use_the_workflow_bound_devices() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.sync_all_plans().unwrap();
+    let baseline = app.scan_hints(
+        Axis::T,
+        app.plan(),
+        app.workflow_hardware(app.workflow).as_ref(),
+    );
+
+    let mut second_delay = app.inventory.delays[0].clone();
+    second_delay.id = "delay-2".into();
+    second_delay.name = "Delay 2".into();
+    second_delay.config.port = "COM7".into();
+    second_delay.config.travel_mm = Some(1.);
+    app.inventory.delays.push(second_delay);
+    let mut second_lockin = app.inventory.lockins[0].clone();
+    second_lockin.id = "lockin-2".into();
+    second_lockin.name = "Lock-in 2".into();
+    second_lockin.address = 13;
+    app.inventory.lockins.push(second_lockin);
+    app.inventory
+        .project_selected(&mut app.settings.raw)
+        .unwrap();
+    let mut ids = app.inventory.selected.clone();
+    ids.delay = "delay-2".into();
+    ids.lockin = "lockin-2".into();
+    app.settings
+        .set_workflow_devices(Workflow::Trkr, ids)
+        .unwrap();
+    let plan = app.settings.plan(Workflow::Trkr).unwrap();
+
+    assert_eq!(
+        app.workflow_hardware(Workflow::Trkr)
+            .unwrap()
+            .device_ids
+            .delay,
+        "delay-2"
+    );
+    assert_ne!(
+        app.scan_hints(
+            Axis::T,
+            &plan,
+            app.workflow_hardware(plan.workflow).as_ref()
+        ),
+        baseline
+    );
+    app.snapshot.lockin["Time Constant"] = json!(0.25);
+    assert_eq!(app.workflow_time_constant(Workflow::Trkr), None);
+}
 #[test]
 fn srkr_2d_exposes_one_shared_theta_on_u_for_both_axis_orders() {
     for (fast, slow) in [(Axis::U, Axis::V), (Axis::V, Axis::U)] {
@@ -701,33 +752,35 @@ fn gpib_resource_requires_canonical_portable_address() {
 
 #[test]
 fn shared_coordinates_follow_selected_profile_without_changing_scan_settings() {
-    let base = Plan::default();
-    let mut plans = std::array::from_fn(|_| base.clone());
-    plans[workflow_index(Workflow::Trkr)].workflow = Workflow::Trkr;
-    plans[workflow_index(Workflow::Srkr)].workflow = Workflow::Srkr;
-    plans[workflow_index(Workflow::Strkr)].workflow = Workflow::Strkr;
-    plans[workflow_index(Workflow::Srkr2d)].workflow = Workflow::Srkr2d;
-    plans[workflow_index(Workflow::Trkr)].fast_range = Range {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let mut plans = app.plans.clone();
+    plans[Workflow::Trkr.index()].fast_range = Range {
         min: -10.,
         max: 20.,
         step: 2.,
     };
-    plans[workflow_index(Workflow::Srkr)].fast_range = Range {
+    plans[Workflow::Srkr.index()].fast_range = Range {
         min: -31.,
         max: 27.,
         step: 0.5,
     };
-    plans[workflow_index(Workflow::Srkr)].zero = [12., 34., 56.];
-    plans[workflow_index(Workflow::Srkr)].theta_deg = 18.5;
+    plans[Workflow::Srkr.index()].zero = [12., 34., 56.];
+    plans[Workflow::Srkr.index()].theta_deg = 18.5;
 
-    sync_shared_coordinates(&mut plans, Workflow::Srkr);
+    app.plans = plans;
+    app.workflow = Workflow::Srkr;
+    for (axis, zero) in [12., 34., 56.].into_iter().enumerate() {
+        app.set_selected_zero(axis, zero);
+    }
+    app.sync_all_plans().unwrap();
+    let plans = app.plans;
 
     for plan in &plans {
         assert_eq!(plan.zero, [12., 34., 56.]);
         assert_eq!(plan.theta_deg, 18.5);
     }
     assert_eq!(
-        plans[workflow_index(Workflow::Trkr)].fast_range,
+        plans[Workflow::Trkr.index()].fast_range,
         Range {
             min: -10.,
             max: 20.,
@@ -735,7 +788,7 @@ fn shared_coordinates_follow_selected_profile_without_changing_scan_settings() {
         }
     );
     assert_eq!(
-        plans[workflow_index(Workflow::Srkr)].fast_range,
+        plans[Workflow::Srkr.index()].fast_range,
         Range {
             min: -31.,
             max: 27.,
