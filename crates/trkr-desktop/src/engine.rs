@@ -339,6 +339,12 @@ pub enum Event {
         id: String,
         config: Box<MotionConfig>,
     },
+    DirectionFailed {
+        kind: MotionKind,
+        id: String,
+        axis: usize,
+        error: String,
+    },
     Sample(Sample),
     /// A display-only lock-in read. It never contributes a scan row or CSV
     /// record, so the GUI may update its live trace independently.
@@ -835,9 +841,16 @@ impl Session {
         match cmd {
             Command::ConnectInventory { inventory } => self.connect_inventory(inventory)?,
             Command::DisconnectAll => self.disconnect_all()?,
-            Command::ReverseDirection { kind, id, axis } => {
-                self.reverse_direction(kind, id, axis, send)?
-            }
+            Command::ReverseDirection { kind, id, axis } => self
+                .reverse_direction(kind, id.clone(), axis, send)
+                .inspect_err(|error| {
+                    let _ = send.send(Event::DirectionFailed {
+                        kind,
+                        id,
+                        axis,
+                        error: error.clone(),
+                    });
+                })?,
             Command::Alignment { kind, id, action } => {
                 self.alignment(kind, id, action, cancel, send)?
             }

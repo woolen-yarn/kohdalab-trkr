@@ -1,10 +1,12 @@
 mod alignment;
 mod demo;
+mod device_feedback;
 mod device_inventory;
 mod devices;
 mod eta;
 mod measurement_settings;
 mod remote;
+mod start_shortcut;
 use crate::{axis_choices, precision};
 use crate::{
     config::{self, Settings, StartupSettings, UserConfigPaths},
@@ -128,6 +130,7 @@ fn edit(ui: &mut egui::Ui, v: &mut String) {
 pub struct App {
     measurement_settings: Option<measurement_settings::Draft>,
     inventory_dialog: Option<device_inventory::InventoryDialog>,
+    device_feedback: device_feedback::Feedback,
     pending_device_selection: Option<measurement_settings::PendingSelection>,
     selection_retry_blocked: Option<(Workflow, crate::inventory::DeviceIds)>,
     inventory: crate::inventory::Inventory,
@@ -260,6 +263,7 @@ impl App {
         let mut app = Self {
             measurement_settings: None,
             inventory_dialog: None,
+            device_feedback: device_feedback::Feedback::default(),
             pending_device_selection: None,
             selection_retry_blocked: None,
             inventory: Default::default(),
@@ -447,7 +451,25 @@ impl App {
             self.plans[Self::ix(Workflow::Srkr2d)].fast = Axis::V;
             self.plans[Self::ix(Workflow::Srkr2d)].slow = Axis::U;
         }
-        self.device_expanded = [matches!(state, "devices-expanded" | "devices-scrolled"); 4];
+        self.device_expanded = [matches!(
+            state,
+            "devices-expanded" | "devices-scrolled" | "devices-changed" | "devices-scanner"
+        ); 4];
+        if state == "devices-scanner" {
+            self.inventory.reorder_panel(
+                &crate::inventory::PanelKey::new("scanner", "scanner-1"),
+                &crate::inventory::PanelKey::new("lockin", "lockin-1"),
+                false,
+            );
+            self.inventory
+                .project_selected(&mut self.settings.raw)
+                .expect("preview order");
+        }
+        if state == "devices-changed" {
+            let before = self.motion_editor_values(0);
+            self.stage_port = "COM8".into();
+            self.record_motion_edits(0, before);
+        }
         self.left_collapsed = state == "left-collapsed";
         self.devices_scrolled_smoke = state == "devices-scrolled";
         self.right_collapsed = state == "right-collapsed";
@@ -1209,6 +1231,14 @@ impl App {
                 Event::DirectionChanged { kind, id, config } => {
                     self.apply_direction(kind, &id, *config)
                 }
+                Event::DirectionFailed {
+                    kind,
+                    id,
+                    axis,
+                    error,
+                } => {
+                    self.device_feedback.fail_direction(kind, &id, axis, &error);
+                }
                 Event::Sample(s) => {
                     self.snapshot.signal = Some(s.signal);
                     self.snapshot.position = s.position.clone();
@@ -1255,7 +1285,9 @@ impl App {
                         Err(e) => self.note(e),
                     }
                 }
-                Event::Error(e) => self.note(e),
+                Event::Error(e) => {
+                    self.note(e);
+                }
                 Event::RemoteFinished { id, result, .. } => {
                     self.finish_device_selection(&id, &result)
                 }
@@ -1893,6 +1925,9 @@ impl App {
         }
     }
     fn motion(&mut self, ui: &mut egui::Ui, i: usize, title: &str, d: Device, rect: egui::Rect) {
+        let editor_before = self.motion_editor_values(i);
+        let feedback_key = self.motion_feedback_key(i);
+        let feedback = self.device_feedback.caption(&feedback_key, i);
         let phase = device_phase(
             self.snapshot.devices[i + 1],
             self.snapshot.running,
@@ -1964,8 +1999,18 @@ impl App {
             form.value(
                 &format!("{axis}_device_name"),
                 precision::rect(102., 27., w - 113., 24.),
-                device_caption(self.snapshot.devices[i + 1], &instrument_name, phase),
-                if phase.is_some() {
+                if phase.is_none() {
+                    feedback.as_ref().map(|f| f.0.clone()).unwrap_or_else(|| {
+                        device_caption(self.snapshot.devices[i + 1], &instrument_name, phase)
+                    })
+                } else {
+                    device_caption(self.snapshot.devices[i + 1], &instrument_name, phase)
+                },
+                if phase.is_none()
+                    && let Some((_, color, _)) = &feedback
+                {
+                    *color
+                } else if phase.is_some() {
                     Color32::from_rgb(109, 219, 210)
                 } else {
                     TEXT
@@ -2026,38 +2071,21 @@ impl App {
                         &mut self.stage_preset,
                         &stages,
                     );
-                    form.label(
-                        "t_direction_label",
-                        precision::rect(20., 130., 88., 26.),
-                        "Direction",
-                    );
-                    form.enabled = !self.demo_viewer;
-                    form.segments(
-                        "t_direction_spin",
-                        precision::rect(114., 130., w - 134., 26.),
-                        &mut direction,
-                        &[(0, "Normal"), (1, "Reverse")],
-                    );
-                    reverse_direction =
-                        direction != self.stage_direction && self.snapshot.devices[1];
-                    if !self.snapshot.devices[1] {
-                        self.stage_direction = direction;
-                    }
                     form.enabled = editable;
-                    form.label("t_port_label", precision::rect(20., 162., 88., 26.), "Port");
+                    form.label("t_port_label", precision::rect(20., 130., 88., 26.), "Port");
                     form.editable_combo(
                         "t_port_combo",
-                        precision::rect(114., 162., w - 221., 26.),
+                        precision::rect(114., 130., w - 221., 26.),
                         &mut self.stage_port,
                         &self.available_ports,
                     );
                     refresh = form.button(
                         "t_port_refresh_button",
-                        precision::rect(w - 101., 162., 81., 26.),
+                        precision::rect(w - 101., 130., 81., 26.),
                         "Refresh",
                         !self.snapshot.running,
                     );
-                    form.label("t_axis_label", precision::rect(20., 194., 88., 26.), "Axis");
+                    form.label("t_axis_label", precision::rect(20., 162., 88., 26.), "Axis");
                     let axes: Vec<_> = if self.stage_model == "SHOT302GS" {
                         vec![(1, "1"), (2, "2")]
                     } else {
@@ -2068,10 +2096,28 @@ impl App {
                     }
                     form.segments(
                         "t_axis_selector",
-                        precision::rect(114., 194., w - 134., 26.),
+                        precision::rect(114., 162., w - 134., 26.),
                         &mut self.stage_axis,
                         &axes,
                     );
+                    form.label(
+                        "t_direction_label",
+                        precision::rect(20., 194., 88., 26.),
+                        "Direction",
+                    );
+                    form.enabled = !self.demo_viewer;
+                    form.segments(
+                        "t_direction_spin",
+                        precision::rect(114., 194., w - 134., 26.),
+                        &mut direction,
+                        &[(0, "Normal"), (1, "Reverse")],
+                    );
+                    reverse_direction =
+                        direction != self.stage_direction && self.snapshot.devices[1];
+                    if !self.snapshot.devices[1] {
+                        self.stage_direction = direction;
+                    }
+                    form.enabled = editable;
                     form.label(
                         "t_round_trips_label",
                         precision::rect(20., 226., 88., 26.),
@@ -2148,9 +2194,27 @@ impl App {
                         &mut self.scanner_actuator[scanner],
                         &choices,
                     );
+                    form.enabled = editable;
+                    form.label(
+                        &format!("{axis}_port_label"),
+                        precision::rect(20., 130., 88., 26.),
+                        "Port",
+                    );
+                    form.editable_combo(
+                        &format!("{axis}_port_combo"),
+                        precision::rect(114., 130., w - 221., 26.),
+                        &mut self.scanner_port[scanner],
+                        &self.available_ports,
+                    );
+                    refresh = form.button(
+                        &format!("{axis}_port_refresh_button"),
+                        precision::rect(w - 101., 130., 81., 26.),
+                        "Refresh",
+                        !self.snapshot.running,
+                    );
                     form.label(
                         &format!("{axis}_axis_label"),
-                        precision::rect(20., 130., 88., 26.),
+                        precision::rect(20., 162., 88., 26.),
                         "Axis",
                     );
                     let axes: Vec<(String, &str)> = if self.scanner_model[scanner] == "CONEXCC" {
@@ -2163,22 +2227,9 @@ impl App {
                     }
                     form.segments(
                         &format!("{axis}_axis_spin"),
-                        precision::rect(114., 130., w - 134., 26.),
+                        precision::rect(114., 162., w - 134., 26.),
                         &mut self.scanner_axis[scanner],
                         &axes,
-                    );
-                    form.label(
-                        &format!("{axis}_scale_label"),
-                        precision::rect(20., 162., 88., 26.),
-                        "Scale (um/unit)",
-                    );
-                    form.number(
-                        &format!("{axis}_scale_spin"),
-                        precision::rect(114., 162., w - 134., 26.),
-                        &mut self.scanner_scale[scanner],
-                        1.,
-                        3,
-                        !self.snapshot.running,
                     );
                     form.label(
                         &format!("{axis}_direction_label"),
@@ -2200,20 +2251,16 @@ impl App {
                     }
                     form.enabled = editable;
                     form.label(
-                        &format!("{axis}_port_label"),
+                        &format!("{axis}_scale_label"),
                         precision::rect(20., 226., 88., 26.),
-                        "Port",
+                        "Scale (um/unit)",
                     );
-                    form.editable_combo(
-                        &format!("{axis}_port_combo"),
-                        precision::rect(114., 226., w - 221., 26.),
-                        &mut self.scanner_port[scanner],
-                        &self.available_ports,
-                    );
-                    refresh = form.button(
-                        &format!("{axis}_port_refresh_button"),
-                        precision::rect(w - 101., 226., 81., 26.),
-                        "Refresh",
+                    form.number(
+                        &format!("{axis}_scale_spin"),
+                        precision::rect(114., 226., w - 134., 26.),
+                        &mut self.scanner_scale[scanner],
+                        1.,
+                        3,
                         !self.snapshot.running,
                     );
                     form.enabled = !self.demo_viewer;
@@ -2374,6 +2421,24 @@ impl App {
             ] {
                 object.remove(key);
             }
+        }
+        self.record_motion_edits(i, editor_before);
+        if self.device_expanded[i + 1] {
+            self.device_feedback
+                .paint(ui, &self.geometry, &feedback_key, i);
+        }
+        if let Some((_, _, help)) = feedback {
+            ui.interact(
+                precision::rect(
+                    rect.min.x + 102.,
+                    rect.min.y + 27.,
+                    rect.width() - 113.,
+                    24.,
+                ),
+                egui::Id::new(("motion-setting-feedback", &feedback_key)),
+                egui::Sense::hover(),
+            )
+            .on_hover_text(help);
         }
         if reverse_direction {
             let (kind, id) = if i == 0 {
@@ -2715,6 +2780,7 @@ impl App {
         let hints_fast = self.scan_hints(plan.fast, &plan);
         let hints_slow = self.scan_hints(plan.slow, &plan);
         let scan_column_width = ((settings - 24.) * 0.5).round();
+        let availability = self.start_availability();
         let (start, stop, save, browse, settings_clicked);
         {
             let mut form = Form::new(ui, &mut self.geometry, page.min);
@@ -2940,19 +3006,7 @@ impl App {
                 "start_button",
                 rect(side_x + 11., 147., first, 26.),
                 "Start",
-                !running
-                    && (!plan.workflow.is_2d()
-                        || axis_choices::valid_pair(plan.workflow, plan.fast, plan.slow))
-                    && (!self.demo_viewer
-                        || (self.snapshot.devices[0]
-                            && self.demo.datasets[Self::ix(self.workflow)].is_some()
-                            && self.demo.pending.is_none()))
-                    && (self.source_demo
-                        || (self.snapshot.devices[0]
-                            && engine::active_axes(&plan)
-                                .iter()
-                                .enumerate()
-                                .all(|(i, needed)| !needed || self.snapshot.devices[i + 1]))),
+                availability.allows(&plan),
             );
             stop = form.button(
                 "stop_button",
@@ -3371,6 +3425,7 @@ impl App {
                 Ok(s) => {
                     self.settings = s;
                     self.hydrate();
+                    self.device_feedback.clear();
                     self.note("Configuration loaded");
                 }
                 Err(e) => self.note(e),
@@ -3381,7 +3436,10 @@ impl App {
                 .sync_all_plans()
                 .and_then(|_| self.settings.save(std::path::Path::new(&self.config_path)))
             {
-                Ok(()) => self.note("Configuration saved"),
+                Ok(()) => {
+                    self.device_feedback.clear();
+                    self.note("Configuration saved");
+                }
                 Err(e) => self.note(e),
             }
         }
@@ -3698,6 +3756,9 @@ impl eframe::App for App {
         self.poll_dialog();
         self.poll_snapshot_copy();
         self.restore_workflow_devices();
+        let start_shortcut = start_shortcut::consume(ctx);
+        let shortcut_was_blocked =
+            self.start_overlay_open(ctx) || !self.start_availability().allows(self.plan());
         if !self.alignment_tab
             || self.python_locked()
             || ctx.input(|i| !i.focused || i.viewport().close_requested())
@@ -3904,6 +3965,7 @@ impl eframe::App for App {
             });
         self.measurement_settings_dialog(ctx);
         self.device_inventory_dialog(ctx);
+        self.finish_start_shortcut(ctx, start_shortcut, shortcut_was_blocked);
         self.smoke_tick(ctx);
         self.demo_smoke_tick(ctx);
     }

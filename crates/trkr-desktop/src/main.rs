@@ -102,6 +102,8 @@ fn layout_capture(
     if ![
         "",
         "devices-expanded",
+        "devices-changed",
+        "devices-scanner",
         "right-collapsed",
         "left-collapsed",
         "devices-scrolled",

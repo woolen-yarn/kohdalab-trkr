@@ -25,6 +25,15 @@ in the existing Wait/Interval field. Use **Config → Save** to persist the prof
 同じ位置）。測定に必要な機器のみ選択できます。**OK** で反映、**Cancel** で破棄し、
 待ち時間は従来のWait/Interval欄で設定します。JSONへの保存は **Config → Save** です。
 
+**Ctrl+Enter** starts the current measurement when Start is available, including
+CSV replay. It does not start from Alignment, an open dialog or menu, during
+another operation, or while Python owns the GUI. Holding the keys does not restart
+the run. On macOS, use Control, not Command.
+
+**Ctrl+Enter** で、Startボタンが使える状態の測定を開始できます（CSV再生も対応）。
+Alignment・ダイアログ／メニュー表示中・別処理中・Python操作中には開始しません。
+キーを押し続けても再開始しません。MacでもCommandではなくControlです。
+
 | Measurement / 測定 | Devices shown / 選択する機器 |
 | --- | --- |
 | Signal Monitor | Lock-in |
@@ -106,6 +115,21 @@ ScannerはCONEX-CCの別ポート、またはCONEX-AGAPの共通接続の装置�
 装置軸U/Vは回転測定座標u/vとは別です。制御器・ポート・校正・軸の変更は切断後に
 行います。Directionは表示値を維持する専用の更新処理で接続中にも変更できます。
 
+Expanded **Device** settings share this order: **Controller → Stage / Actuator →
+Port → Axis → Direction → Round trips / Scale**. An edited field briefly gains a
+blue outline and a “changed · next Connect” caption. These are local edits; use
+Config → Save to retain them. Connected Direction changes show “Updating
+direction…” until acknowledgement, then “Direction updated”; a failure is tied
+to that device and axis rather than unrelated read errors.
+
+**Device** 展開時は **Controller → Stage／Actuator → Port → Axis → Direction →
+Round trips／Scale** の順に統一しています。変更欄を一時的に青枠で示し、
+「changed · next Connect」と表示します。次回接続に使う設定で、保存はConfig → Saveです。
+接続中のDirection変更は「Updating direction…」から、確認後に「Direction updated」へ
+変わります。失敗表示は対象機器・軸の変更結果に基づき、別機器の読取エラーと区別します。
+
+![Device edit feedback, synthetic development capture / Device変更表示・開発版の合成画面](../images/device-feedback-development.png)
+
 **All Connect** validates every configured entry before connecting in order.
 If a connection fails, the log lists the connections retained; inspect the
 device selectors or use **All Disconnect**. Duplicate physical endpoints are
@@ -128,6 +152,15 @@ AlignmentはSignal Monitor/TRKR/SRKR/STRKR/SRKR 2Dと並ぶ独立タブです。
 **Delay stages** では横長の2パネル、**Scanners** では2×2の4パネルを表示します。
 各パネルに登録済み機器を割り当てられ、測定対象の選択は変わりません。
 左パネルの従来の操作・Initializeボタンも引き続き使えます。
+
+Both views follow **Position → Move unit / Step size → Motion mode → Arrows / Stop
+→ Initialize / Options**. Use Step for one move, or Hold while watching the live
+position. Direction stays in Options; the left-side setting updates after the
+controller acknowledges it.
+
+両方とも **現在位置 → 単位・移動量 → 移動モード → 矢印・Stop → Initialize・Options**
+の順です。1回の移動はStep、位置を見ながらの長押しはHoldを使います。
+DirectionはOptionsに配置し、制御側の確認後に左パネルにも反映します。
 
 | Control / 操作 | Behavior / 動作 |
 | --- | --- |

@@ -77,14 +77,19 @@ impl<'a> Form<'a> {
                 if !enabled || !self.enabled {
                     ui.disable();
                 }
-                ui.put(
+                let response = ui.put(
                     r,
                     egui::Button::new(text)
                         .fill(fill)
                         .min_size(r.size())
                         .corner_radius(6)
                         .truncate(),
-                )
+                );
+                if name == "start_button" {
+                    response.on_hover_text("Start · Ctrl+Enter")
+                } else {
+                    response
+                }
             })
             .inner
             .clicked()

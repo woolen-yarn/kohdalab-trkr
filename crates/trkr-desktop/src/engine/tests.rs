@@ -1,4 +1,32 @@
 use super::*;
+#[test]
+fn direction_failure_identifies_its_device_and_axis_without_hardware() {
+    let mut session = Session::default();
+    let (send, events) = mpsc::sync_channel(8);
+    let result = session.execute(
+        Command::ReverseDirection {
+            kind: MotionKind::Scanner,
+            id: "missing-scanner".into(),
+            axis: 2,
+        },
+        &AtomicBool::new(false),
+        &send,
+    );
+    let Event::DirectionFailed {
+        kind,
+        id,
+        axis,
+        error,
+    } = events.try_recv().unwrap()
+    else {
+        panic!("missing correlated direction failure");
+    };
+    assert_eq!(kind, MotionKind::Scanner);
+    assert_eq!(id, "missing-scanner");
+    assert_eq!(axis, 2);
+    assert_eq!(result.unwrap_err(), error);
+}
+
 fn config() -> HardwareConfig {
     HardwareConfig {
         device_ids: Default::default(),

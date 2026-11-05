@@ -8,7 +8,7 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 364 passed, 0 failed / 成功364、失敗0 |
+| Rust workspace tests | 371 passed, 0 failed / 成功371、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
@@ -104,3 +104,31 @@ qualification scope are unchanged.
 最小高さとスクロールは1566×700で確認しています。矢印はフォントに依存せず描画し、
 Delayの目盛りと現在値は別行です。機器一覧とAlignmentは独立レビューでも確認しました。
 移動命令と実機検証の範囲は変更していません。
+
+
+The unified-controls follow-up adds Ctrl+Enter with the same readiness rule as
+Start. Input tests verify modifier matching, autorepeat suppression, dialog and
+pending-operation blocking, and a replay start using the numeric edit from the
+same frame. Device fields now share an order and show transient local-edit
+feedback; live direction updates use device/axis-correlated success or failure.
+An unrelated background read error cannot fail a pending direction update.
+
+操作統一では、Startと同じ条件のCtrl+Enterを追加しました。修飾キー・キーリピート・
+ダイアログ・処理待ちの制限、同じ描画周期で入力した値を使う再生開始を入力試験で確認しました。
+Deviceの項目順を統一し、ローカル変更は一時的な強調表示、接続中Directionの結果は
+機器・軸に対応した確認結果で表示します。無関係な読取エラーで変更失敗にはなりません。
+
+Current captures cover four expanded/scrolled/edited/reordered device states
+(20 workflow geometry checks) and both Alignment views, including expanded
+Options. Visual inspection corrected delay readback/input spacing and scanner
+hint/arrow overlap. The final UI suite passes 86 tests; formatting, Clippy and
+the rebuilt macOS GUI pass. The actual GUI/Python Demo check again produces
+three TRKR and three SRKR rows and preserves selections, labels, zeros, order,
+metadata and configuration reload. Independent review confirmed the targeted
+Direction failure handling. All checks use synthetic data; no physical motion.
+
+今回のDevice表示4状態・合計20画面で配置検査に成功し、両Alignmentの通常・Options展開も
+目視確認しました。Delayの現在値と入力欄、Scannerの説明と矢印の重なりを修正しました。
+最終UIテスト86件、書式・静的検査・Mac再ビルドが成功しています。実GUIとPythonのDemoで
+TRKR・SRKR各3行を再確認し、機器選択・名前・ゼロ・順序・メタデータ・設定再読込を維持しました。
+独立レビューでDirection失敗の対象識別も再確認しています。実機移動は行っていません。

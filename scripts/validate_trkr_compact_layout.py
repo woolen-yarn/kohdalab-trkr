@@ -167,7 +167,7 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
                 if abs(footer[0] - config[0]) > 0.01 or abs(footer[2] - config[2]) > 0.01:
                     errors.append("Add device footer must align with Config")
         lockin = _rect(geometry, "lockin_group", errors)
-        expected_lockin_height = 348.0 if state in {"devices-expanded", "devices-scrolled"} else 234.0
+        expected_lockin_height = 348.0 if state in {"devices-expanded", "devices-scrolled", "devices-changed", "devices-scanner"} else 234.0
         if lockin is not None and abs(lockin[3] - expected_lockin_height) > 0.01:
             errors.append(
                 f"lockin_group height is {lockin[3]:g}, expected {expected_lockin_height:g}"
@@ -269,7 +269,7 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
 
 
 def _state_for(path: Path) -> str:
-    return next((state for state in ("devices-expanded", "devices-scrolled", "left-collapsed", "right-collapsed", "rotated-reverse", "rotated") if state in path.as_posix()), "")
+    return next((state for state in ("devices-expanded", "devices-scrolled", "devices-changed", "devices-scanner", "left-collapsed", "right-collapsed", "rotated-reverse", "rotated") if state in path.as_posix()), "")
 
 
 def _capture_files(paths: list[Path]) -> list[Path]:

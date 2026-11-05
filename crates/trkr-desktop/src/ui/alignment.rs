@@ -31,6 +31,13 @@ enum DelayMotionMode {
     End,
 }
 
+#[derive(Clone, Copy)]
+enum MotionHint {
+    Step,
+    Hold,
+    End,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct HeldControl {
     kind: MotionKind,
@@ -324,9 +331,9 @@ impl App {
                                 let mut y = content.min.y;
                                 for slot in 0..2 {
                                     let height = if render.alignment.delay_options[slot] {
-                                        360.
+                                        380.
                                     } else {
-                                        304.
+                                        324.
                                     };
                                     let rect = egui::Rect::from_min_size(
                                         egui::pos2(content.min.x, y),
@@ -729,8 +736,20 @@ fn draw_delay_card(
             ("t_cor", value(corrected, "ps")),
         ],
     );
+    label(
+        render.ui,
+        rect.min + Vec2::new(14., 165.),
+        "Move unit",
+        MUTED,
+    );
+    label(
+        render.ui,
+        rect.min + Vec2::new(158., 165.),
+        "Step size",
+        MUTED,
+    );
     let unit_rect =
-        egui::Rect::from_min_size(rect.min + Vec2::new(14., 160.), Vec2::new(138., 26.));
+        egui::Rect::from_min_size(rect.min + Vec2::new(14., 180.), Vec2::new(138., 26.));
     unit_selector(
         render.ui,
         unit_rect,
@@ -741,37 +760,30 @@ fn draw_delay_card(
     );
     number(
         render.ui,
-        egui::Rect::from_min_size(rect.min + Vec2::new(158., 160.), Vec2::new(78., 26.)),
+        egui::Rect::from_min_size(rect.min + Vec2::new(158., 180.), Vec2::new(78., 26.)),
         &mut render.alignment.delay_step[slot],
         !render.locked,
-    );
-    label(
-        render.ui,
-        rect.min + Vec2::new(240., 166.),
-        "increment",
-        MUTED,
     );
     let amount = render.alignment.delay_step[slot];
     let unit = render.alignment.delay_unit;
     let locked = render.locked || !connected;
-    let mode_y = 194.;
+    let mode_y = 214.;
     let mode = delay_mode_selector(
         render.ui,
         egui::Rect::from_min_size(rect.min + Vec2::new(14., mode_y), Vec2::new(186., 26.)),
         &mut render.alignment.delay_mode[slot],
         !render.locked && connected,
     );
-    label(
+    mode_hint(
         render.ui,
         rect.min + Vec2::new(208., mode_y + 6.),
         match mode {
-            DelayMotionMode::Step => "Click an arrow to move one increment",
-            DelayMotionMode::Hold => "Hold an arrow · release to stop",
-            DelayMotionMode::End => "Click an arrow to move to its physical end",
+            DelayMotionMode::Step => MotionHint::Step,
+            DelayMotionMode::Hold => MotionHint::Hold,
+            DelayMotionMode::End => MotionHint::End,
         },
-        MUTED,
     );
-    let control_y = 226.;
+    let control_y = 246.;
     let pad = Vec2::new(82., 34.);
     let center_x = rect.width() * 0.5;
     for (positive, x) in [(false, center_x - 129.), (true, center_x + 47.)] {
@@ -800,10 +812,10 @@ fn draw_delay_card(
                     .push(end(MotionKind::Delay, &panel.option.id, 0, positive));
             }
         } else {
-            let _ = motion_button(
+            motion_arrow_button(
                 render,
                 &control,
-                if positive { "Move +" } else { "Move -" },
+                if positive { (1., 0.) } else { (-1., 0.) },
                 mode == DelayMotionMode::Hold,
             );
         }
@@ -824,7 +836,7 @@ fn draw_delay_card(
     let init = button(
         render.ui,
         egui::Rect::from_min_size(
-            rect.min + Vec2::new(rect.width() - 190., 270.),
+            rect.min + Vec2::new(rect.width() - 190., 290.),
             Vec2::new(92., 26.),
         ),
         "Initialize",
@@ -833,7 +845,7 @@ fn draw_delay_card(
     let options = toggle_button(
         render.ui,
         egui::Rect::from_min_size(
-            rect.min + Vec2::new(rect.width() - 92., 270.),
+            rect.min + Vec2::new(rect.width() - 92., 290.),
             Vec2::new(78., 26.),
         ),
         "Options",
@@ -850,15 +862,10 @@ fn draw_delay_card(
         }));
     }
     if options {
-        label(
-            render.ui,
-            rect.min + Vec2::new(14., 304.),
-            "Direction keeps the displayed coordinate; the stage does not move.",
-            MUTED,
-        );
+        direction_note(render.ui, rect.min + Vec2::new(14., 324.));
         if direction_selector(
             render.ui,
-            egui::Rect::from_min_size(rect.min + Vec2::new(14., 320.), Vec2::new(146., 24.)),
+            egui::Rect::from_min_size(rect.min + Vec2::new(14., 340.), Vec2::new(146., 24.)),
             panel.entry.config.direction != 0,
             !render.locked && connected,
         )
@@ -920,11 +927,10 @@ fn draw_scanner_card(
         (50., "X", x, panel.entry.zero_um[0]),
         (82., "Y", y, panel.entry.zero_um[1]),
     ] {
-        label(
+        readback(
             render.ui,
             rect.min + Vec2::new(108., offset),
             &format!("{name}  {} µm", compact(value)),
-            TEXT,
         );
         label(
             render.ui,
@@ -938,7 +944,7 @@ fn draw_scanner_card(
     let field_width = ((rect.width() - 28. - field_gap * 2.) / 3.).clamp(58., 112.);
     let x_step_x = 14. + field_width + field_gap;
     let y_step_x = x_step_x + field_width + field_gap;
-    label(render.ui, base + Vec2::new(14., 124.), "Units", MUTED);
+    label(render.ui, base + Vec2::new(14., 124.), "Move unit", MUTED);
     unit_selector(
         render.ui,
         egui::Rect::from_min_size(base + Vec2::new(14., 139.), Vec2::new(field_width, 26.)),
@@ -951,7 +957,11 @@ fn draw_scanner_card(
         label(
             render.ui,
             base + Vec2::new(offset, 124.),
-            if axis == 0 { "X step" } else { "Y step" },
+            if axis == 0 {
+                "X step size"
+            } else {
+                "Y step size"
+            },
             MUTED,
         );
         number(
@@ -968,15 +978,14 @@ fn draw_scanner_card(
         &mut render.alignment.scanner_hold[slot],
         !render.locked && (axes[1] || axes[2]),
     );
-    label(
+    mode_hint(
         render.ui,
         base + Vec2::new(14., 226.),
         if hold {
-            "Hold an arrow\nRelease to stop"
+            MotionHint::Hold
         } else {
-            "Click an arrow\nfor one step"
+            MotionHint::Step
         },
-        MUTED,
     );
     let unit = render.alignment.scanner_unit[slot];
     let pad = Vec2::new(54., 42.);
@@ -1052,12 +1061,7 @@ fn draw_scanner_card(
         !render.locked,
     );
     if options {
-        label(
-            render.ui,
-            base + Vec2::new(14., 350.),
-            "Direction keeps the displayed coordinate; the stage does not move.",
-            MUTED,
-        );
+        direction_note(render.ui, base + Vec2::new(14., 350.));
         let width = ((rect.width() - 42.) * 0.5).clamp(100., 146.);
         for (axis, offset, config) in [
             (1, 14., &panel.entry.x),
@@ -1159,7 +1163,11 @@ fn motion_arrow_button(
     direction: (f32, f32),
     hold_mode: bool,
 ) {
-    let axis = if control.axis == 1 { "X" } else { "Y" };
+    let axis = match (control.kind, control.axis) {
+        (MotionKind::Delay, _) => "Delay",
+        (_, 1) => "X",
+        _ => "Y",
+    };
     let sign = if control.positive { "+" } else { "-" };
     motion_button(render, control, "", hold_mode).on_hover_text(format!("Move {axis}{sign}"));
     let center = control.position + control.size * 0.5;
@@ -1201,6 +1209,59 @@ fn card(ui: &mut egui::Ui, rect: egui::Rect, title: &str) {
         label(ui, rect.min + Vec2::new(14., 12.), title, TEXT);
     }
 }
+
+fn readback(ui: &mut egui::Ui, position: egui::Pos2, text: &str) {
+    ui.painter().text(
+        position,
+        egui::Align2::LEFT_TOP,
+        text,
+        egui::FontId::proportional(15.),
+        TEXT,
+    );
+}
+
+fn mode_hint(ui: &mut egui::Ui, position: egui::Pos2, hint: MotionHint) {
+    let (text, detail) = match hint {
+        MotionHint::Step => (
+            "Click: one step",
+            "Click an arrow to move the entered step size once.",
+        ),
+        MotionHint::Hold => (
+            "Hold: release stops",
+            "Moves while held; releasing requests stop.",
+        ),
+        MotionHint::End => (
+            "Arrow: physical end",
+            "Moves to the configured physical travel end.",
+        ),
+    };
+    let response = ui.interact(
+        egui::Rect::from_min_size(position, Vec2::new(108., 18.)),
+        ui.id().with((
+            "alignment-motion-hint",
+            position.x.to_bits(),
+            position.y.to_bits(),
+        )),
+        egui::Sense::hover(),
+    );
+    label(ui, position, text, MUTED);
+    response.on_hover_text(detail);
+}
+
+fn direction_note(ui: &mut egui::Ui, position: egui::Pos2) {
+    let response = ui.interact(
+        egui::Rect::from_min_size(position, Vec2::new(300., 18.)),
+        ui.id().with((
+            "alignment-direction-note",
+            position.x.to_bits(),
+            position.y.to_bits(),
+        )),
+        egui::Sense::hover(),
+    );
+    label(ui, position, "Direction updates coordinates only", MUTED);
+    response.on_hover_text("The displayed coordinate stays continuous; the device does not move.");
+}
+
 fn readback_row(ui: &mut egui::Ui, rect: egui::Rect, y: f32, values: &[(&str, String)]) {
     let width = (rect.width() - 28.) / values.len().max(1) as f32;
     for (index, (name, value)) in values.iter().enumerate() {

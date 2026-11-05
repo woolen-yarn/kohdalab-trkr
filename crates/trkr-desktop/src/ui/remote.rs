@@ -462,6 +462,7 @@ impl Bridge {
                         app.config_path = path;
                     }
                     app.hydrate();
+                    app.device_feedback.clear();
                     app.note(if action == "load_config" {
                         format!("Loaded configuration: {}", app.config_path)
                     } else {

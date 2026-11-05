@@ -255,7 +255,9 @@ impl App {
             kind,
             id: id.to_owned(),
             axis,
-        })
+        })?;
+        self.device_feedback.pending_direction(kind, id, axis);
+        Ok(())
     }
 
     pub(super) fn apply_direction(
@@ -288,9 +290,15 @@ impl App {
         match self.inventory.project_selected(&mut self.settings.raw) {
             Ok(()) => {
                 self.hydrate();
+                self.device_feedback.confirm_direction(kind, id);
                 self.note("Direction updated · current coordinates preserved");
             }
-            Err(error) => self.note(error),
+            Err(error) => {
+                for axis in 0..3 {
+                    self.device_feedback.fail_direction(kind, id, axis, &error);
+                }
+                self.note(error);
+            }
         }
     }
 }
