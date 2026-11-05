@@ -109,10 +109,13 @@ fn layout_capture(
         "rotated-reverse",
         "alignment-delay",
         "alignment-scanner",
+        "alignment-delay-options",
+        "alignment-scanner-options",
         "measurement-settings",
         "multiple-devices",
         "add-device",
         "delete-device",
+        "device-order",
     ]
     .contains(&state)
     {

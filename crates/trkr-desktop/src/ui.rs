@@ -452,11 +452,18 @@ impl App {
         self.devices_scrolled_smoke = state == "devices-scrolled";
         self.right_collapsed = state == "right-collapsed";
         if state.starts_with("alignment-") {
-            self.enable_alignment_preview(state == "alignment-scanner");
+            self.enable_alignment_preview(state.starts_with("alignment-scanner"));
+            if state.ends_with("-options") {
+                self.enable_alignment_options_preview();
+            }
         }
         if matches!(
             state,
-            "measurement-settings" | "multiple-devices" | "add-device" | "delete-device"
+            "measurement-settings"
+                | "multiple-devices"
+                | "add-device"
+                | "delete-device"
+                | "device-order"
         ) {
             self.enable_alignment_preview(false);
             self.alignment_tab = false;
@@ -465,7 +472,17 @@ impl App {
                 output.dir = "demo/runs".into();
             }
             self.sync_all_outputs();
-            if state == "measurement-settings" {
+            if state == "device-order" {
+                self.inventory.scanners[0].label = "Pump — long optical-path label".into();
+                self.inventory.reorder_panel(
+                    &crate::inventory::PanelKey::new("scanner", "scanner-1"),
+                    &crate::inventory::PanelKey::new("lockin", "lockin-1"),
+                    false,
+                );
+                self.inventory
+                    .project_selected(&mut self.settings.raw)
+                    .expect("preview order");
+            } else if state == "measurement-settings" {
                 self.open_measurement_settings();
             } else if state == "add-device" {
                 self.inventory_dialog = Some(device_inventory::InventoryDialog::Add {
@@ -3752,7 +3769,11 @@ impl eframe::App for App {
                         );
                         let device_area = egui::Rect::from_min_max(
                             egui::pos2(content.min.x, origin.y + 136.),
-                            content.max,
+                            content.max - Vec2::new(0., 38.),
+                        );
+                        self.device_add_footer(
+                            ui,
+                            precision::rect(origin.x, content.max.y - 30., card_width, 26.),
                         );
                         precision::record(&mut self.geometry, "device_scroll_area", device_area);
                         ui.scope_builder(

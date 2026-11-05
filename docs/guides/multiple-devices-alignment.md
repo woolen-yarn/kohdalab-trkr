@@ -61,17 +61,29 @@ controls without changing measurement assignments.
 
 ![Inactive devices in the scrollable rail, synthetic development capture / 左パネルの未選択機器・開発版の合成画面](../images/inactive-devices-development.png)
 
-Use the single **Devices → + Add** button and choose **Lock-in / Delay / Scanner**.
-Each card receives an automatic number and an optional **Label** (for example,
-Pump or Probe); labels also appear in device-selection lists. Scanner X/Y stay
+Use **+ Add device** at the bottom of the left panel and choose **Lock-in / Delay /
+Scanner**. The button stays visible while device cards scroll. Click the name in
+the card header to rename it: **Scanner: 1** becomes **Scanner: Pump**, for example.
+Clearing the label restores the automatic number. Labels also appear in
+device-selection lists. Scanner X/Y stay
 in one card. Configure the address/ports, controller, actuator and axes there.
 A new motion device can be saved before a port is assigned; connecting and
 measuring still require complete valid settings.
 
-左パネル共通の **Devices → + Add** で **Lock-in / Delay / Scanner** を選びます。
-各カードには自動で番号が付き、**Label** にPumpやProbeなどの任意名を付けられます。
-名前は機器の選択リストにも表示します。ScannerのX/Yは1枚のカードにまとめています。
+左パネル下端の **+ Add device** で **Lock-in / Delay / Scanner** を選びます。
+カードをスクロールしてもAddは表示されます。見出しの名前を直接編集すると、
+**Scanner: 1** を **Scanner: Pump** のように変更できます。名前を空にすると自動番号に
+戻ります。名前は選択リストにも表示します。ScannerのX/Yは1枚のカードにまとめています。
 ポート未設定でも追加・保存でき、接続・測定時には有効な設定が必要です。
+
+Drag a card by the six-dot grip at its top left. The blue line marks its new
+position; holding near the edge scrolls the list. Escape cancels the drag.
+Reordering and renaming do not change device IDs, calibration or measurement
+assignments. Use **Config → Save** to retain names and order.
+
+カード左上の6点のつまみをドラッグすると、青い線の位置へ並べ替えられます。
+上下端に近づけると自動スクロールし、Escapeで取り消せます。名前や順序を変えても、
+機器ID・校正・測定の割当は変わりません。保存は **Config → Save** です。
 
 **Delete** at the card's top right asks for confirmation. Disconnect the device
 first. Its measurement assignments switch to the next device of that kind, or
@@ -121,9 +133,29 @@ AlignmentはSignal Monitor/TRKR/SRKR/STRKR/SRKR 2Dと並ぶ独立タブです。
 | --- | --- |
 | Step | One relative move by the entered amount; spatial point moves retain backlash compensation. / 入力量だけ1回移動。空間の位置指定移動では補償を維持します。 |
 | Hold | Bounded successive moves while pressed; release, focus loss or leaving Alignment requests stop. / 押している間、小区間の移動を継続。解放・フォーカス喪失・タブ離脱で停止要求します。 |
-| End | Move the delay stage to the configured native travel endpoint. / 遅延ステージを設定済みの実座標の可動端へ移動します。 |
+| To end | Move the delay stage to the configured native travel endpoint. / 遅延ステージを設定済みの実座標の可動端へ移動します。 |
 | Initialize | Confirm reference/homing and optional move to coordinate zero; AGAP does not HOME. / 原点復帰・初期化と任意の座標ゼロへの移動を確認。AGAPではHOMEしません。 |
 | Stop | Cancel the active application motion. / アプリで進行中の移動を停止します。 |
+
+Current positions sit above the motion controls. Scanner arrows follow the X/Y
+crosshair; the middle button is **Stop**. A short hint explains the selected
+Step/Hold mode. **Options** reveals Normal/Reverse direction controls; Initialize
+remains visible. Delay stages use the same motion modes plus **To end**.
+
+現在位置を移動ボタンの上に表示します。Scannerの十字ボタンはX/Yの図と方向を合わせ、
+中央は **Stop** です。Step/Holdの操作方法は短い説明で表示します。**Options** を開くと
+Normal/Reverseの方向設定を表示し、Initializeは常時表示します。Delayはさらに
+**To end** を選択できます。
+
+The position/relative-motion grouping follows the
+[Newport CONEX-CC interface](https://www.newport.com/medias/sys_master/images/images/hec/h8c/8797077700638/CONEX-CC-Controller-GUI-Manual.pdf)
+and the jog controls in
+[Thorlabs Kinesis](https://media.thorlabs.com/contentassets/5f57e82e38004e2aa5dfd0071bcf0732/kinesis_with_c_quick_start_guide.pdf).
+These are interaction references; TRKR retains its own motion and stop behavior.
+
+位置と相対移動のまとめ方はNewport CONEX-CC、Jog操作はThorlabs Kinesisの
+インターフェースを参考にしています。操作の見せ方の参考であり、TRKRの移動・停止処理は
+既存のものを使用します。
 
 Delay input/display units are `t (ps)`, `t_cor (ps)`, or native `mm`.
 The `t` and `t_cor` relative increments have the same scale. The rail shows

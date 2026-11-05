@@ -156,6 +156,16 @@ def validate_geometry(payload: dict[str, Any], state: str = "") -> list[str]:
                         errors.append(f"{name} is outside Config row {row + 1}")
 
     if state != "left-collapsed":
+        if "device_add_footer" in geometry:
+            footer = _rect(geometry, "device_add_footer", errors)
+            viewport = _rect(geometry, "device_scroll_area", errors)
+            config = _rect(geometry, "session_group", errors)
+            if footer is not None and viewport is not None:
+                if footer[1] < viewport[1] + viewport[3] + 4.0:
+                    errors.append("Add device footer overlaps the scrollable cards")
+            if footer is not None and config is not None:
+                if abs(footer[0] - config[0]) > 0.01 or abs(footer[2] - config[2]) > 0.01:
+                    errors.append("Add device footer must align with Config")
         lockin = _rect(geometry, "lockin_group", errors)
         expected_lockin_height = 348.0 if state in {"devices-expanded", "devices-scrolled"} else 234.0
         if lockin is not None and abs(lockin[3] - expected_lockin_height) > 0.01:

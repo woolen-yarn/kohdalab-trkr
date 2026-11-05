@@ -45,12 +45,18 @@ pub struct LockinEntry {
 }
 
 impl LockinEntry {
-    pub fn display_name(&self) -> String {
+    pub fn label_text(&self) -> String {
         if self.label.trim().is_empty() {
-            self.name.clone()
+            self.name
+                .strip_prefix("Lock-in ")
+                .unwrap_or(&self.name)
+                .to_owned()
         } else {
-            format!("{} · {}", self.name, self.label.trim())
+            self.label.trim().to_owned()
         }
+    }
+    pub fn display_name(&self) -> String {
+        format!("Lock-in: {}", self.label_text())
     }
 
     pub fn new(id: impl Into<String>, name: impl Into<String>, model: Model, address: u8) -> Self {
@@ -81,12 +87,18 @@ pub struct DelayEntry {
 }
 
 impl DelayEntry {
-    pub fn display_name(&self) -> String {
+    pub fn label_text(&self) -> String {
         if self.label.trim().is_empty() {
-            self.name.clone()
+            self.name
+                .strip_prefix("Delay ")
+                .unwrap_or(&self.name)
+                .to_owned()
         } else {
-            format!("{} · {}", self.name, self.label.trim())
+            self.label.trim().to_owned()
         }
+    }
+    pub fn display_name(&self) -> String {
+        format!("Delay: {}", self.label_text())
     }
 
     pub fn new(
@@ -125,12 +137,18 @@ pub struct ScannerEntry {
 }
 
 impl ScannerEntry {
-    pub fn display_name(&self) -> String {
+    pub fn label_text(&self) -> String {
         if self.label.trim().is_empty() {
-            self.name.clone()
+            self.name
+                .strip_prefix("Scanner ")
+                .unwrap_or(&self.name)
+                .to_owned()
         } else {
-            format!("{} · {}", self.name, self.label.trim())
+            self.label.trim().to_owned()
         }
+    }
+    pub fn display_name(&self) -> String {
+        format!("Scanner: {}", self.label_text())
     }
 
     pub fn new(
@@ -153,6 +171,21 @@ impl ScannerEntry {
     }
 }
 
+/// Stable presentation key. Reordering never changes acquisition/device identities.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct PanelKey {
+    pub kind: String,
+    pub id: String,
+}
+impl PanelKey {
+    pub fn new(kind: &str, id: &str) -> Self {
+        Self {
+            kind: kind.into(),
+            id: id.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Inventory {
@@ -160,6 +193,7 @@ pub struct Inventory {
     pub delays: Vec<DelayEntry>,
     pub scanners: Vec<ScannerEntry>,
     pub selected: DeviceIds,
+    pub panel_order: Vec<PanelKey>,
 }
 
 impl Default for Inventory {
@@ -168,6 +202,7 @@ impl Default for Inventory {
             lockins: vec![LockinEntry::new("lockin-1", "Lock-in 1", Model::Sr7265, 12)],
             delays: Vec::new(),
             scanners: Vec::new(),
+            panel_order: Vec::new(),
             selected: DeviceIds {
                 delay: String::new(),
                 scanner: String::new(),
@@ -178,6 +213,51 @@ impl Default for Inventory {
 }
 
 impl Inventory {
+    pub fn ordered_panels(&self) -> Vec<PanelKey> {
+        let all: Vec<_> = self
+            .lockins
+            .iter()
+            .map(|d| PanelKey::new("lockin", &d.id))
+            .chain(self.delays.iter().map(|d| PanelKey::new("delay", &d.id)))
+            .chain(
+                self.scanners
+                    .iter()
+                    .map(|d| PanelKey::new("scanner", &d.id)),
+            )
+            .collect();
+        let available: HashSet<_> = all.iter().collect();
+        let mut seen = HashSet::new();
+        self.panel_order
+            .iter()
+            .filter(|key| available.contains(key))
+            .chain(all.iter())
+            .filter(|key| seen.insert((*key).clone()))
+            .cloned()
+            .collect()
+    }
+
+    pub fn reorder_panel(&mut self, source: &PanelKey, target: &PanelKey, after: bool) -> bool {
+        let before = self.ordered_panels();
+        let Some(source_index) = before.iter().position(|key| key == source) else {
+            return false;
+        };
+        if source == target || !before.contains(target) {
+            return false;
+        }
+        let mut order = before.clone();
+        let moved = order.remove(source_index);
+        let target_index = order
+            .iter()
+            .position(|key| key == target)
+            .expect("known target");
+        order.insert(target_index + usize::from(after), moved);
+        if order == before {
+            return false;
+        }
+        self.panel_order = order;
+        true
+    }
+
     /// Read the current multi-device schema, or create its exact in-memory
     /// equivalent from a Python-era / portable legacy profile.
     pub fn from_profile(raw: &Value) -> Result<Self, String> {
@@ -240,6 +320,7 @@ impl Inventory {
             lockins: vec![lockin_entry],
             delays: delay.into_iter().collect(),
             scanners: scanner.into_iter().collect(),
+            panel_order: Vec::new(),
             selected: DeviceIds {
                 lockin: "lockin-1".into(),
                 delay: if raw.pointer("/instruments/delay_stage/t").is_some() {
@@ -456,6 +537,7 @@ impl Inventory {
 
     fn inventory_value(&self) -> Result<Value, String> {
         let mut value = serde_json::to_value(self).map_err(|error| error.to_string())?;
+        value["panel_order"] = json!(self.ordered_panels());
         let delays = value
             .get_mut("delays")
             .and_then(Value::as_array_mut)
@@ -759,5 +841,60 @@ mod tests {
         inventory.lockins.pop();
         inventory.selected.scanner = "missing".into();
         assert!(inventory.validate().unwrap_err().contains("does not exist"));
+    }
+    #[test]
+    fn presentation_order_and_names_do_not_reassign_hardware() {
+        let mut raw = legacy();
+        let mut inventory = Inventory::from_profile(&raw).unwrap();
+        inventory.project_selected(&mut raw).unwrap();
+        let instruments = raw["instruments"].clone();
+        let zero = raw["measurements"]["move_abs"]["zero"].clone();
+        let selected = inventory.selected.clone();
+        let scanner = PanelKey::new("scanner", "scanner-1");
+        let lockin = PanelKey::new("lockin", "lockin-1");
+        assert!(inventory.reorder_panel(&scanner, &lockin, false));
+        inventory.scanners[0].label = "Pump".into();
+        assert_eq!(inventory.scanners[0].display_name(), "Scanner: Pump");
+        inventory.project_selected(&mut raw).unwrap();
+        let restored = Inventory::from_profile(&raw).unwrap();
+        assert_eq!(restored.ordered_panels()[0], scanner);
+        assert_eq!(restored.selected, selected);
+        assert_eq!(raw["instruments"], instruments);
+        assert_eq!(raw["measurements"]["move_abs"]["zero"], zero);
+        assert_eq!(restored.scanners[0].display_name(), "Scanner: Pump");
+        assert_eq!(restored.delays[0].display_name(), "Delay: 1");
+        assert!(!inventory.reorder_panel(&scanner, &scanner, true));
+        assert!(!inventory.reorder_panel(&scanner, &PanelKey::new("scanner", "missing"), true));
+    }
+
+    #[test]
+    fn stale_or_duplicate_panel_order_is_repaired_without_losing_new_entries() {
+        let mut inventory = Inventory::from_profile(&legacy()).unwrap();
+        let scanner = PanelKey::new("scanner", "scanner-1");
+        inventory.panel_order = vec![
+            PanelKey::new("scanner", "deleted"),
+            scanner.clone(),
+            scanner.clone(),
+        ];
+        let order = inventory.ordered_panels();
+        assert_eq!(order.len(), 3);
+        assert_eq!(order[0], scanner);
+        let mut raw = legacy();
+        inventory.project_selected(&mut raw).unwrap();
+        assert_eq!(
+            raw["device_inventory"]["panel_order"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        inventory.scanners.clear();
+        inventory.selected.scanner.clear();
+        inventory.project_selected(&mut raw).unwrap();
+        assert!(
+            !raw["device_inventory"]["panel_order"]
+                .to_string()
+                .contains("scanner")
+        );
     }
 }

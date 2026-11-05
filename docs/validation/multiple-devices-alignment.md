@@ -8,12 +8,12 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 360 passed, 0 failed / 成功360、失敗0 |
+| Rust workspace tests | 364 passed, 0 failed / 成功364、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
 | Actual GUI, five measurement tabs × expanded device panels | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
-| Alignment synthetic GUI | 2 delay panels at 1566×700 and 4 scanner panels at 1566×820 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
+| Alignment synthetic GUI | 2 delay panels and 4 scanner panels at 1566×820 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
 | Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; current captures visually inspected / Settingsと未選択機器の表示を目視確認 |
 | Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
 | Physical instruments / 実機 | Not operated or qualified / 未操作・未検証 |
@@ -77,3 +77,30 @@ Physical motion remains untested; all displayed Alignment positions are syntheti
 Mac実画面で追加・削除確認、測定別Settings、Alignmentの十字操作を確認しました。
 最終GUIとPythonの模擬測定でも、機器ID・座標ゼロに加えて名前の保存・再読込みを確認しました。
 実機移動は未検証で、Alignmentの確認画面に表示した位置は合成データです。
+
+
+The compact-card follow-up adds inline `Scanner: Pump` names, a fixed bottom Add
+button, and cross-kind drag ordering. Regression tests simulate header typing, press/drag/drop
+and Escape cancellation, then verify stable device IDs, workflow assignments,
+calibration and save/reload order. Invalid/stale order keys are canonicalized.
+The actual compiled GUI + Python Demo check also retains the requested panel
+order across workflow changes and configuration save/reload.
+
+カードの改良では見出し内の名前、下端固定Add、種類をまたぐドラッグ並べ替えを追加しました。
+名前入力・ドラッグ・ドロップ・Escape取消を入力試験で再現し、機器ID・測定割当・校正と並び順の
+保存／再読込を確認しています。削除済み・重複した順序情報も整理されます。
+実GUIとPythonのDemo測定でも、測定切替と設定保存／再読込後の順序を確認しました。
+
+Six measurement-layout states (30 workflow captures) pass geometry checks,
+including fixed-footer clearance and long-name/reordered cards. Alignment was
+inspected at 1566×820, expanded Options at 1566×900/980, and minimum-height
+scanner scrolling at 1566×700. The scanner uses font-independent arrows; delay
+rail scales and current readbacks have separate rows. Independent code reviews
+checked the inventory and Alignment changes. Motion commands and physical
+qualification scope are unchanged.
+
+測定画面6状態・合計30画面で配置検査に成功し、下端Addの余白と長い名前・並べ替え後の
+配置を確認しました。Alignmentは1566×820、Options展開は1566×900／980、Scannerの
+最小高さとスクロールは1566×700で確認しています。矢印はフォントに依存せず描画し、
+Delayの目盛りと現在値は別行です。機器一覧とAlignmentは独立レビューでも確認しました。
+移動命令と実機検証の範囲は変更していません。

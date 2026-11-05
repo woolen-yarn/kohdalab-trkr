@@ -1,6 +1,13 @@
 //! Inventory editing stays transactional and never opens or moves a device.
 use super::devices::DeviceClass;
 use super::*;
+use crate::inventory::PanelKey;
+
+#[derive(Clone)]
+struct PanelDrag {
+    key: PanelKey,
+    title: String,
+}
 
 pub(super) enum InventoryDialog {
     Add {
@@ -125,27 +132,12 @@ impl App {
         self.request_device_selection(candidate, self.workflow, None)
     }
 
-    pub(super) fn device_inventory_cards(
-        &mut self,
-        ui: &mut egui::Ui,
-        origin: egui::Pos2,
-        width: f32,
-    ) -> f32 {
-        use precision::rect;
-        let editable = self.inventory_editable();
-        ui.painter().text(
-            origin + Vec2::new(2., 13.),
-            egui::Align2::LEFT_CENTER,
-            "Devices",
-            egui::FontId::proportional(12.),
-            Color32::GRAY,
-        );
+    pub(super) fn device_add_footer(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
+        precision::record(&mut self.geometry, "device_add_footer", area);
+        let enabled = self.inventory_editable();
         if ui
-            .add_enabled_ui(editable, |ui| {
-                ui.put(
-                    rect(origin.x + width - 66., origin.y, 66., 26.),
-                    egui::Button::new("+ Add"),
-                )
+            .add_enabled_ui(enabled, |ui| {
+                ui.put(area, egui::Button::new("+ Add device").corner_radius(6))
             })
             .inner
             .clicked()
@@ -155,21 +147,51 @@ impl App {
                 label: String::new(),
             });
         }
+    }
+
+    fn reorder_device_panels(
+        &mut self,
+        source: &PanelKey,
+        target: &PanelKey,
+        after: bool,
+    ) -> Result<(), String> {
+        if !self.inventory_editable() {
+            return Err("Wait for the current operation before rearranging devices".into());
+        }
+        self.sync_all_plans()?;
+        if self.inventory.reorder_panel(source, target, after) {
+            self.inventory.project_selected(&mut self.settings.raw)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn device_inventory_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: egui::Pos2,
+        width: f32,
+    ) -> f32 {
+        use precision::rect;
+        let editable = self.inventory_editable();
+        if !editable && egui::DragAndDrop::has_payload_of_type::<PanelDrag>(ui.ctx()) {
+            egui::DragAndDrop::clear_payload(ui.ctx());
+        }
+        let order = self.inventory.ordered_panels();
         let mut entries = Vec::new();
-        for (index, d) in self.inventory.lockins.iter().enumerate() {
+        for d in &self.inventory.lockins {
             entries.push((
                 DeviceClass::Lockin,
                 d.id.clone(),
-                numbered_title(DeviceClass::Lockin, &d.id, index),
+                d.label_text(),
                 d.label.clone(),
                 format!("{} · GPIB {}", d.model.name(), d.address),
             ));
         }
-        for (index, d) in self.inventory.delays.iter().enumerate() {
+        for d in &self.inventory.delays {
             entries.push((
                 DeviceClass::Delay,
                 d.id.clone(),
-                numbered_title(DeviceClass::Delay, &d.id, index),
+                d.label_text(),
                 d.label.clone(),
                 d.config
                     .stage
@@ -177,11 +199,11 @@ impl App {
                     .unwrap_or_else(|| d.config.controller.clone()),
             ));
         }
-        for (index, d) in self.inventory.scanners.iter().enumerate() {
+        for d in &self.inventory.scanners {
             entries.push((
                 DeviceClass::Scanner,
                 d.id.clone(),
-                numbered_title(DeviceClass::Scanner, &d.id, index),
+                d.label_text(),
                 d.label.clone(),
                 d.x.as_ref()
                     .or(d.y.as_ref())
@@ -189,9 +211,17 @@ impl App {
                     .unwrap_or_else(|| "X / Y".into()),
             ));
         }
-        let mut y = origin.y + 34.;
+        entries.sort_by_key(|(class, id, ..)| {
+            order
+                .iter()
+                .position(|key| key.kind == class.key() && key.id == *id)
+                .unwrap_or(usize::MAX)
+        });
+        let mut y = origin.y;
         let mut chosen = None;
-        for (class, id, title, mut label, model) in entries {
+        let mut dropped = None;
+        for (class, id, fallback, mut label, model) in entries {
+            let key = PanelKey::new(class.key(), &id);
             let selected = class.selected(&self.inventory.selected) == id;
             let active = self.device_highlighted(class.key(), &id);
             let body_height = if selected {
@@ -201,9 +231,9 @@ impl App {
                     DeviceClass::Scanner => self.device_height(2) + self.device_height(3) + 28.,
                 }
             } else {
-                60.
+                62.
             };
-            let area = rect(origin.x, y, width, 36. + body_height);
+            let area = rect(origin.x, y, width, 10. + body_height);
             precision::record(&mut self.geometry, &format!("inventory_{id}"), area);
             ui.painter().rect(
                 area,
@@ -219,13 +249,80 @@ impl App {
                 ),
                 egui::StrokeKind::Inside,
             );
-            ui.painter().text(
-                egui::pos2(area.min.x + 11., y + 17.),
-                egui::Align2::LEFT_CENTER,
-                &title,
-                egui::FontId::proportional(12.),
-                if active { TEXT } else { Color32::GRAY },
+            let handle_rect = rect(area.min.x + 6., y + 5., 17., 22.);
+            let handle = ui
+                .interact(
+                    handle_rect,
+                    egui::Id::new(("device-drag", &key.kind, &id)),
+                    if editable {
+                        egui::Sense::drag()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                )
+                .on_hover_text("Drag to rearrange · order is saved with Config");
+            for dx in [5., 10.] {
+                for dy in [6., 11., 16.] {
+                    ui.painter().circle_filled(
+                        handle_rect.min + Vec2::new(dx, dy),
+                        1.,
+                        if handle.hovered() {
+                            TEXT
+                        } else {
+                            Color32::from_rgb(108, 113, 123)
+                        },
+                    );
+                }
+            }
+            if editable {
+                handle.dnd_set_drag_payload(PanelDrag {
+                    key: key.clone(),
+                    title: format!("{}: {}", class.title(), fallback),
+                });
+            }
+            let prefix_width = match class {
+                DeviceClass::Delay => 42.,
+                _ => 56.,
+            };
+            let prefix = rect(area.min.x + 25., y + 5., prefix_width, 23.);
+            ui.put(
+                prefix,
+                egui::Label::new(
+                    egui::RichText::new(format!("{}:", class.title())).color(if active {
+                        TEXT
+                    } else {
+                        Color32::GRAY
+                    }),
+                ),
             );
+            let name_rect = rect(
+                prefix.max.x + 2.,
+                y + 5.,
+                area.max.x - 70. - prefix.max.x - 2.,
+                23.,
+            );
+            let response = ui
+                .add_enabled_ui(editable, |ui| {
+                    ui.put(
+                        name_rect,
+                        egui::TextEdit::singleline(&mut label)
+                            .id_salt(("inventory-label", class.key(), &id))
+                            .hint_text(&fallback)
+                            .char_limit(64)
+                            .frame(false)
+                            .desired_width(name_rect.width())
+                            .margin(Vec2::new(3., 3.)),
+                    )
+                })
+                .inner
+                .on_hover_text(format!("Rename {}: {}\n{}", class.title(), fallback, id));
+            if response.changed() {
+                self.set_device_label(class, &id, label);
+                self.sync();
+                if let Err(error) = self.sync_inventory() {
+                    self.note(error);
+                }
+            }
             if ui
                 .add_enabled_ui(editable, |ui| {
                     ui.put(
@@ -242,25 +339,7 @@ impl App {
                     error: None,
                 });
             }
-            let response = ui
-                .add_enabled_ui(editable, |ui| {
-                    ui.put(
-                        rect(area.min.x + 11., y + 31., width - 22., 23.),
-                        egui::TextEdit::singleline(&mut label)
-                            .id_salt(("inventory-label", &id))
-                            .hint_text("Label (optional)")
-                            .char_limit(64),
-                    )
-                })
-                .inner;
-            if response.changed() {
-                self.set_device_label(class, &id, label);
-                self.sync();
-                if let Err(error) = self.sync_inventory() {
-                    self.note(error);
-                }
-            }
-            let body = rect(origin.x, y + 36., width, body_height);
+            let body = rect(origin.x, y + 10., width, body_height);
             if selected {
                 ui.scope(|ui| {
                     if !active {
@@ -271,7 +350,6 @@ impl App {
                         DeviceClass::Delay => self.motion(ui, 0, "Delay Stage", Device::T, body),
                         DeviceClass::Scanner => {
                             precision::record(&mut self.geometry, "scanner_group", body);
-                            // X/Y remain adjacent controls belonging to one scanner.
                             self.motion(
                                 ui,
                                 1,
@@ -304,38 +382,111 @@ impl App {
                     .iter()
                     .find(|d| d.kind == class.key() && d.id == id)
                     .is_some_and(|d| d.connected.iter().any(|v| *v));
-                ui.put(
-                    rect(origin.x + 11., y + 61., width - 93., 23.),
-                    egui::Label::new(egui::RichText::new(model).small().color(Color32::GRAY))
-                        .truncate(),
+                let mut form = precision::Form::new(ui, &mut self.geometry, area.min);
+                form.value(
+                    &format!("inventory_{id}_model"),
+                    rect(11., 32., width - 98., 20.),
+                    &model,
+                    Color32::GRAY,
+                );
+                form.value(
+                    &format!("inventory_{id}_connection"),
+                    rect(11., 51., width - 98., 16.),
+                    if connected {
+                        "Connected"
+                    } else {
+                        "Disconnected"
+                    },
+                    if connected {
+                        Color32::from_rgb(93, 196, 146)
+                    } else {
+                        Color32::GRAY
+                    },
                 );
                 let response = ui.add_enabled_ui(editable, |ui| {
                     ui.put(
-                        rect(origin.x + width - 78., y + 61., 67., 24.),
+                        rect(origin.x + width - 78., y + 36., 67., 24.),
                         egui::Button::new(if self.alignment_tab { "Details" } else { "Use" }),
                     )
                 });
                 if response.inner.clicked() {
                     chosen = Some((class, id.clone()));
                 }
-                ui.put(
-                    rect(origin.x + 11., y + 80., width - 93., 15.),
-                    egui::Label::new(
-                        egui::RichText::new(if connected {
-                            "Connected"
-                        } else {
-                            "Disconnected"
-                        })
-                        .size(10.)
-                        .color(if connected {
-                            Color32::from_rgb(93, 196, 146)
-                        } else {
-                            Color32::GRAY
-                        }),
-                    ),
+            }
+            // Read pointer containment directly: editable child controls should
+            // not swallow a card drop. The clipped rail is the only drop zone.
+            if editable
+                && let Some(payload) = egui::DragAndDrop::payload::<PanelDrag>(ui.ctx())
+                && payload.key != key
+                && let Some(pointer) = ui.ctx().pointer_interact_pos()
+                && area
+                    .expand2(Vec2::new(0., 4.))
+                    .intersect(ui.clip_rect())
+                    .contains(pointer)
+            {
+                let after = pointer.y > area.center().y;
+                let line_y = if after {
+                    area.max.y + 4.
+                } else {
+                    area.min.y - 4.
+                };
+                ui.painter().line_segment(
+                    [
+                        egui::pos2(origin.x, line_y),
+                        egui::pos2(origin.x + width, line_y),
+                    ],
+                    Stroke::new(2_f32, Color32::from_rgb(79, 143, 238)),
                 );
+                if ui.input(|input| input.pointer.any_released()) {
+                    dropped = Some((payload.key.clone(), key.clone(), after));
+                    egui::DragAndDrop::clear_payload(ui.ctx());
+                }
             }
             y += area.height() + 8.;
+        }
+        if let Some(payload) = egui::DragAndDrop::payload::<PanelDrag>(ui.ctx())
+            && let Some(pointer) = ui.ctx().pointer_interact_pos()
+        {
+            let clip = ui.clip_rect();
+            if clip.contains(pointer) {
+                let delta = if pointer.y < clip.min.y + 28. {
+                    10.
+                } else if pointer.y > clip.max.y - 28. {
+                    -10.
+                } else {
+                    0.
+                };
+                if delta != 0. {
+                    ui.scroll_with_delta(Vec2::new(0., delta));
+                    ui.ctx().request_repaint_after(Duration::from_millis(16));
+                }
+            }
+            let painter = ui.ctx().layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                egui::Id::new("device-drag-preview"),
+            ));
+            let galley = painter.layout_no_wrap(
+                payload.title.clone(),
+                egui::FontId::proportional(12.),
+                TEXT,
+            );
+            let preview = egui::Rect::from_min_size(
+                pointer + Vec2::new(14., 14.),
+                galley.size() + Vec2::new(16., 10.),
+            );
+            painter.rect(
+                preview,
+                6.,
+                PANEL,
+                Stroke::new(1_f32, BORDER),
+                egui::StrokeKind::Inside,
+            );
+            painter.galley(preview.min + Vec2::new(8., 5.), galley, TEXT);
+        }
+        if let Some((source, target, after)) = dropped
+            && let Err(error) = self.reorder_device_panels(&source, &target, after)
+        {
+            self.note(error);
         }
         if let Some((class, id)) = chosen {
             self.select_device(class, id, None);
@@ -398,14 +549,6 @@ impl App {
             self.inventory_dialog = Some(dialog);
         }
     }
-}
-
-fn numbered_title(class: DeviceClass, id: &str, index: usize) -> String {
-    let number = id
-        .strip_prefix(&format!("{}-", class.key()))
-        .and_then(|n| n.parse::<usize>().ok())
-        .unwrap_or(index + 1);
-    format!("{} {number}", class.title())
 }
 
 fn settings_without_device(
@@ -493,7 +636,7 @@ mod tests {
         let restored = Settings::from_value(edited.raw.clone()).unwrap();
         let inventory = crate::inventory::Inventory::from_profile(&restored.raw).unwrap();
         assert_eq!(inventory.scanners[0].label, "Probe");
-        assert_eq!(inventory.scanners[0].display_name(), "Scanner 2 · Probe");
+        assert_eq!(inventory.scanners[0].display_name(), "Scanner: Probe");
         let empty = settings_without_device(&edited, DeviceClass::Scanner, "scanner-2").unwrap();
         assert!(empty.raw.pointer("/instruments/scanner/x").is_none());
         assert!(empty.raw.pointer("/instruments/scanner/y").is_none());
@@ -628,5 +771,128 @@ mod tests {
                 scanner
             );
         }
+    }
+    fn inventory_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(precision::rect(0., 0., 400., 1000.)),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        app.device_inventory_cards(ui, egui::pos2(10., 10.), 350.);
+                    });
+            },
+        );
+    }
+    fn pointer_button(pos: egui::Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        }
+    }
+
+    #[test]
+    fn header_labels_accept_typing_and_persist_without_selecting_devices() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, false);
+        let mut spare = app.inventory.lockins[0].clone();
+        spare.id = "lockin-2".into();
+        spare.name = "Lock-in 2".into();
+        spare.address += 1;
+        app.inventory.lockins.push(spare);
+        app.inventory
+            .project_selected(&mut app.settings.raw)
+            .unwrap();
+        let selected = app.inventory.selected.clone();
+        inventory_frame(&mut app, &ctx, vec![]);
+        for id in ["lockin-1", "lockin-2", "delay-1", "scanner-1"] {
+            let area = app.geometry[&format!("inventory_{id}")];
+            let point = egui::pos2(area[0] + 110., area[1] + 16.);
+            inventory_frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(point),
+                    pointer_button(point, true),
+                ],
+            );
+            inventory_frame(&mut app, &ctx, vec![pointer_button(point, false)]);
+            inventory_frame(&mut app, &ctx, vec![egui::Event::Text("Probe".into())]);
+        }
+        let restored = crate::inventory::Inventory::from_profile(&app.settings.raw).unwrap();
+        assert_eq!(restored.lockins[0].label, "Probe");
+        assert_eq!(restored.lockins[1].label, "Probe");
+        assert_eq!(restored.delays[0].label, "Probe");
+        assert_eq!(restored.scanners[0].label, "Probe");
+        assert_eq!(restored.selected, selected);
+        assert!(!app.controller.has_pending());
+    }
+
+    #[test]
+    fn dragging_card_handle_reorders_only_on_drop_and_escape_cancels() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, false);
+        inventory_frame(&mut app, &ctx, vec![]);
+        let before = app.inventory.ordered_panels();
+        let ids = app.inventory.selected.clone();
+        let scanner = app.geometry["inventory_scanner-1"];
+        let start = egui::pos2(scanner[0] + 14., scanner[1] + 16.);
+        let target = egui::pos2(48., 15.);
+        inventory_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                pointer_button(start, true),
+            ],
+        );
+        inventory_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(target)]);
+        assert_eq!(app.inventory.ordered_panels(), before);
+        assert!(egui::DragAndDrop::has_payload_of_type::<PanelDrag>(&ctx));
+        inventory_frame(
+            &mut app,
+            &ctx,
+            vec![egui::Event::Key {
+                key: egui::Key::Escape,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Default::default(),
+            }],
+        );
+        inventory_frame(&mut app, &ctx, vec![pointer_button(target, false)]);
+        assert_eq!(app.inventory.ordered_panels(), before);
+        inventory_frame(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(start),
+                pointer_button(start, true),
+            ],
+        );
+        inventory_frame(&mut app, &ctx, vec![egui::Event::PointerMoved(target)]);
+        inventory_frame(&mut app, &ctx, vec![pointer_button(target, false)]);
+        assert_eq!(
+            app.inventory.ordered_panels()[0],
+            PanelKey::new("scanner", "scanner-1")
+        );
+        assert_eq!(app.inventory.selected, ids);
+        assert!(!app.controller.has_pending());
+        for workflow in Workflow::ALL {
+            assert_eq!(app.settings.workflow_device_ids(workflow).unwrap(), ids);
+        }
+        let restored = Settings::from_value(app.settings.raw.clone()).unwrap();
+        assert_eq!(
+            crate::inventory::Inventory::from_profile(&restored.raw)
+                .unwrap()
+                .ordered_panels(),
+            app.inventory.ordered_panels()
+        );
     }
 }
