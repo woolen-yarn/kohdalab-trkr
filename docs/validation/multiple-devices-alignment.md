@@ -8,15 +8,57 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 371 passed, 0 failed / 成功371、失敗0 |
+| Rust workspace tests | 380 passed, 0 failed / 成功380、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
-| Actual GUI, five measurement tabs × expanded device panels | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
-| Alignment synthetic GUI | 2 delay panels and 4 scanner panels at 1566×820 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
-| Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; current captures visually inspected / Settingsと未選択機器の表示を目視確認 |
+| Actual GUI, five measurement tabs × multiple devices | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
+| Alignment synthetic GUI | 2 delay panels and 4 scanner panels and their Options popups at 1566×700 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
+| Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; earlier captures visually inspected / Settingsと未選択機器の表示を目視確認 |
 | Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
 | Physical instruments / 実機 | Not operated or qualified / 未操作・未検証 |
+
+## Current compact controls / 今回のコンパクト操作
+
+Measurement-tab navigation preserves the inspected device group, disclosure
+state and card geometry. Workflow assignment, readiness and scan hints use the
+measurement's bound devices; Start projects that assignment before acquisition.
+The new tests cover all five tabs, a different bound scanner, delay calibration
+and unavailable time-constant data for a different lock-in.
+
+測定タブの移動では、表示中の機器・Deviceの開閉・カード配置を維持します。
+開始可否と走査の換算値は測定に割り当てた機器で判定し、Startでその割当を使用します。
+全5タブ、表示と異なるScanner、Delayの校正、別ロックインのTCが取得できない場合を
+回帰テストで確認しました。
+
+Delay and Scanner use one arrow for click-to-step and hold-to-move. Input tests
+cover the 0.35 s threshold, one Hold request, pointer drift outside the button,
+release/focus loss, invalid steps, busy blocking and no extra step after Hold.
+Selected-unit coordinates and limits follow current offsets. Delay end arrows
+are checked across units, offsets and both directions. Options is a popup;
+Initialize opens a separate confirmation and rechecks connection and ownership.
+Independent review findings for pointer capture and confirmation readiness were
+corrected and re-reviewed.
+
+DelayとScannerは同じ矢印でクリック移動と長押し移動を使い分けます。0.35秒の判定、
+Holdの重複防止、ボタン外へのポインター移動、解放・フォーカス喪失、不正Step、処理中の制限、
+解放後に余分なStepが出ないことを検証しました。単位別の座標・範囲は最新offsetを反映し、
+Delayの端移動は両方向・全単位で確認しています。Optionsはポップアップ化し、Initializeは
+別の確認時に接続・操作権を再確認します。独立レビューの指摘を修正し、再確認済みです。
+
+Both Alignment views and popups fit 1566×700. Five current measurement geometry
+captures pass, alongside **380 Rust tests (including 95 UI tests)**, **67 Python
+tests**, formatting, Clippy and the macOS build. The compiled GUI/Python Demo
+check verifies three TRKR and three SRKR rows, IDs, zeros, labels, order,
+configuration reload, run metadata and GUI survival after Python closes.
+No physical instruments were operated.
+
+Alignmentの両画面・ポップアップは1566×700に収まり、測定5画面の配置検査も成功しました。
+**Rust 380件（UI 95件を含む）・Python 67件**、書式・静的検査・Macビルドが成功しています。
+実GUIとPythonのDemoでTRKR/SRKR各3行、機器ID・ゼロ・名前・順序・設定再読込・メタデータ・
+Python終了後のGUI存続を確認しています。実機は操作していません。
+
+## Earlier development checks / これまでの開発検証
 
 Focused regressions cover shared serial-port ownership, per-axis SHOT302GS Stop,
 native and VISA GPIB resource pooling, cancellation response retirement, optical

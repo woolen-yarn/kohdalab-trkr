@@ -23,7 +23,7 @@ impl Availability {
 }
 
 impl App {
-    pub(super) fn start_availability(&self) -> Availability {
+    pub(super) fn start_availability(&self, plan: &Plan) -> Availability {
         Availability {
             blocked: self.alignment_tab
                 || self.snapshot.running
@@ -33,10 +33,10 @@ impl App {
                 || self.python_locked(),
             replay_ready: !self.demo_viewer
                 || (self.snapshot.devices[0]
-                    && self.demo.datasets[Self::ix(self.workflow)].is_some()
+                    && self.demo.datasets[Self::ix(plan.workflow)].is_some()
                     && self.demo.pending.is_none()),
             source_demo: self.source_demo,
-            devices: self.snapshot.devices,
+            devices: self.workflow_device_state(plan),
         }
     }
     pub(super) fn start_overlay_open(&self, ctx: &egui::Context) -> bool {
@@ -56,7 +56,7 @@ impl App {
         if requested
             && !was_blocked
             && !self.start_overlay_open(ctx)
-            && self.start_availability().allows(self.plan())
+            && self.start_availability(self.plan()).allows(self.plan())
             && ctx.input(|i| i.focused)
         {
             self.start();
@@ -93,6 +93,30 @@ pub(super) fn consume(ctx: &egui::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn app_with_second_scanner(ctx: &egui::Context) -> App {
+        let mut app = App::with_context(ctx, false);
+        app.sync_all_plans().unwrap();
+        let mut second = app.inventory.scanners[0].clone();
+        second.id = "scanner-2".into();
+        second.name = "Scanner 2".into();
+        if let Some(axis) = &mut second.x {
+            axis.port = "COM21".into();
+        }
+        if let Some(axis) = &mut second.y {
+            axis.port = "COM22".into();
+        }
+        app.inventory.scanners.push(second);
+        app.inventory
+            .project_selected(&mut app.settings.raw)
+            .unwrap();
+        let mut ids = app.inventory.selected.clone();
+        ids.scanner = "scanner-2".into();
+        app.settings
+            .set_workflow_devices(Workflow::Srkr, ids)
+            .unwrap();
+        app
+    }
     fn press(ctx: &egui::Context, modifiers: egui::Modifiers, repeat: bool) -> bool {
         // A fresh press follows a release; egui otherwise marks it as autorepeat.
         let _ = ctx.run(
@@ -162,18 +186,18 @@ mod tests {
         app.workflow = Workflow::Trkr;
         app.source_demo = false;
         let plan = app.plan().clone();
-        assert!(!app.start_availability().allows(&plan));
+        assert!(!app.start_availability(&plan).allows(&plan));
         app.snapshot.devices = [true, true, false, false];
-        assert!(app.start_availability().allows(&plan));
+        assert!(app.start_availability(&plan).allows(&plan));
         app.measurement_pending = true;
-        assert!(!app.start_availability().allows(&plan));
+        assert!(!app.start_availability(&plan).allows(&plan));
         app.measurement_pending = false;
         app.alignment_tab = true;
-        assert!(!app.start_availability().allows(&plan));
+        assert!(!app.start_availability(&plan).allows(&plan));
         app.alignment_tab = false;
         app.source_demo = true;
         app.snapshot.devices = [false; 4];
-        assert!(app.start_availability().allows(&plan));
+        assert!(app.start_availability(&plan).allows(&plan));
         app.open_measurement_settings();
         assert!(app.start_overlay_open(&ctx));
         app.finish_start_shortcut(&ctx, true, false);
@@ -182,7 +206,26 @@ mod tests {
         app.finish_start_shortcut(&ctx, true, true);
         assert!(!app.measurement_pending);
         app.demo_viewer = true;
-        assert!(!app.start_availability().allows(&plan));
+        assert!(!app.start_availability(&plan).allows(&plan));
+    }
+
+    #[test]
+    fn availability_uses_the_plan_bound_scanner_not_the_inspected_scanner() {
+        let ctx = egui::Context::default();
+        let mut app = app_with_second_scanner(&ctx);
+        let plan = app.settings.plan(Workflow::Srkr).unwrap();
+        // The open scanner-1 group is ready, but SRKR is assigned scanner-2.
+        app.snapshot.devices = [true, false, true, false];
+        assert!(!app.start_availability(&plan).allows(&plan));
+        app.snapshot.registered_devices.push(engine::DeviceState {
+            id: "scanner-2".into(),
+            kind: "scanner".into(),
+            connected: [false, true, false],
+            position: Default::default(),
+            delay_calibration: None,
+            phase: "Ready".into(),
+        });
+        assert!(app.start_availability(&plan).allows(&plan));
     }
 
     #[test]
@@ -219,8 +262,8 @@ mod tests {
             },
             |ctx| {
                 let requested = consume(ctx);
-                let blocked =
-                    app.start_overlay_open(ctx) || !app.start_availability().allows(app.plan());
+                let blocked = app.start_overlay_open(ctx)
+                    || !app.start_availability(app.plan()).allows(app.plan());
                 egui::CentralPanel::default().show(ctx, |ui| app.measure(ui, area));
                 app.finish_start_shortcut(ctx, requested, blocked);
             },

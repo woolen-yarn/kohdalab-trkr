@@ -52,19 +52,19 @@ The spatial rotation angle remains shared.
 割り当てます。校正・座標ゼロは装置ごとに保持し、同じ装置を使う測定タブはゼロを
 共有します。空間座標の回転角は従来どおり共通です。
 
-Viewing another plot tab during a run keeps the running measurement's instruments
-selected and highlighted. The viewed tab's selection is restored when idle.
-Selection is locked while it is being confirmed by the worker; failure restores
-the previous choice and reports the error without repeatedly retrying.
-Alignment panel bindings stay independent; the visible Alignment panels determine
-the highlighted motion devices. **Details** opens another device's left-side
-controls without changing measurement assignments.
+Switching measurement tabs preserves the open left-side device cards and their
+Device disclosure state. Highlighting follows the tab's assigned devices (or the
+running measurement while busy). **Details** explicitly chooses a card to
+inspect; **Use** changes the measurement assignment. Start uses the selected
+workflow's devices, even when a different card is being inspected. Explicit
+assignment changes still wait for worker confirmation and roll back on failure.
+Alignment panel bindings remain independent.
 
-測定中に別タブのグラフを見ても、実行中の機器と強調表示は維持されます。処理終了後に
-表示中タブの機器へ切り替わります。切替確認中は編集を制限し、失敗時は元に戻して
-エラーを表示します。同じ失敗を自動で繰り返しません。Alignmentのパネル割当は独立で、
-表示中のAlignmentパネルに対応する機器を強調します。**Details** は測定の割当を変えず、
-別の機器の左パネル操作を開きます。
+測定タブを切り替えても、左側で開いている機器カードとDeviceの開閉状態を保ちます。
+強調表示はタブの割当機器（測定中は実行中の機器）に従います。**Details** で表示するカードを
+選び、**Use** で測定の割当を変更します。別のカードを表示していても、Startは測定に
+割り当てた機器を使用します。割当を明示的に変えた場合は制御側の確認を待ち、失敗時は
+元に戻します。Alignmentのパネル割当は独立です。
 
 ![Measurement Settings, synthetic development capture / 測定設定・開発版の合成画面](../images/measurement-settings-development.png)
 
@@ -153,32 +153,36 @@ AlignmentはSignal Monitor/TRKR/SRKR/STRKR/SRKR 2Dと並ぶ独立タブです。
 各パネルに登録済み機器を割り当てられ、測定対象の選択は変わりません。
 左パネルの従来の操作・Initializeボタンも引き続き使えます。
 
-Both views follow **Position → Move unit / Step size → Motion mode → Arrows / Stop
-→ Initialize / Options**. Use Step for one move, or Hold while watching the live
-position. Direction stays in Options; the left-side setting updates after the
-controller acknowledges it.
+Both views place **Unit / Step** at the top, with **Options** at the top right
+and status beside the device name. There is no separate Step/Hold mode selector.
+A click moves one step; holding the same arrow for about **0.35 s** begins Hold.
+Releasing a held arrow requests stop and never adds a final single step.
 
-両方とも **現在位置 → 単位・移動量 → 移動モード → 矢印・Stop → Initialize・Options**
-の順です。1回の移動はStep、位置を見ながらの長押しはHoldを使います。
-DirectionはOptionsに配置し、制御側の確認後に左パネルにも反映します。
+両方とも上段に **Unit／Step**、右上に **Options**、機器名の横に状態を表示します。
+Step/Holdのモード切替は不要です。同じ矢印をクリックすると1ステップ、約 **0.35秒**
+押し続けるとHoldになります。長押しを離した際は停止要求のみで、追加の1ステップは出しません。
 
 | Control / 操作 | Behavior / 動作 |
 | --- | --- |
-| Step | One relative move by the entered amount; spatial point moves retain backlash compensation. / 入力量だけ1回移動。空間の位置指定移動では補償を維持します。 |
-| Hold | Bounded successive moves while pressed; release, focus loss or leaving Alignment requests stop. / 押している間、小区間の移動を継続。解放・フォーカス喪失・タブ離脱で停止要求します。 |
-| To end | Move the delay stage to the configured native travel endpoint. / 遅延ステージを設定済みの実座標の可動端へ移動します。 |
-| Initialize | Confirm reference/homing and optional move to coordinate zero; AGAP does not HOME. / 原点復帰・初期化と任意の座標ゼロへの移動を確認。AGAPではHOMEしません。 |
+| Click arrow / 矢印クリック | One relative move by Step; spatial moves retain backlash compensation. / Step幅だけ移動。空間の位置指定移動では補償を維持します。 |
+| Hold arrow / 矢印長押し | Bounded successive moves; release, focus loss or leaving Alignment requests stop. / 小区間の連続移動。解放・フォーカス喪失・タブ離脱で停止要求します。 |
+| Outer end arrows / 外側の端移動ボタン | Delay only: move to the corresponding travel end in the selected coordinate direction. / Delayの可動端へ移動。選択座標の増減方向に対応します。 |
+| Options → Initialize | Confirm reference/homing and optional coordinate-zero move; AGAP does not HOME. / 原点復帰・初期化と任意の座標ゼロ移動を確認。AGAPではHOMEしません。 |
 | Stop | Cancel the active application motion. / アプリで進行中の移動を停止します。 |
 
-Current positions sit above the motion controls. Scanner arrows follow the X/Y
-crosshair; the middle button is **Stop**. A short hint explains the selected
-Step/Hold mode. **Options** reveals Normal/Reverse direction controls; Initialize
-remains visible. Delay stages use the same motion modes plus **To end**.
+Delay shows the current position and rail in the selected unit only, between the
+left/right arrows. Scanner puts its coordinate graph on the left and the arrow
+pad on the right, with Stop in the middle. One Step value applies to both axes.
+Current values and graph/rail coordinates are recomputed from the latest device
+offset; editing an offset updates corrected coordinates immediately.
+**Options** opens a popup containing Direction and Initialize; opening it does
+not change the card height. Initialize retains its separate confirmation.
 
-現在位置を移動ボタンの上に表示します。Scannerの十字ボタンはX/Yの図と方向を合わせ、
-中央は **Stop** です。Step/Holdの操作方法は短い説明で表示します。**Options** を開くと
-Normal/Reverseの方向設定を表示し、Initializeは常時表示します。Delayはさらに
-**To end** を選択できます。
+Delayは選択した単位だけで現在値と位置バーを示し、その左右に移動ボタンを配置します。
+Scannerは左に座標グラフ、右に十字ボタン、十字の中央にStopを配置し、X/Yで共通のStepを
+使用します。現在値と目盛りは装置の最新offsetから算出し、offsetを編集すると補正座標も
+自動更新します。**Options** はDirectionとInitializeをまとめたポップアップで、
+カードの高さは変わりません。Initializeは別の確認画面を経て実行します。
 
 The position/relative-motion grouping follows the
 [Newport CONEX-CC interface](https://www.newport.com/medias/sys_master/images/images/hec/h8c/8797077700638/CONEX-CC-Controller-GUI-Manual.pdf)
@@ -192,7 +196,7 @@ These are interaction references; TRKR retains its own motion and stop behavior.
 
 Delay input/display units are `t (ps)`, `t_cor (ps)`, or native `mm`.
 The `t` and `t_cor` relative increments have the same scale. The rail shows
-native travel and the corresponding delay coordinates. Hold does not insert a
+travel limits in the selected unit. Hold does not insert a
 100 µm compensation excursion before every small segment and does not return to
 zero on release. One motion job runs at a time; automatic measurement and manual
 Alignment motion are mutually exclusive. Python GUI ownership also locks manual
@@ -200,8 +204,8 @@ Alignment operations. A disconnected UI lease prevents further Hold segments;
 physical stop response still depends on the controller and transport.
 
 遅延ステージの入力・表示単位は `t (ps)`、`t_cor (ps)`、装置の `mm` から選びます。
-相対移動量としてのtとt_corの換算倍率は同じです。レールに実座標の可動範囲と
-対応する遅延座標を表示します。Holdの各小区間に100 µmの補償往復を挿入せず、
+相対移動量としてのtとt_corの換算倍率は同じです。レールの可動範囲も選んだ単位で
+表示します。Holdの各小区間に100 µmの補償往復を挿入せず、
 解放後もゼロへ戻しません。移動処理は同時に1件で、自動測定と手動Alignmentは
 排他です。PythonがGUIを所有している間も手動Alignmentを制限します。
 GUIからの継続通知が失効すると次のHold区間を開始しませんが、実際の停止応答は

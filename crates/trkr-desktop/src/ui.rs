@@ -2578,28 +2578,12 @@ impl App {
         if workflow == self.workflow {
             return;
         }
-        if !self.demo_viewer
-            && !self.snapshot.running
-            && !self.measurement_pending
-            && !self.controller.has_pending()
-            && self.pending_device_selection.is_none()
-        {
-            let result = self.sync_all_plans().and_then(|_| {
-                let ids = self.settings.workflow_device_ids(workflow)?;
-                if ids != self.inventory.selected {
-                    let mut settings = self.settings.clone();
-                    settings.select_workflow(workflow)?;
-                    self.request_device_selection(settings, workflow, None)?;
-                } else {
-                    self.switch_workflow_view(workflow);
-                }
-                Ok::<(), String>(())
-            });
-            if let Err(error) = result {
-                self.note(error);
-            }
-            return;
-        }
+        // A measurement tab chooses a plan and its stored device roles; it is
+        // not a command to retarget the device editor or the connection worker.
+        // Keeping the inspected group stable prevents the left rail from
+        // collapsing one card and expanding another on every plot-tab click.
+        // `begin_measurement_tagged` still projects the selected workflow just
+        // before Run, so acquisition never inherits the inspected group.
         self.switch_workflow_view(workflow);
     }
     fn switch_workflow_view(&mut self, workflow: Workflow) {
@@ -2769,18 +2753,12 @@ impl App {
         let side = 250_f32.min((page.width() - 8. - 216.).max(180.));
         let settings = page.width() - 24. - side;
         let side_x = settings + 12.;
-        let tc = self
-            .snapshot
-            .lockin
-            .get("Time Constant")
-            .and_then(Value::as_f64)
-            .filter(|v| v.is_finite() && *v >= 0.)
-            .map(|v| v * 4.);
+        let tc = self.workflow_time_constant(plan.workflow);
 
         let hints_fast = self.scan_hints(plan.fast, &plan);
         let hints_slow = self.scan_hints(plan.slow, &plan);
         let scan_column_width = ((settings - 24.) * 0.5).round();
-        let availability = self.start_availability();
+        let availability = self.start_availability(&plan);
         let (start, stop, save, browse, settings_clicked);
         {
             let mut form = Form::new(ui, &mut self.geometry, page.min);
@@ -3063,7 +3041,7 @@ impl App {
                 },
             );
         }
-        if start {
+        if start && self.start_availability(self.plan()).allows(self.plan()) {
             self.start();
         }
         if stop {
@@ -3232,6 +3210,42 @@ impl App {
             }
         }
     }
+    fn workflow_time_constant(&self, workflow: Workflow) -> Option<f64> {
+        let ids = self.settings.workflow_device_ids(workflow).ok()?;
+        (ids.lockin == self.inventory.selected.lockin)
+            .then(|| {
+                self.snapshot
+                    .lockin
+                    .get("Time Constant")
+                    .and_then(Value::as_f64)
+                    .filter(|v| v.is_finite() && *v >= 0.)
+                    .map(|v| v * 4.)
+            })
+            .flatten()
+    }
+
+    fn workflow_hardware(&self, workflow: Workflow) -> Option<engine::HardwareConfig> {
+        let mut settings = self.settings.clone();
+        settings.select_workflow(workflow).ok()?;
+        settings.hardware().ok()
+    }
+
+    fn workflow_delay_calibration(
+        &self,
+        config: &engine::HardwareConfig,
+    ) -> Option<&trkr_motion::DelayCalibration> {
+        self.snapshot
+            .registered_devices
+            .iter()
+            .find(|device| device.kind == "delay" && device.id == config.device_ids.delay)
+            .and_then(|device| device.delay_calibration.as_ref())
+            .or_else(|| {
+                (config.device_ids.delay == self.inventory.selected.delay)
+                    .then_some(self.snapshot.delay_calibration.as_ref())
+                    .flatten()
+            })
+    }
+
     fn scan_hints(&self, axis: Axis, plan: &Plan) -> [String; 3] {
         let unit = scan_unit(axis);
         if self.demo_viewer {
@@ -3249,20 +3263,18 @@ impl App {
         if matches!(axis, Axis::U | Axis::V) {
             return std::array::from_fn(|_| "checks x/y".into());
         }
-        let config = self.settings.hardware().ok();
+        let config = self.workflow_hardware(plan.workflow);
+        let calibration = config
+            .as_ref()
+            .and_then(|config| self.workflow_delay_calibration(config));
         let t_step_hint = config
             .as_ref()
             .and_then(|c| c.motion.delay.as_ref())
-            .map(|d| delay_step_hint(d, self.snapshot.delay_calibration.as_ref()));
+            .map(|d| delay_step_hint(d, calibration));
         let limits = config.and_then(|c| {
             if axis == Axis::T {
                 let mut d = c.motion.delay?.normalized().ok()?;
-                if let Some(cached) = self
-                    .snapshot
-                    .delay_calibration
-                    .as_ref()
-                    .filter(|c| c.configuration.as_ref() == Some(&d))
-                {
+                if let Some(cached) = calibration.filter(|c| c.configuration.as_ref() == Some(&d)) {
                     d.pos_um_per_pulse = cached.effective_pos_um_per_pulse.or(d.pos_um_per_pulse);
                 }
                 let low_mm = d
@@ -3755,10 +3767,9 @@ impl eframe::App for App {
         self.poll_remote();
         self.poll_dialog();
         self.poll_snapshot_copy();
-        self.restore_workflow_devices();
         let start_shortcut = start_shortcut::consume(ctx);
-        let shortcut_was_blocked =
-            self.start_overlay_open(ctx) || !self.start_availability().allows(self.plan());
+        let shortcut_was_blocked = self.start_overlay_open(ctx)
+            || !self.start_availability(self.plan()).allows(self.plan());
         if !self.alignment_tab
             || self.python_locked()
             || ctx.input(|i| !i.focused || i.viewport().close_requested())

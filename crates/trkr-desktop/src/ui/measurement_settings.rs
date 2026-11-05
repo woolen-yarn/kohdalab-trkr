@@ -87,8 +87,20 @@ impl App {
     }
 
     pub(super) fn workflow_connected(&self, plan: &Plan) -> bool {
+        let devices = self.workflow_device_state(plan);
+        devices[0]
+            && engine::active_axes(plan)
+                .iter()
+                .enumerate()
+                .all(|(axis, needed)| !needed || devices[axis + 1])
+    }
+
+    /// Connection state for the plan's bound device group. `Snapshot::devices`
+    /// is only the inspected worker selection, so it is a valid fallback only
+    /// when the queried ID still equals that selection.
+    pub(super) fn workflow_device_state(&self, plan: &Plan) -> [bool; 4] {
         let Ok(ids) = self.settings.workflow_device_ids(plan.workflow) else {
-            return false;
+            return [false; 4];
         };
         let connected = |kind: &str, id: &str, axis: usize, selected: &str, index: usize| {
             self.snapshot
@@ -100,19 +112,12 @@ impl App {
                 })
         };
         let selected = &self.inventory.selected;
-        connected("lockin", &ids.lockin, 0, &selected.lockin, 0)
-            && engine::active_axes(plan)
-                .iter()
-                .enumerate()
-                .all(|(axis, needed)| {
-                    !needed || {
-                        if axis == 0 {
-                            connected("delay", &ids.delay, 0, &selected.delay, 1)
-                        } else {
-                            connected("scanner", &ids.scanner, axis, &selected.scanner, axis + 1)
-                        }
-                    }
-                })
+        [
+            connected("lockin", &ids.lockin, 0, &selected.lockin, 0),
+            connected("delay", &ids.delay, 0, &selected.delay, 1),
+            connected("scanner", &ids.scanner, 1, &selected.scanner, 2),
+            connected("scanner", &ids.scanner, 2, &selected.scanner, 3),
+        ]
     }
 
     /// All selection callers use the same correlated worker completion. An
@@ -191,37 +196,6 @@ impl App {
         self.snapshot.position = Default::default();
         self.snapshot.delay_calibration = None;
         self.snapshot.transport.clear();
-    }
-
-    /// A history tab may be viewed during acquisition; restore its selection
-    /// only once the worker is idle. Python operations explicitly select their
-    /// own workflow and never race this idle GUI reconciliation.
-    pub(super) fn restore_workflow_devices(&mut self) {
-        if self.alignment_tab
-            || self.demo_viewer
-            || self.python_locked()
-            || self.snapshot.running
-            || self.measurement_pending
-            || self.controller.has_pending()
-            || self.pending_device_selection.is_some()
-        {
-            return;
-        }
-        if self
-            .settings
-            .workflow_device_ids(self.workflow)
-            .is_ok_and(|ids| {
-                ids != self.inventory.selected
-                    && self.selection_retry_blocked.as_ref() != Some(&(self.workflow, ids))
-            })
-            && let Err(error) = self.sync_all_plans().and_then(|_| {
-                let mut settings = self.settings.clone();
-                settings.select_workflow(self.workflow)?;
-                self.request_device_selection(settings, self.workflow, None)
-            })
-        {
-            self.note(error);
-        }
     }
 
     pub(super) fn open_measurement_settings(&mut self) {
@@ -472,20 +446,74 @@ mod tests {
     }
 
     #[test]
-    fn tabs_restore_device_groups_and_their_zeros_without_opening_hardware() {
+    fn tab_navigation_preserves_device_card_geometry_and_disclosures() {
+        let ctx = egui::Context::default();
+        let mut app = two_groups();
+        app.device_expanded = [true, false, true, false];
+        let draw = |app: &mut App| {
+            app.geometry.clear();
+            let _ = ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(precision::rect(0., 0., 400., 2400.)),
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        app.device_inventory_cards(ui, egui::pos2(10., 10.), 328.);
+                    });
+                },
+            );
+            app.geometry.clone()
+        };
+        let initial = draw(&mut app);
+        for workflow in [
+            Workflow::Srkr,
+            Workflow::Strkr,
+            Workflow::Trkr,
+            Workflow::Srkr2d,
+            Workflow::SignalMonitor,
+        ] {
+            app.switch_workflow(workflow);
+            assert_eq!(draw(&mut app), initial);
+            assert_eq!(app.device_expanded, [true, false, true, false]);
+            assert!(app.pending_device_selection.is_none());
+        }
+    }
+
+    #[test]
+    fn tabs_keep_the_inspected_group_while_measurement_roles_change() {
         let mut app = two_groups();
         let initial = app.inventory.selected.clone();
         app.switch_workflow(Workflow::Srkr);
-        settle_selection(&mut app);
-        assert_eq!(app.inventory.selected.scanner, "scanner-2");
-        assert_eq!(app.plan().zero[1..], [21., -3.]);
-        app.set_selected_zero(1, 42.);
-        app.sync_all_plans().unwrap();
-        app.switch_workflow(Workflow::Trkr);
-        settle_selection(&mut app);
         assert_eq!(app.inventory.selected, initial);
-        assert_ne!(app.plan().zero[1], 42.);
-        assert_eq!(app.settings.plan(Workflow::Srkr).unwrap().zero[1], 42.);
+        assert_eq!(
+            app.settings
+                .workflow_device_ids(Workflow::Srkr)
+                .unwrap()
+                .scanner,
+            "scanner-2"
+        );
+        assert!(app.pending_device_selection.is_none());
+        let mut run_settings = app.settings.clone();
+        run_settings.select_workflow(Workflow::Srkr).unwrap();
+        assert_eq!(
+            run_settings.hardware().unwrap().device_ids.scanner,
+            "scanner-2"
+        );
+        // Editing the open left card stays with the inspected device, rather
+        // than silently applying this tab's scanner-2 calibration.
+        app.set_selected_zero(1, 42.);
+        assert_eq!(app.inventory.scanners[0].zero_um[0], 42.);
+        assert_eq!(app.inventory.scanners[1].zero_um[0], 21.);
+        app.switch_workflow(Workflow::Trkr);
+        assert_eq!(app.inventory.selected, initial);
+        assert_eq!(
+            app.settings
+                .workflow_device_ids(Workflow::Srkr)
+                .unwrap()
+                .scanner,
+            "scanner-2"
+        );
         assert!(!app.any_hardware_connected());
         let reloaded = Settings::from_value(app.settings.raw.clone()).unwrap();
         assert_eq!(
@@ -498,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn history_tab_during_run_keeps_active_devices_and_readback_zero() {
+    fn history_tab_during_run_keeps_inspected_devices_and_readback_zero() {
         let mut app = two_groups();
         let zero = app.selected_zero();
         let selected = app.inventory.selected.clone();
@@ -515,9 +543,7 @@ mod tests {
         assert!(!app.device_highlighted("scanner", "scanner-2"));
         app.snapshot.running = false;
         app.measurement_pending = false;
-        app.restore_workflow_devices();
-        settle_selection(&mut app);
-        assert_eq!(app.inventory.selected.scanner, "scanner-2");
+        assert_eq!(app.inventory.selected, selected);
     }
 
     #[test]
@@ -593,9 +619,6 @@ mod tests {
             requested_ids: desired,
         });
         app.finish_device_selection("restore-test", &Err("test rejection".into()));
-        for _ in 0..5 {
-            app.restore_workflow_devices();
-        }
         assert!(app.pending_device_selection.is_none());
         assert!(!app.controller.has_pending());
         let mut settings = app.settings.clone();

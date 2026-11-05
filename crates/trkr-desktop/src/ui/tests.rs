@@ -154,6 +154,46 @@ fn delay_step_hint_uses_actual_microstep_and_rejects_stale_identity() {
     other.axis_count = 2;
     assert!(delay_step_hint(&other, Some(&actual)).starts_with("full "));
 }
+
+#[test]
+fn scan_hints_and_tc_only_use_the_workflow_bound_devices() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.sync_all_plans().unwrap();
+    let baseline = app.scan_hints(Axis::T, app.plan());
+
+    let mut second_delay = app.inventory.delays[0].clone();
+    second_delay.id = "delay-2".into();
+    second_delay.name = "Delay 2".into();
+    second_delay.config.port = "COM7".into();
+    second_delay.config.travel_mm = Some(1.);
+    app.inventory.delays.push(second_delay);
+    let mut second_lockin = app.inventory.lockins[0].clone();
+    second_lockin.id = "lockin-2".into();
+    second_lockin.name = "Lock-in 2".into();
+    second_lockin.address = 13;
+    app.inventory.lockins.push(second_lockin);
+    app.inventory
+        .project_selected(&mut app.settings.raw)
+        .unwrap();
+    let mut ids = app.inventory.selected.clone();
+    ids.delay = "delay-2".into();
+    ids.lockin = "lockin-2".into();
+    app.settings
+        .set_workflow_devices(Workflow::Trkr, ids)
+        .unwrap();
+    let plan = app.settings.plan(Workflow::Trkr).unwrap();
+
+    assert_eq!(
+        app.workflow_hardware(Workflow::Trkr)
+            .unwrap()
+            .device_ids
+            .delay,
+        "delay-2"
+    );
+    assert_ne!(app.scan_hints(Axis::T, &plan), baseline);
+    app.snapshot.lockin["Time Constant"] = json!(0.25);
+    assert_eq!(app.workflow_time_constant(Workflow::Trkr), None);
+}
 #[test]
 fn srkr_2d_exposes_one_shared_theta_on_u_for_both_axis_orders() {
     for (fast, slow) in [(Axis::U, Axis::V), (Axis::V, Axis::U)] {
