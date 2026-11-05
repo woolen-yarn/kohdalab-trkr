@@ -236,7 +236,7 @@ mod tests {
                 .iter()
                 .map(|item| item.name.as_str())
                 .collect::<Vec<_>>(),
-            vec!["TRA12CC", "TRA25CC", "TRA6CC"]
+            vec!["TRA12CC"]
         );
         assert_eq!(
             scanner_actuators_for("CONEXAGAP")

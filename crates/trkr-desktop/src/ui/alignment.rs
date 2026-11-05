@@ -64,6 +64,8 @@ pub struct AlignmentUi {
     page: AlignmentPage,
     delay_panels: [Option<String>; 2],
     scanner_panels: [Option<String>; 4],
+    delay_panels_initialized: bool,
+    scanner_panels_initialized: bool,
     delay_unit: [AlignmentUnit; 2],
     scanner_unit: [AlignmentUnit; 4],
     delay_step: [f64; 2],
@@ -83,6 +85,8 @@ impl Default for AlignmentUi {
             page: AlignmentPage::Delay,
             delay_panels: Default::default(),
             scanner_panels: Default::default(),
+            delay_panels_initialized: false,
+            scanner_panels_initialized: false,
             delay_unit: [AlignmentUnit::Physical; 2],
             scanner_unit: [AlignmentUnit::Physical; 4],
             delay_step: [1.; 2],
@@ -115,30 +119,64 @@ impl AlignmentUi {
         }
     }
     fn delay_id(&mut self, slot: usize, available: &[DeviceOption]) -> Option<String> {
-        if self.delay_panels[slot]
-            .as_ref()
-            .is_some_and(|id| !available.iter().any(|option| &option.id == id))
-        {
-            self.delay_panels[slot] = None;
-        }
-        if self.delay_panels[slot].is_none() {
-            self.delay_panels[slot] = available.get(slot).map(|option| option.id.clone());
-        }
+        reconcile_panels(
+            &mut self.delay_panels,
+            &mut self.delay_panels_initialized,
+            available,
+        );
         self.delay_panels[slot].clone()
     }
 
     fn scanner_id(&mut self, slot: usize, available: &[DeviceOption]) -> Option<String> {
-        if self.scanner_panels[slot]
-            .as_ref()
-            .is_some_and(|id| !available.iter().any(|option| &option.id == id))
-        {
-            self.scanner_panels[slot] = None;
-        }
-        if self.scanner_panels[slot].is_none() {
-            self.scanner_panels[slot] = available.get(slot).map(|option| option.id.clone());
-        }
+        reconcile_panels(
+            &mut self.scanner_panels,
+            &mut self.scanner_panels_initialized,
+            available,
+        );
         self.scanner_panels[slot].clone()
     }
+}
+
+/// Assign defaults once. An explicit empty slot (or a removed device) must not
+/// silently acquire a new device on a later frame or inventory change.
+fn reconcile_panels<const N: usize>(
+    panels: &mut [Option<String>; N],
+    initialized: &mut bool,
+    available: &[DeviceOption],
+) {
+    let mut used = std::collections::HashSet::new();
+    for panel in panels.iter_mut() {
+        if panel.as_ref().is_some_and(|id| {
+            !available.iter().any(|option| &option.id == id) || !used.insert(id.clone())
+        }) {
+            *panel = None;
+        }
+    }
+    if !*initialized {
+        for panel in panels.iter_mut().filter(|panel| panel.is_none()) {
+            if let Some(option) = available.iter().find(|option| !used.contains(&option.id)) {
+                *panel = Some(option.id.clone());
+                used.insert(option.id.clone());
+            }
+        }
+        *initialized = true;
+    }
+}
+
+fn panel_options(
+    available: &[DeviceOption],
+    panels: &[Option<String>],
+    slot: usize,
+) -> Vec<DeviceOption> {
+    available
+        .iter()
+        .filter(|option| {
+            !panels.iter().enumerate().any(|(other, selected)| {
+                other != slot && selected.as_deref() == Some(option.id.as_str())
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[derive(Clone)]
@@ -809,14 +847,19 @@ fn draw_delay_card(
     panel: Option<&DelayPanel>,
 ) {
     card(render.ui, rect, "");
+    let options = panel_options(options, &render.alignment.delay_panels, slot);
+    let previous = render.alignment.delay_panels[slot].clone();
     selector(
         render.ui,
         rect,
         ("delay-select", slot),
         &mut render.alignment.delay_panels[slot],
-        options,
+        &options,
         render.locked,
     );
+    if previous != render.alignment.delay_panels[slot] {
+        return;
+    }
     let Some(panel) = panel else {
         label(
             render.ui,
@@ -944,14 +987,19 @@ fn draw_scanner_card(
     panel: Option<&ScannerPanel>,
 ) {
     card(render.ui, rect, "");
+    let options = panel_options(options, &render.alignment.scanner_panels, slot);
+    let previous = render.alignment.scanner_panels[slot].clone();
     selector(
         render.ui,
         rect,
         ("scanner-select", slot),
         &mut render.alignment.scanner_panels[slot],
-        options,
+        &options,
         render.locked,
     );
+    if previous != render.alignment.scanner_panels[slot] {
+        return;
+    }
     let Some(panel) = panel else {
         label(
             render.ui,
@@ -1304,7 +1352,7 @@ fn selector(
                         .unwrap_or("—"),
                 )
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(selected, None, "—");
+                    ui.selectable_value(selected, None, "None");
                     for option in options {
                         ui.selectable_value(selected, Some(option.id.clone()), &option.name);
                     }
@@ -1334,7 +1382,7 @@ fn number(ui: &mut egui::Ui, rect: egui::Rect, value: &mut f64, enabled: bool) {
                 rect,
                 egui::DragValue::new(value)
                     .speed(0.1)
-                    .range(-1e12..=1e12)
+                    .range(0.0..=1e12)
                     .max_decimals(4),
             );
         });
@@ -1653,6 +1701,136 @@ mod tests {
             name: "Delay 2".into(),
         }];
         assert_eq!(state.delay_id(0, &delay).as_deref(), Some("delay-2"));
+    }
+
+    #[test]
+    fn cleared_panels_stay_empty_after_reordering_and_adding_devices() {
+        let mut state = AlignmentUi::default();
+        let mut available = devices();
+        assert_eq!(state.delay_id(1, &available).as_deref(), Some("scanner-2"));
+        assert_eq!(
+            state.scanner_id(1, &available).as_deref(),
+            Some("scanner-2")
+        );
+        state.delay_panels[1] = None;
+        state.scanner_panels[1] = None;
+        available.reverse();
+        available[0].name = "Renamed".into();
+        available.push(DeviceOption {
+            id: "scanner-3".into(),
+            name: "Scanner 3".into(),
+        });
+        for _ in 0..3 {
+            assert_eq!(state.delay_id(1, &available), None);
+            assert_eq!(state.scanner_id(1, &available), None);
+            assert_eq!(state.scanner_id(2, &available), None);
+        }
+        assert_eq!(state.delay_id(0, &available).as_deref(), Some("scanner-1"));
+        assert_eq!(
+            state.scanner_id(0, &available).as_deref(),
+            Some("scanner-1")
+        );
+    }
+
+    #[test]
+    fn each_device_is_available_to_one_panel_and_can_be_reassigned_after_clearing() {
+        let mut state = AlignmentUi::default();
+        let available = devices();
+        state.scanner_id(0, &available);
+        assert!(panel_options(&available, &state.scanner_panels, 2).is_empty());
+        let own = panel_options(&available, &state.scanner_panels, 0);
+        assert_eq!(own.len(), 1);
+        assert_eq!(own[0].id, "scanner-1");
+        state.scanner_panels[1] = None;
+        let freed = panel_options(&available, &state.scanner_panels, 2);
+        assert_eq!(freed.len(), 1);
+        assert_eq!(freed[0].id, "scanner-2");
+        state.scanner_panels[2] = Some(freed[0].id.clone());
+        assert_eq!(state.scanner_id(1, &available), None);
+        assert_eq!(
+            state.scanner_id(2, &available).as_deref(),
+            Some("scanner-2")
+        );
+        assert!(panel_options(&available, &state.scanner_panels, 1).is_empty());
+    }
+
+    #[test]
+    fn removed_or_duplicate_bindings_clear_without_retargeting() {
+        let mut state = AlignmentUi::default();
+        let available = devices();
+        state.delay_id(0, &available);
+        state.scanner_id(0, &available);
+        state.scanner_panels[3] = Some("scanner-1".into());
+        assert_eq!(state.scanner_id(3, &available), None);
+        assert_eq!(
+            state.scanner_id(0, &available).as_deref(),
+            Some("scanner-1")
+        );
+        assert_eq!(state.delay_id(0, &available[1..]), None);
+        assert_eq!(state.scanner_id(0, &available[1..]), None);
+        assert_eq!(
+            state.delay_id(1, &available[1..]).as_deref(),
+            Some("scanner-2")
+        );
+    }
+
+    #[test]
+    fn step_editor_clamps_negative_input_without_changing_positive_steps() {
+        let context = egui::Context::default();
+        let mut value = 1.;
+        let mut frame = |events: Vec<egui::Event>, modifiers: egui::Modifiers| {
+            let _ = context.run(
+                egui::RawInput {
+                    screen_rect: Some(precision::rect(0., 0., 400., 300.)),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        number(ui, precision::rect(20., 20., 100., 26.), &mut value, true);
+                    });
+                },
+            );
+            value
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        for (text, expected) in [("-5", 0.), ("0.125", 0.125)] {
+            frame(vec![], Default::default());
+            for pressed in [true, false] {
+                frame(
+                    vec![
+                        egui::Event::PointerMoved(egui::pos2(60., 32.)),
+                        egui::Event::PointerButton {
+                            pos: egui::pos2(60., 32.),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ],
+                    Default::default(),
+                );
+            }
+            frame(vec![], Default::default());
+            frame(
+                vec![key(egui::Key::A, egui::Modifiers::COMMAND)],
+                egui::Modifiers::COMMAND,
+            );
+            frame(vec![egui::Event::Text(text.into())], Default::default());
+            assert_eq!(
+                frame(
+                    vec![key(egui::Key::Enter, Default::default())],
+                    Default::default()
+                ),
+                expected,
+            );
+        }
     }
     #[allow(clippy::too_many_arguments)]
     fn pointer_frame(

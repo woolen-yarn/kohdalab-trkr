@@ -8,17 +8,41 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 380 passed, 0 failed / 成功380、失敗0 |
+| Rust workspace tests | 384 passed, 0 failed / 成功384、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
-| Actual GUI, five measurement tabs × multiple devices | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
+| Actual GUI, five measurement tabs × Scanner Device settings | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
 | Alignment synthetic GUI | 2 delay panels and 4 scanner panels and their Options popups at 1566×700 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
 | Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; earlier captures visually inspected / Settingsと未選択機器の表示を目視確認 |
 | Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
 | Physical instruments / 実機 | Not operated or qualified / 未操作・未検証 |
 
-## Current compact controls / 今回のコンパクト操作
+## Selective Alignment panels / Alignmentパネルの選択
+
+Alignment Step editing now stops at zero; negative keyboard input is clamped,
+positive input is preserved, and zero cannot start Step/Hold. The selectors allow
+None and exclude devices used by another panel of the same kind. Defaults are
+assigned only once; cleared, deleted or duplicate bindings are not silently
+retargeted after an inventory or view change. Four added regression tests cover
+these input and selection behaviors. The live macOS preview confirms None
+remains selected after visiting SRKR and returning to Alignment.
+
+Stepは0で止まり、負数入力は0に制限、正の入力値は維持し、0ではStep／Holdを開始しません。
+機器選択はNoneに対応し、同種の別パネルで使用中の機器を除外します。初期割当は初回のみで、
+空欄・削除・重複した機器を画面や一覧の変更で勝手に再割当しません。4件の追加試験で確認し、
+Mac実画面でもNoneにしてSRKRへ移動した後、Alignmentへ戻って空欄の保持を確認しました。
+
+CONEX-CC currently offers only TRA12CC. Its Actuator dropdown follows the
+controller-filtered TOML catalog; future catalog additions require a rebuild,
+with no selector code changes. **384 Rust tests (99 UI tests)**, Clippy and the
+macOS build pass. The motion worker and instrument I/O are unchanged.
+
+CONEX-CCの候補はTRA12CCのみです。ActuatorのプルダウンはTOMLの制御器別候補に連動し、
+将来の機種追加はTOMLと再ビルドで反映します。**Rust 384件（UI 99件）**、静的検査、
+Macビルドが成功しました。移動ワーカーと装置通信は変更していません。
+
+## Compact-control foundation / コンパクト操作の基礎検証
 
 Measurement-tab navigation preserves the inspected device group, disclosure
 state and card geometry. Workflow assignment, readiness and scan hints use the

@@ -204,7 +204,7 @@ Remaining explicit interface differences:
 | 中 | CSVの厳密な同一性 | 新CSVは追加列と固定headerを持ち、時刻はUTC RFC3339（旧はlocal naive ISO millisecond）。Signal Monitorの旧`elapsed_s`は予定時刻、新は実測経過時間。1Dのzero未指定時も旧は補正値を空欄にできるが、新Planは数値zero=0を前提にする。既存の固定6行比較だけではこれらを網羅しない。 |
 | 中 | 長い範囲の点数 | 旧範囲生成はfloatの逐次加算、新はindex×step。例えば−30→30, step=.001では旧60000点、新式60001点。旧0→100, step=.001は100000点だが、新式100001点はRustの軸上限を超えて拒否する。15個の既存固定ケースが一致しても全範囲の同一性は保証しない。旧の丸め誤差を再現するかは別途決定する。 |
 | 中 | native Replay命令 | GUIのReplay CSVは専用Demoを開き、`replay_data.rs`を使う。一方、stdioのnative `engine.rs::replay`には別parserが残り、Y-onlyのfast列、2D line、U/V等の復元能力が異なる。これはPython由来機能とは別のRust内の残件として統一が必要。 |
-| 低 | Read Live・共有ポート・actuator候補UI | 手動Read Liveは自動更新に置換。共有XYポートtoggleはないが、同じportを設定するとMotionRigは共通serialを使うため、共有通信自体が未実装という意味ではない。Actuatorは候補ComboBoxから自由入力へ変わり、入力支援が減っている。 |
+| 低 | Read Live・共有ポート・actuator候補UI | 手動Read Liveは自動更新に置換。共有XYポートtoggleはないが、同じportを設定するとMotionRigは共通serialを使うため、共有通信自体が未実装という意味ではない。Actuatorは組込みTOMLの互換候補を示す選択欄で、対応機種の追加はTOMLと再ビルドで反映する。 |
 
 ### 意図的な変更と確認範囲
 
@@ -330,7 +330,7 @@ Scope: all 50 files under `src/kohdalab` at `v0.2.0` (48 Python and 2 TOML), six
 | Medium | Exact CSV identity | New CSV adds columns/fixed header and uses UTC RFC3339 timestamps rather than local naive ISO milliseconds. Signal Monitor `elapsed_s` was scheduled time, now actual elapsed time. Old 1D with omitted zero could leave corrected fields empty; new Plan assumes numeric zero=0. Six frozen rows do not cover these differences. |
 | Medium | Point counts in long ranges | Python accumulates floats; Rust uses index×step. −30→30 at .001 gives60000 old versus60001 new points. Old0→100 at .001 gives100000; new100001 exceeds Rust's axis limit and is rejected. Matching15 frozen cases does not prove all ranges identical. Whether to reproduce legacy rounding error is a separate decision. |
 | Medium | Native Replay command | GUI Replay CSV opens Demo using `replay_data.rs`. Stdio `engine.rs::replay` has a separate parser differing for Y-only fast columns, 2D lines, U/V, etc. Unifying these is a Rust-internal issue, distinct from Python parity. |
-| Low | Read Live, shared-port and actuator UI | Automatic updates replace manual Read Live. No shared-XY-port toggle exists, but MotionRig shares serial communication when ports match. Actuator candidates changed from ComboBox to free text, reducing input assistance. |
+| Low | Read Live, shared-port and actuator UI | Automatic updates replace manual Read Live. No shared-XY-port toggle exists, but MotionRig shares serial communication when ports match. The Actuator selector lists compatible candidates from the embedded TOML; add a supported model to the TOML and rebuild to expose it. |
 
 ### Intentional changes and validation scope
 

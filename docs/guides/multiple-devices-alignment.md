@@ -153,6 +153,17 @@ AlignmentはSignal Monitor/TRKR/SRKR/STRKR/SRKR 2Dと並ぶ独立タブです。
 各パネルに登録済み機器を割り当てられ、測定対象の選択は変わりません。
 左パネルの従来の操作・Initializeボタンも引き続き使えます。
 
+Choose **None** to leave an Alignment panel empty. Empty panels remain empty
+when changing views or adding/reordering devices. A device already assigned to
+another Alignment panel of the same kind is excluded from the selector; clear
+its previous panel before assigning it elsewhere. Panel selection does not
+connect or disconnect instruments or alter measurement assignments.
+
+パネルの機器選択で **None** を選ぶと空欄にできます。画面切替や機器の追加・並べ替えでも
+空欄を維持します。同じ種類の別パネルで使用中の機器は候補から除外するため、移し替える
+場合は元のパネルをNoneにしてください。パネルの割当変更は、装置の接続・切断や測定の
+機器割当には影響しません。
+
 Both views place **Unit / Step** at the top, with **Options** at the top right
 and status beside the device name. There is no separate Step/Hold mode selector.
 A click moves one step; holding the same arrow for about **0.35 s** begins Hold.
@@ -161,6 +172,12 @@ Releasing a held arrow requests stop and never adds a final single step.
 両方とも上段に **Unit／Step**、右上に **Options**、機器名の横に状態を表示します。
 Step/Holdのモード切替は不要です。同じ矢印をクリックすると1ステップ、約 **0.35秒**
 押し続けるとHoldになります。長押しを離した際は停止要求のみで、追加の1ステップは出しません。
+
+Step is an unsigned distance: the arrows choose its direction. Negative entries
+and drags clamp to zero, and zero disables Step/Hold until a positive value is set.
+
+Stepは移動幅で、方向は矢印で選びます。負数の入力・ドラッグは0で止まり、0では
+Step／Holdを実行できません。正の値を設定して移動します。
 
 | Control / 操作 | Behavior / 動作 |
 | --- | --- |
@@ -240,14 +257,17 @@ compensation approach side is retained when its coordinate sign changes.
 
 ## Model presets / 機種プリセット
 
-Controller/actuator compatibility comes from the embedded TOML catalogs.
-CONEX-CC offers TRA6CC, TRA12CC and TRA25CC; CONEX-AGAP offers AG-M100D.
-TRA15CC is not listed because its manufacturer specification has not been
-confirmed; it is not silently mapped to another actuator.
+Controller/actuator compatibility and the Actuator selector come from the
+embedded TOML catalog. CONEX-CC currently offers TRA12CC only; CONEX-AGAP
+offers AG-M100D. Adding a compatible entry to that catalog makes it available
+after rebuilding the application. TRA15CC is not listed because its
+manufacturer specification has not been confirmed; it is not silently mapped
+to another actuator.
 
-制御器とアクチュエータの組合せは、同梱TOMLの機種定義を共通で使用します。
-CONEX-CCはTRA6CC・TRA12CC・TRA25CC、CONEX-AGAPはAG-M100Dを選択できます。
-TRA15CCはメーカー仕様を確認できていないため、別機種への置換はせず、選択肢に含めていません。
+制御器とアクチュエータの組合せとActuator選択欄は、同梱TOMLの機種定義を使用します。
+現在CONEX-CCはTRA12CCのみ、CONEX-AGAPはAG-M100Dを選択できます。互換性のある機種を
+TOMLへ追加してアプリを再ビルドすると、同じ選択欄に現れます。TRA15CCはメーカー仕様を
+確認できていないため、別機種への置換はせず、選択肢に含めていません。
 
 ## Configuration and records / 設定と記録
 

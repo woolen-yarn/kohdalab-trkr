@@ -2188,7 +2188,10 @@ impl App {
                     {
                         self.scanner_actuator[scanner] = preset.name.clone();
                     }
-                    form.segments(
+                    // This is a catalog-backed selector rather than a free
+                    // text field: adding a compatible actuator to the
+                    // embedded TOML makes it available here on the next build.
+                    form.combo(
                         &format!("{axis}_actuator_combo"),
                         precision::rect(114., 98., w - 134., 26.),
                         &mut self.scanner_actuator[scanner],
