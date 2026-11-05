@@ -310,6 +310,7 @@ impl Bridge {
                     if app.dialog.is_some()
                         || app.initialize_axis.is_some()
                         || app.measurement_settings.is_some()
+                        || app.inventory_dialog.is_some()
                     {
                         return Err("Close the GUI dialog before acquiring Python control".into());
                     }

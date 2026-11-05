@@ -16,28 +16,32 @@ movement controls are disabled. / 2026-11-05の開発版・macOS Retina 2倍で�
 
 ## Connections and measurement selection / 接続と測定対象
 
-Each measurement tab has **Settings… → Measurement Settings**, with **Devices**
-and **Timing** sections. Signal Monitor, TRKR, SRKR, STRKR and SRKR 2D each remember
-one lock-in, one delay stage and one X/Y scanner pair. **OK** applies the staged
-choice; **Cancel** discards it. Use **Config → Save** to persist it to JSON.
-The existing Wait/Interval control and the Timing section edit the same value.
+**Settings…** sits below **Wait**, at the lower left of the measurement controls
+(the same position for Signal Monitor). It shows only the instruments needed by
+that measurement. **OK** applies the choice; **Cancel** discards it. Timing stays
+in the existing Wait/Interval field. Use **Config → Save** to persist the profile.
 
-各測定タブの **Settings… → Measurement Settings** に **Devices** と **Timing** を
-まとめています。Signal Monitor・TRKR・SRKR・STRKR・SRKR 2Dごとに、ロックイン・
-遅延ステージ・X/Yスキャナ組を各1台ずつ記憶します。**OK** で反映し、**Cancel** で
-編集を破棄します。JSONへの保存は **Config → Save** です。従来のWait/Interval欄と
-Timingは同じ値を編集します。
+**Settings…** は操作パネル左下の **Waitの下** に配置しています（Signal Monitorも
+同じ位置）。測定に必要な機器のみ選択できます。**OK** で反映、**Cancel** で破棄し、
+待ち時間は従来のWait/Interval欄で設定します。JSONへの保存は **Config → Save** です。
 
-Selected devices retain their normal card brightness. Other stored devices are
-shown as compact **INACTIVE** cards with their actual connection status; **Use**
-assigns one to the visible measurement tab. Selection does not disconnect other
-instruments. Each device retains its own calibration and coordinate zero; tabs
-using the same device share that zero. The spatial rotation angle remains shared.
+| Measurement / 測定 | Devices shown / 選択する機器 |
+| --- | --- |
+| Signal Monitor | Lock-in |
+| TRKR | Lock-in + Delay |
+| SRKR / SRKR 2D | Lock-in + Scanner |
+| STRKR | Lock-in + Delay + Scanner |
 
-選択された機器は通常の明るさ、他の登録機器は控えめな **INACTIVE** カードで表示し、
-実際の接続状態を併記します。**Use** で表示中の測定タブに割り当てられます。
-未選択機器の接続は維持されます。校正・座標ゼロは装置ごとに保持し、同じ装置を使う
-測定タブはゼロを共有します。空間座標の回転角は従来どおり共通です。
+Each tab remembers its choices. Other connected instruments and their position
+context remain available. Required devices are highlighted; other device cards
+are subdued. **Use** assigns a device to the visible tab. Each device retains
+its calibration and coordinate zero; tabs using the same device share that zero.
+The spatial rotation angle remains shared.
+
+組合せはタブごとに記憶します。他の機器の接続・位置記録も維持されます。
+測定に必要な機器を明るく表示し、その他は控えめに表示します。**Use** で表示中タブに
+割り当てます。校正・座標ゼロは装置ごとに保持し、同じ装置を使う測定タブはゼロを
+共有します。空間座標の回転角は従来どおり共通です。
 
 Viewing another plot tab during a run keeps the running measurement's instruments
 selected and highlighted. The viewed tab's selection is restored when idle.
@@ -57,23 +61,38 @@ controls without changing measurement assignments.
 
 ![Inactive devices in the scrollable rail, synthetic development capture / 左パネルの未選択機器・開発版の合成画面](../images/inactive-devices-development.png)
 
-Use **+ Add** above each device card to register another lock-in, delay stage,
-or X/Y scanner pair. Configure its address/port, controller, actuator and axis.
-The selector above each card is a shortcut to the **visible tab's device choice**
-(or the device being inspected in Alignment). Switching retains other connections. Scanner X and
-Y are together in one Scanner group; they can use separate CONEX-CC ports or the
-two U/V hardware axes of a shared CONEX-AGAP connection. Disconnect a device
-before changing its controller, port, calibration or axis. Direction has a
-separate live update that preserves the displayed coordinate.
+Use the single **Devices → + Add** button and choose **Lock-in / Delay / Scanner**.
+Each card receives an automatic number and an optional **Label** (for example,
+Pump or Probe); labels also appear in device-selection lists. Scanner X/Y stay
+in one card. Configure the address/ports, controller, actuator and axes there.
+A new motion device can be saved before a port is assigned; connecting and
+measuring still require complete valid settings.
 
-各機器カード上部の **+ Add** でロックイン、遅延ステージ、X/Yスキャナ組を追加し、
-アドレス・ポート・制御器・アクチュエータ・軸を設定します。各カード上部からも
-**表示中タブの測定機器**を選べます（Alignmentでは詳細を表示する機器の選択）。
-切替前の機器の接続は維持されます。
-ScannerはX/Yを1組にまとめ、CONEX-CCの別々のポート、またはCONEX-AGAPの
-共通接続の装置軸U/Vを指定できます。装置軸U/Vは、回転した測定座標u/vとは別です。
-制御器・ポート・校正・軸を変更するときは、その機器を切断してから設定します。
-Directionには、表示値を維持したまま接続中に変更する専用処理があります。
+左パネル共通の **Devices → + Add** で **Lock-in / Delay / Scanner** を選びます。
+各カードには自動で番号が付き、**Label** にPumpやProbeなどの任意名を付けられます。
+名前は機器の選択リストにも表示します。ScannerのX/Yは1枚のカードにまとめています。
+ポート未設定でも追加・保存でき、接続・測定時には有効な設定が必要です。
+
+**Delete** at the card's top right asks for confirmation. Disconnect the device
+first. Its measurement assignments switch to the next device of that kind, or
+become unconfigured if none remains. The profile currently requires at least one
+lock-in, so add its replacement before deleting the last one. **Cancel** changes
+nothing. Save the configuration to retain additions, labels and deletions.
+
+カード右上の **Delete** は確認画面を表示します。削除前に対象機器を切断してください。
+その機器を使う測定は同じ種類の次の機器に切り替わり、候補がなければ未設定になります。
+現在のプロファイルはロックイン1台以上が必要なため、最後の1台を削除する場合は
+先に代わりを追加します。**Cancel** では変更しません。追加・名前・削除をファイルに
+残すにはConfigを保存してください。
+
+Scanner axes can use separate CONEX-CC ports or U/V hardware axes of a shared
+CONEX-AGAP controller. Hardware U/V differ from rotated measurement coordinates
+u/v. Disconnect before editing controller, port, calibration or axis. Direction
+has a dedicated live update that preserves the displayed coordinate.
+
+ScannerはCONEX-CCの別ポート、またはCONEX-AGAPの共通接続の装置軸U/Vを使えます。
+装置軸U/Vは回転測定座標u/vとは別です。制御器・ポート・校正・軸の変更は切断後に
+行います。Directionは表示値を維持する専用の更新処理で接続中にも変更できます。
 
 **All Connect** validates every configured entry before connecting in order.
 If a connection fails, the log lists the connections retained; inspect the

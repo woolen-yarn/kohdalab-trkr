@@ -2,7 +2,7 @@ use super::*;
 use crate::inventory::{DelayEntry, LockinEntry, ScannerEntry};
 use engine::MotionKind;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeviceClass {
     Lockin,
     Delay,
@@ -66,74 +66,12 @@ impl App {
         self.inventory.project_selected(&mut self.settings.raw)
     }
 
-    pub(super) fn device_selector(
+    pub(super) fn select_device(
         &mut self,
-        ui: &mut egui::Ui,
         class: DeviceClass,
-        area: egui::Rect,
+        mut selected: String,
+        new_label: Option<&str>,
     ) {
-        let (salt, mut selected, entries): (_, _, Vec<_>) = match class {
-            DeviceClass::Lockin => (
-                "lockin",
-                self.inventory.selected.lockin.clone(),
-                self.inventory
-                    .lockins
-                    .iter()
-                    .map(|d| (d.id.clone(), d.name.clone()))
-                    .collect(),
-            ),
-            DeviceClass::Delay => (
-                "delay",
-                self.inventory.selected.delay.clone(),
-                self.inventory
-                    .delays
-                    .iter()
-                    .map(|d| (d.id.clone(), d.name.clone()))
-                    .collect(),
-            ),
-            DeviceClass::Scanner => (
-                "scanner",
-                self.inventory.selected.scanner.clone(),
-                self.inventory
-                    .scanners
-                    .iter()
-                    .map(|d| (d.id.clone(), d.name.clone()))
-                    .collect(),
-            ),
-        };
-        let old = selected.clone();
-        let mut add = false;
-        ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(
-                    !self.demo_viewer && !self.snapshot.running && !self.controller.has_pending(),
-                    |ui| {
-                        egui::ComboBox::from_id_salt(("device-instance", salt))
-                            .width((area.width() - 84.).max(100.))
-                            .truncate()
-                            .selected_text(
-                                entries
-                                    .iter()
-                                    .find(|d| d.0 == selected)
-                                    .map(|d| d.1.as_str())
-                                    .unwrap_or("Not configured"),
-                            )
-                            .show_ui(ui, |ui| {
-                                for (id, name) in &entries {
-                                    ui.selectable_value(&mut selected, id.clone(), name);
-                                }
-                            });
-                        add = ui.small_button("+ Add").clicked();
-                    },
-                );
-            });
-        });
-        if selected != old || add {
-            self.select_device(class, selected, add);
-        }
-    }
-
-    fn select_device(&mut self, class: DeviceClass, mut selected: String, add: bool) {
         if let Err(error) = self.sync_all_plans() {
             self.note(error);
             return;
@@ -141,8 +79,9 @@ impl App {
         let previous_settings = self.settings.clone();
         let result = (|| {
             let previous_ids = self.inventory.selected.clone();
-            if add {
+            if let Some(label) = new_label {
                 selected = self.add_device(class)?;
+                self.set_device_label(class, &selected, label.to_owned());
             }
             match class {
                 DeviceClass::Lockin => self.inventory.selected.lockin = selected,
@@ -187,6 +126,9 @@ impl App {
         } else {
             self.workflow
         };
+        if !measurement_settings::uses_device(workflow, kind) {
+            return false;
+        }
         let fallback = match kind {
             "lockin" => &self.inventory.selected.lockin,
             "delay" => &self.inventory.selected.delay,
@@ -199,155 +141,6 @@ impl App {
             .as_str()
             .unwrap_or(fallback)
             == id
-    }
-
-    pub(super) fn inactive_device_cards(
-        &mut self,
-        ui: &mut egui::Ui,
-        origin: egui::Pos2,
-        width: f32,
-    ) -> f32 {
-        let mut entries = Vec::new();
-        for d in &self.inventory.lockins {
-            if d.id != self.inventory.selected.lockin {
-                entries.push((
-                    DeviceClass::Lockin,
-                    "lockin",
-                    d.id.clone(),
-                    d.name.clone(),
-                    format!("{} · GPIB {}", d.model.name(), d.address),
-                ));
-            }
-        }
-        for d in &self.inventory.delays {
-            if d.id != self.inventory.selected.delay {
-                entries.push((
-                    DeviceClass::Delay,
-                    "delay",
-                    d.id.clone(),
-                    d.name.clone(),
-                    d.config
-                        .stage
-                        .clone()
-                        .unwrap_or_else(|| d.config.controller.clone()),
-                ));
-            }
-        }
-        for s in &self.inventory.scanners {
-            if s.id != self.inventory.selected.scanner {
-                let label =
-                    s.x.as_ref()
-                        .or(s.y.as_ref())
-                        .map(|c| c.controller.as_str())
-                        .unwrap_or("X / Y");
-                entries.push((
-                    DeviceClass::Scanner,
-                    "scanner",
-                    s.id.clone(),
-                    s.name.clone(),
-                    label.into(),
-                ));
-            }
-        }
-        let mut y = origin.y;
-        let mut chosen = None;
-        for (class, kind, id, name, label) in entries {
-            let active = self.device_highlighted(kind, &id);
-            let connected = self
-                .snapshot
-                .registered_devices
-                .iter()
-                .find(|d| d.kind == kind && d.id == id)
-                .is_some_and(|d| d.connected.iter().any(|v| *v));
-            let area = precision::rect(origin.x, y, width, 76.);
-            precision::record(&mut self.geometry, &format!("inventory_{id}"), area);
-            ui.painter().rect(
-                area,
-                10.,
-                if active {
-                    PANEL
-                } else {
-                    PANEL.gamma_multiply(0.9)
-                },
-                Stroke::new(
-                    1_f32,
-                    if active {
-                        BORDER
-                    } else {
-                        BORDER.gamma_multiply(0.62)
-                    },
-                ),
-                egui::StrokeKind::Inside,
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(area.shrink2(Vec2::new(10., 6.)))
-                    .layout(egui::Layout::top_down(egui::Align::Min)),
-                |ui| {
-                    let text = if active {
-                        TEXT
-                    } else {
-                        Color32::from_rgb(153, 157, 168)
-                    };
-                    ui.horizontal(|ui| {
-                        ui.add(egui::Label::new(egui::RichText::new(&name).color(text)).truncate())
-                            .on_hover_text(&name);
-                        ui.label(
-                            egui::RichText::new(if active {
-                                if self.alignment_tab {
-                                    "ALIGNMENT"
-                                } else {
-                                    "IN USE"
-                                }
-                            } else {
-                                "INACTIVE"
-                            })
-                            .size(9.)
-                            .color(text),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui
-                                .add_enabled(
-                                    !self.snapshot.running
-                                        && !self.controller.has_pending()
-                                        && !self.demo_viewer,
-                                    egui::Button::new(if self.alignment_tab {
-                                        "Details"
-                                    } else {
-                                        "Use"
-                                    })
-                                    .small(),
-                                )
-                                .clicked()
-                            {
-                                chosen = Some((class, id.clone()));
-                            }
-                        });
-                    });
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(label).small().color(text)).truncate(),
-                    );
-                    ui.label(
-                        egui::RichText::new(if connected {
-                            "Connected"
-                        } else {
-                            "Disconnected"
-                        })
-                        .small()
-                        .color(if connected {
-                            Color32::from_rgb(93, 196, 146)
-                        } else {
-                            text
-                        }),
-                    );
-                },
-            );
-            y += 84.;
-        }
-        if let Some((class, id)) = chosen {
-            self.select_device(class, id, false);
-        }
-        y
     }
 
     fn add_device(&mut self, class: DeviceClass) -> Result<String, String> {
@@ -400,7 +193,12 @@ impl App {
                     .map(|d| d.config.clone())
                     .unwrap_or_default();
                 config.port.clear();
-                config.stage.get_or_insert_with(|| "SGSP46-500".into());
+                if config.stage.is_none() {
+                    config.stage = trkr_motion::catalog::delay_stages()
+                        .into_iter()
+                        .find(|s| s.supports_controller(&config.controller))
+                        .map(|s| s.name);
+                }
                 self.inventory.delays.push(DelayEntry::new(
                     &id,
                     format!("Delay {number}"),
@@ -421,8 +219,15 @@ impl App {
                     .unwrap_or_else(|| x.clone());
                 x.port.clear();
                 y.port.clear();
-                x.actuator.get_or_insert_with(|| "TRA12CC".into());
-                y.actuator.get_or_insert_with(|| "TRA12CC".into());
+                for axis in [&mut x, &mut y] {
+                    if axis.actuator.is_none() {
+                        axis.actuator =
+                            trkr_motion::catalog::scanner_actuators_for(&axis.controller)
+                                .into_iter()
+                                .next()
+                                .map(|a| a.name);
+                    }
+                }
                 self.inventory.scanners.push(ScannerEntry::new(
                     &id,
                     format!("Scanner {number}"),

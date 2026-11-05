@@ -8,11 +8,11 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 355 passed, 0 failed / 成功355、失敗0 |
+| Rust workspace tests | 360 passed, 0 failed / 成功360、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
-| Actual GUI, five measurement tabs × expanded/scrolled device panels | 10 geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 10画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
+| Actual GUI, five measurement tabs × expanded device panels | 5 current geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 5画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
 | Alignment synthetic GUI | 2 delay panels at 1566×700 and 4 scanner panels at 1566×820 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
 | Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; current captures visually inspected / Settingsと未選択機器の表示を目視確認 |
 | Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
@@ -51,3 +51,29 @@ cross-workflow switch; Demo now records the requested run configuration.
 復帰、測定中の履歴タブ切替を検証しました。独立レビューでは、自動復帰失敗時の再試行防止と
 切替確認中の操作制限を確認しています。実GUIのDemo試験で、測定切替後のメタデータに
 前の機器IDが残る問題を修正し、その測定で指定した設定を記録することを確認しました。
+
+
+The UI refinement places Settings below Wait, removes duplicate timing controls,
+and shows only workflow-required device roles. Inventory regressions cover
+confirmed deletion, reassignment of all affected workflows, independent zeros,
+label save/reload, and busy/connected deletion rejection. Profiles can retain new
+motion devices without assigned ports; acquisition and connection still require
+strict validation, including controller/actuator compatibility and calibration.
+Independent review corrected the canonical selection after deletion outside
+Alignment, with both ordinary measurement and Alignment cases tested.
+
+今回のUI調整では、SettingsをWaitの下へ移動し、Timingの重複をなくして測定別の機器欄に
+整理しました。削除後の全測定の割当、機器別ゼロ、名前の保存・再読込み、実行中・接続中の
+削除拒否を回帰テストで確認しています。追加直後のポート未設定機器は保存できますが、
+実際の接続・測定では、ポート・機種の組合せ・校正の検証を省略しません。
+独立レビューで、削除後の表示と実際の選択を一致させる修正を行い、通常測定とAlignmentの
+両経路を確認しました。
+
+Actual macOS captures cover Add/Delete dialogs, all workflow Settings, and the
+Alignment direction pad. The final GUI + Python simulation also verified labels
+survive save/reload alongside per-workflow device IDs and coordinate zeros.
+Physical motion remains untested; all displayed Alignment positions are synthetic.
+
+Mac実画面で追加・削除確認、測定別Settings、Alignmentの十字操作を確認しました。
+最終GUIとPythonの模擬測定でも、機器ID・座標ゼロに加えて名前の保存・再読込みを確認しました。
+実機移動は未検証で、Alignmentの確認画面に表示した位置は合成データです。

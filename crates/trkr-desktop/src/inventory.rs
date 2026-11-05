@@ -35,6 +35,8 @@ impl Default for DeviceIds {
 pub struct LockinEntry {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub label: String,
     #[serde(with = "model_serde")]
     pub model: Model,
     pub address: u8,
@@ -43,10 +45,19 @@ pub struct LockinEntry {
 }
 
 impl LockinEntry {
+    pub fn display_name(&self) -> String {
+        if self.label.trim().is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} · {}", self.name, self.label.trim())
+        }
+    }
+
     pub fn new(id: impl Into<String>, name: impl Into<String>, model: Model, address: u8) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
+            label: String::new(),
             model,
             address,
             settings: json!({}),
@@ -58,6 +69,8 @@ impl LockinEntry {
 pub struct DelayEntry {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub label: String,
     pub config: DelayConfig,
     #[serde(default)]
     pub zero_ps: f64,
@@ -68,6 +81,14 @@ pub struct DelayEntry {
 }
 
 impl DelayEntry {
+    pub fn display_name(&self) -> String {
+        if self.label.trim().is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} · {}", self.name, self.label.trim())
+        }
+    }
+
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -77,6 +98,7 @@ impl DelayEntry {
         Self {
             id: id.into(),
             name: name.into(),
+            label: String::new(),
             config,
             zero_ps,
             raw_config: None,
@@ -88,6 +110,8 @@ impl DelayEntry {
 pub struct ScannerEntry {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub label: String,
     #[serde(default)]
     pub x: Option<ScannerConfig>,
     #[serde(default)]
@@ -101,6 +125,14 @@ pub struct ScannerEntry {
 }
 
 impl ScannerEntry {
+    pub fn display_name(&self) -> String {
+        if self.label.trim().is_empty() {
+            self.name.clone()
+        } else {
+            format!("{} · {}", self.name, self.label.trim())
+        }
+    }
+
     pub fn new(
         id: impl Into<String>,
         name: impl Into<String>,
@@ -111,6 +143,7 @@ impl ScannerEntry {
         Self {
             id: id.into(),
             name: name.into(),
+            label: String::new(),
             x,
             y,
             zero_um,

@@ -6,7 +6,6 @@ use crate::inventory::DeviceIds;
 pub(super) struct Draft {
     workflow: Workflow,
     ids: DeviceIds,
-    interval_s: f64,
     error: Option<String>,
 }
 
@@ -16,6 +15,20 @@ pub(super) struct PendingSelection {
     previous_workflow: Workflow,
     requested_workflow: Workflow,
     requested_ids: DeviceIds,
+}
+
+/// Roles actively required by a measurement; unshown position-context bindings
+/// remain intact so CSV readbacks retain their configured physical coordinates.
+pub(super) fn uses_device(workflow: Workflow, kind: &str) -> bool {
+    match kind {
+        "lockin" => true,
+        "delay" => matches!(workflow, Workflow::Trkr | Workflow::Strkr),
+        "scanner" => matches!(
+            workflow,
+            Workflow::Srkr | Workflow::Strkr | Workflow::Srkr2d
+        ),
+        _ => false,
+    }
 }
 
 impl App {
@@ -117,7 +130,7 @@ impl App {
         {
             return Err("Wait for the current operation before selecting devices".into());
         }
-        let config = settings.hardware()?;
+        let config = settings.profile_hardware()?;
         let requested_ids = config.device_ids.clone();
         let id = remote_id.unwrap_or_else(|| format!("gui-selection-{}", uuid::Uuid::new_v4()));
         self.controller
@@ -220,7 +233,6 @@ impl App {
                 self.measurement_settings = Some(Draft {
                     workflow: self.workflow,
                     ids,
-                    interval_s: self.plan().interval_s,
                     error: None,
                 })
             }
@@ -235,9 +247,6 @@ impl App {
         self.sync_all_plans()?;
         let mut settings = self.settings.clone();
         settings.set_workflow_devices(draft.workflow, draft.ids.clone())?;
-        let mut plan = settings.plan(draft.workflow)?;
-        plan.interval_s = draft.interval_s;
-        settings.set_plan(&plan)?;
         settings.select_workflow(draft.workflow)?;
         if draft.ids == self.inventory.selected {
             self.settings = settings;
@@ -256,41 +265,124 @@ impl App {
         let mut cancelled = false;
         let locked = self.python_locked() || self.snapshot.running || self.controller.has_pending();
         let response = egui::Modal::new(egui::Id::new("measurement_settings"))
-            .frame(egui::Frame::popup(&ctx.style()).fill(PANEL).inner_margin(16))
+            .frame(
+                egui::Frame::popup(&ctx.style())
+                    .fill(PANEL)
+                    .inner_margin(16),
+            )
             .show(ctx, |ui| {
                 ui.set_width(380.);
                 ui.strong("Measurement Settings");
-                ui.label(egui::RichText::new(draft.workflow.name()).small().color(Color32::GRAY));
+                ui.label(
+                    egui::RichText::new(draft.workflow.name())
+                        .small()
+                        .color(Color32::GRAY),
+                );
                 ui.add_space(10.);
-                egui::ScrollArea::vertical().max_height((ctx.content_rect().height() - 190.).max(160.)).show(ui, |ui| {
-                    ui.add_enabled_ui(!locked, |ui| {
-                        settings_section(ui, "Devices", |ui| {
-                            ui.label(egui::RichText::new("Remembered for this measurement tab.").small().color(Color32::GRAY));
-                            ui.add_space(6.);
-                            egui::Grid::new("measurement_device_roles").num_columns(2).spacing([10., 8.]).show(ui, |ui| {
-                                binding_choice(ui, "Lock-in", &mut draft.ids.lockin, self.inventory.lockins.iter().map(|e| (e.id.clone(), format!("{} · {}", e.name, e.model.name()))).collect());
-                                binding_choice(ui, "Delay Stage", &mut draft.ids.delay, self.inventory.delays.iter().map(|e| (e.id.clone(), format!("{} · {}", e.name, e.config.stage.as_deref().unwrap_or(&e.config.controller)))).collect());
-                                binding_choice(ui, "Scanner", &mut draft.ids.scanner, self.inventory.scanners.iter().map(|e| (e.id.clone(), e.name.clone())).collect());
+                egui::ScrollArea::vertical()
+                    .max_height((ctx.content_rect().height() - 190.).max(160.))
+                    .show(ui, |ui| {
+                        ui.add_enabled_ui(!locked, |ui| {
+                            settings_section(ui, "Devices", |ui| {
+                                ui.label(
+                                    egui::RichText::new("Remembered for this measurement tab.")
+                                        .small()
+                                        .color(Color32::GRAY),
+                                );
+                                ui.add_space(6.);
+                                egui::Grid::new("measurement_device_roles")
+                                    .num_columns(2)
+                                    .spacing([10., 8.])
+                                    .show(ui, |ui| {
+                                        binding_choice(
+                                            ui,
+                                            "Lock-in",
+                                            &mut draft.ids.lockin,
+                                            self.inventory
+                                                .lockins
+                                                .iter()
+                                                .map(|e| {
+                                                    (
+                                                        e.id.clone(),
+                                                        format!(
+                                                            "{} · {}",
+                                                            e.display_name(),
+                                                            e.model.name()
+                                                        ),
+                                                    )
+                                                })
+                                                .collect(),
+                                        );
+                                        if uses_device(draft.workflow, "delay") {
+                                            binding_choice(
+                                                ui,
+                                                "Delay Stage",
+                                                &mut draft.ids.delay,
+                                                self.inventory
+                                                    .delays
+                                                    .iter()
+                                                    .map(|e| {
+                                                        (
+                                                            e.id.clone(),
+                                                            format!(
+                                                                "{} · {}",
+                                                                e.display_name(),
+                                                                e.config
+                                                                    .stage
+                                                                    .as_deref()
+                                                                    .unwrap_or(
+                                                                        &e.config.controller
+                                                                    )
+                                                            ),
+                                                        )
+                                                    })
+                                                    .collect(),
+                                            );
+                                        }
+                                        if uses_device(draft.workflow, "scanner") {
+                                            binding_choice(
+                                                ui,
+                                                "Scanner",
+                                                &mut draft.ids.scanner,
+                                                self.inventory
+                                                    .scanners
+                                                    .iter()
+                                                    .map(|e| (e.id.clone(), e.display_name()))
+                                                    .collect(),
+                                            );
+                                        }
+                                    });
+                                ui.add_space(6.);
+                                ui.label(
+                                    egui::RichText::new(
+                                        "Other connected devices remain available.",
+                                    )
+                                    .small()
+                                    .color(Color32::GRAY),
+                                );
                             });
-                            ui.add_space(6.);
-                            ui.label(egui::RichText::new("Other devices stay connected. Positions use each device’s saved zero.").small().color(Color32::GRAY));
                         });
-                        ui.add_space(10.);
-                        settings_section(ui, "Timing", |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(if draft.workflow == Workflow::SignalMonitor { "Interval" } else { "Wait time" });
-                                ui.add(egui::DragValue::new(&mut draft.interval_s).speed(0.01).range(0.0..=3600.).suffix(" s"));
-                            });
-                        });
+                        if let Some(error) = &draft.error {
+                            ui.colored_label(Color32::LIGHT_RED, error);
+                        }
                     });
-                    if let Some(error) = &draft.error { ui.colored_label(Color32::LIGHT_RED, error); }
-                });
                 ui.add_space(10.);
-                ui.label(egui::RichText::new("Use Config > Save to save these settings to the file.").small().color(Color32::GRAY));
+                ui.label(
+                    egui::RichText::new("Use Config > Save to save these settings to the file.")
+                        .small()
+                        .color(Color32::GRAY),
+                );
                 ui.add_space(10.);
                 ui.horizontal(|ui| {
-                    accepted = ui.add_enabled(!locked, egui::Button::new("OK").min_size(Vec2::new(80., 26.))).clicked();
-                    cancelled = ui.add(egui::Button::new("Cancel").min_size(Vec2::new(80., 26.))).clicked();
+                    accepted = ui
+                        .add_enabled(
+                            !locked,
+                            egui::Button::new("OK").min_size(Vec2::new(80., 26.)),
+                        )
+                        .clicked();
+                    cancelled = ui
+                        .add(egui::Button::new("Cancel").min_size(Vec2::new(80., 26.)))
+                        .clicked();
                 });
             });
         if accepted {
@@ -418,7 +510,8 @@ mod tests {
         assert_eq!(app.inventory.selected, selected);
         assert_eq!(app.selected_zero(), zero);
         assert!(app.pending_device_selection.is_none());
-        assert!(app.device_highlighted("scanner", &selected.scanner));
+        assert!(app.device_highlighted("delay", &selected.delay));
+        assert!(!app.device_highlighted("scanner", &selected.scanner));
         assert!(!app.device_highlighted("scanner", "scanner-2"));
         app.snapshot.running = false;
         app.measurement_pending = false;
@@ -428,21 +521,20 @@ mod tests {
     }
 
     #[test]
-    fn settings_are_staged_until_ok_and_timing_is_workflow_local() {
+    fn settings_are_staged_until_ok_and_leave_wait_times_unchanged() {
         let mut app = two_groups();
         let before = app.settings.raw.clone();
         let srkr_wait = app.settings.plan(Workflow::Srkr).unwrap().interval_s;
         app.open_measurement_settings();
         let draft = app.measurement_settings.as_mut().unwrap();
         draft.ids.scanner = "scanner-2".into();
-        draft.interval_s = 0.3;
         app.measurement_settings = None; // Cancel/Escape drops only the draft.
         assert_eq!(app.settings.raw, before);
         app.open_measurement_settings();
-        let mut draft = app.measurement_settings.take().unwrap();
-        draft.interval_s = 0.3;
+        let draft = app.measurement_settings.take().unwrap();
+        let trkr_wait = app.plan().interval_s;
         app.apply_measurement_settings(&draft).unwrap();
-        assert_eq!(app.plan().interval_s, 0.3);
+        assert_eq!(app.plan().interval_s, trkr_wait);
         assert_eq!(
             app.settings.plan(Workflow::Srkr).unwrap().interval_s,
             srkr_wait

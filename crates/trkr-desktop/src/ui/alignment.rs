@@ -174,6 +174,7 @@ struct RenderState<'a> {
 
 struct StepControl<'a> {
     position: egui::Pos2,
+    size: Vec2,
     kind: MotionKind,
     id: &'a str,
     axis: usize,
@@ -198,7 +199,7 @@ impl App {
             .iter()
             .map(|entry| DeviceOption {
                 id: entry.id.clone(),
-                name: entry.name.clone(),
+                name: entry.display_name(),
             })
             .collect();
         let scanner_options: Vec<_> = self
@@ -207,7 +208,7 @@ impl App {
             .iter()
             .map(|entry| DeviceOption {
                 id: entry.id.clone(),
-                name: entry.name.clone(),
+                name: entry.display_name(),
             })
             .collect();
         let delays: Vec<_> = self
@@ -217,7 +218,7 @@ impl App {
             .map(|entry| DelayPanel {
                 option: DeviceOption {
                     id: entry.id.clone(),
-                    name: entry.name.clone(),
+                    name: entry.display_name(),
                 },
                 entry: entry.clone(),
                 state: self.device_state(MotionKind::Delay, &entry.id),
@@ -230,7 +231,7 @@ impl App {
             .map(|entry| ScannerPanel {
                 option: DeviceOption {
                     id: entry.id.clone(),
-                    name: entry.name.clone(),
+                    name: entry.display_name(),
                 },
                 entry: entry.clone(),
                 state: self.device_state(MotionKind::Scanner, &entry.id),
@@ -724,7 +725,17 @@ fn draw_delay_card(
         "increment",
         MUTED,
     );
-    let action_y = 213.;
+    // Movement reads from left to right: negative, positive, then the two
+    // physical limits.  On the smallest centre column the limit actions get
+    // their own row, so they cannot cover Initialize/Stop.
+    let compact = rect.width() < 570.;
+    let action_y = if compact { 205. } else { 218. };
+    label(
+        render.ui,
+        rect.min + Vec2::new(14., action_y - 16.),
+        "Incremental motion",
+        MUTED,
+    );
     let amount = render.alignment.delay_step[slot];
     let unit = render.alignment.delay_unit;
     let locked = render.locked || !connected;
@@ -732,6 +743,7 @@ fn draw_delay_card(
         render,
         StepControl {
             position: rect.min + Vec2::new(14., action_y),
+            size: Vec2::new(58., 26.),
             kind: MotionKind::Delay,
             id: &panel.option.id,
             axis: 0,
@@ -745,6 +757,7 @@ fn draw_delay_card(
         render,
         StepControl {
             position: rect.min + Vec2::new(154., action_y),
+            size: Vec2::new(58., 26.),
             kind: MotionKind::Delay,
             id: &panel.option.id,
             axis: 0,
@@ -754,15 +767,22 @@ fn draw_delay_card(
             locked,
         },
     );
+    let end_y = if compact { 236. } else { action_y };
     let end_left = button(
         render.ui,
-        egui::Rect::from_min_size(rect.min + Vec2::new(294., action_y), Vec2::new(62., 26.)),
+        egui::Rect::from_min_size(
+            rect.min + Vec2::new(if compact { 14. } else { 294. }, end_y),
+            Vec2::new(62., 26.),
+        ),
         "End <",
         !render.locked && connected,
     );
     let end_right = button(
         render.ui,
-        egui::Rect::from_min_size(rect.min + Vec2::new(360., action_y), Vec2::new(62., 26.)),
+        egui::Rect::from_min_size(
+            rect.min + Vec2::new(if compact { 80. } else { 360. }, end_y),
+            Vec2::new(62., 26.),
+        ),
         "End >",
         !render.locked && connected,
     );
@@ -779,7 +799,7 @@ fn draw_delay_card(
     let init = button(
         render.ui,
         egui::Rect::from_min_size(
-            rect.min + Vec2::new(rect.width() - 160., action_y),
+            rect.min + Vec2::new(rect.width() - 160., end_y),
             Vec2::new(78., 26.),
         ),
         "Initialize",
@@ -788,7 +808,7 @@ fn draw_delay_card(
     let stop = button(
         render.ui,
         egui::Rect::from_min_size(
-            rect.min + Vec2::new(rect.width() - 78., action_y),
+            rect.min + Vec2::new(rect.width() - 78., end_y),
             Vec2::new(64., 26.),
         ),
         "Stop",
@@ -859,6 +879,8 @@ fn draw_scanner_card(
     let position = panel.state.as_ref().map(|s| &s.position);
     let x = position.and_then(|p| p.physical[1]);
     let y = position.and_then(|p| p.physical[2]);
+    // Keep the position picture and the arrow pad together: the operator can
+    // read X/Y above and then move in that same visual orientation below.
     crosshair(
         render.ui,
         egui::Rect::from_min_size(rect.min + Vec2::new(14., 46.), Vec2::new(82., 74.)),
@@ -883,15 +905,22 @@ fn draw_scanner_card(
         );
     }
     let base = rect.min;
+    let direction_width = ((rect.width() - 42.) * 0.5).clamp(100., 146.);
+    let right_direction_x = rect.width() - 14. - direction_width;
+    let field_gap = 8.;
+    let field_width = ((rect.width() - 28. - field_gap * 2.) / 3.).clamp(58., 96.);
+    let x_step_x = 14. + field_width + field_gap;
+    let y_step_x = x_step_x + field_width + field_gap;
+    label(render.ui, base + Vec2::new(14., 124.), "Units", MUTED);
     unit_selector(
         render.ui,
-        egui::Rect::from_min_size(base + Vec2::new(14., 139.), Vec2::new(84., 26.)),
+        egui::Rect::from_min_size(base + Vec2::new(14., 139.), Vec2::new(field_width, 26.)),
         ("scanner-unit", slot),
         &mut render.alignment.scanner_unit[slot],
         !render.locked,
         false,
     );
-    for (axis, offset) in [(0, 111.), (1, 236.)] {
+    for (axis, offset) in [(0, x_step_x), (1, y_step_x)] {
         label(
             render.ui,
             base + Vec2::new(offset, 124.),
@@ -900,14 +929,14 @@ fn draw_scanner_card(
         );
         number(
             render.ui,
-            egui::Rect::from_min_size(base + Vec2::new(offset, 139.), Vec2::new(96., 26.)),
+            egui::Rect::from_min_size(base + Vec2::new(offset, 139.), Vec2::new(field_width, 26.)),
             &mut render.alignment.scanner_step[slot][axis],
             !render.locked,
         );
     }
     for (axis, offset, config) in [
         (1, 14., &panel.entry.x),
-        (2, rect.width() - 160., &panel.entry.y),
+        (2, right_direction_x, &panel.entry.y),
     ] {
         let reversed = config.as_ref().is_some_and(|c| c.direction != 0);
         label(
@@ -922,7 +951,10 @@ fn draw_scanner_card(
         );
         if direction_selector(
             render.ui,
-            egui::Rect::from_min_size(base + Vec2::new(offset, 190.), Vec2::new(146., 24.)),
+            egui::Rect::from_min_size(
+                base + Vec2::new(offset, 190.),
+                Vec2::new(direction_width, 24.),
+            ),
             reversed,
             !render.locked && axes[axis],
         )
@@ -935,9 +967,11 @@ fn draw_scanner_card(
             });
         }
     }
-    // The selected mode applies to the same spatially arranged direction buttons.
-    for (hold, title, x) in [(false, "Step", 14.), (true, "Hold", 76.)] {
-        let r = egui::Rect::from_min_size(base + Vec2::new(x, 228.), Vec2::new(58., 26.));
+    // Step performs one increment. Hold moves only while its arrow is held.
+    // The selected mode applies to the spatially arranged pad at right.
+    label(render.ui, base + Vec2::new(14., 224.), "Motion", MUTED);
+    for (hold, title, x) in [(false, "Step", 14.), (true, "Hold", 72.)] {
+        let r = egui::Rect::from_min_size(base + Vec2::new(x, 238.), Vec2::new(54., 26.));
         if render
             .ui
             .add_enabled_ui(!render.locked, |ui| {
@@ -954,16 +988,19 @@ fn draw_scanner_card(
     }
     let hold = render.alignment.scanner_hold[slot];
     let unit = render.alignment.scanner_unit[slot];
-    let center_x = rect.width() - 115.;
+    let pad = Vec2::new(38., 30.);
+    // The right edge remains inside the narrowest supported card (240 px).
+    let center_x = (rect.width() - 62.).max(176.);
     for (axis, positive, x, y, title) in [
-        (1, false, center_x - 66., 260., "< X"),
-        (1, true, center_x + 66., 260., "X >"),
-        (2, true, center_x, 230., "Y +"),
-        (2, false, center_x, 290., "Y -"),
+        (1, false, center_x - 40., 268., "X-"),
+        (1, true, center_x + 40., 268., "X+"),
+        (2, true, center_x, 238., "Y+"),
+        (2, false, center_x, 294., "Y-"),
     ] {
         let amount = render.alignment.scanner_step[slot][axis - 1];
         let control = StepControl {
-            position: base + Vec2::new(x - 29., y),
+            position: base + Vec2::new(x - pad.x * 0.5, y),
+            size: pad,
             kind: MotionKind::Scanner,
             id: &panel.option.id,
             axis,
@@ -976,7 +1013,7 @@ fn draw_scanner_card(
     }
     if button(
         render.ui,
-        egui::Rect::from_min_size(base + Vec2::new(14., 260.), Vec2::new(120., 26.)),
+        egui::Rect::from_min_size(base + Vec2::new(center_x - pad.x * 0.5, 268.), pad),
         "Stop",
         true,
     )
@@ -984,10 +1021,10 @@ fn draw_scanner_card(
     {
         render.intents.push(Intent::Stop);
     }
-    for (axis, offset, config) in [(1, 14., &panel.entry.x), (2, 76., &panel.entry.y)] {
+    for (axis, offset, config) in [(1, 14., &panel.entry.x), (2, 72., &panel.entry.y)] {
         if button(
             render.ui,
-            egui::Rect::from_min_size(base + Vec2::new(offset, 290.), Vec2::new(58., 26.)),
+            egui::Rect::from_min_size(base + Vec2::new(offset, 274.), Vec2::new(50., 26.)),
             if axis == 1 { "Init X" } else { "Init Y" },
             !render.locked && axes[axis],
         )
@@ -1017,7 +1054,7 @@ fn valid_increment(amount: f64) -> bool {
 fn step_hold_pair(render: &mut RenderState<'_>, mut control: StepControl<'_>) {
     let sign = if control.positive { "+" } else { "-" };
     motion_button(render, &control, &format!("Step {sign}"), false);
-    control.position.x += 62.;
+    control.position.x += control.size.x + 4.;
     motion_button(render, &control, &format!("Hold {sign}"), true);
 }
 
@@ -1037,7 +1074,7 @@ fn motion_button(
     let enabled = !control.locked && valid_increment(control.amount);
     let response = button(
         render.ui,
-        egui::Rect::from_min_size(control.position, Vec2::new(58., 26.)),
+        egui::Rect::from_min_size(control.position, control.size),
         title,
         enabled || active,
     );
@@ -1146,6 +1183,7 @@ fn selector(
             ui.spacing_mut().combo_width = field.width();
             egui::ComboBox::from_id_salt(id)
                 .width(field.width())
+                .truncate()
                 .selected_text(
                     selected
                         .as_deref()
@@ -1189,28 +1227,31 @@ fn direction_selector(
         egui::pos2(normal.max.x + 3., rect.min.y),
         Vec2::new(width, rect.height()),
     );
+    let compact = rect.width() < 130.;
     let normal = ui
         .add_enabled_ui(enabled, |ui| {
             ui.put(
                 normal,
-                egui::Button::new("Normal")
+                egui::Button::new(if compact { "N" } else { "Normal" })
                     .selected(!reversed)
                     .min_size(normal.size())
                     .corner_radius(5),
             )
         })
-        .inner;
+        .inner
+        .on_hover_text("Normal direction");
     let reverse = ui
         .add_enabled_ui(enabled, |ui| {
             ui.put(
                 reverse,
-                egui::Button::new("Reverse")
+                egui::Button::new(if compact { "R" } else { "Reverse" })
                     .selected(reversed)
                     .min_size(reverse.size())
                     .corner_radius(5),
             )
         })
-        .inner;
+        .inner
+        .on_hover_text("Reverse direction");
     if normal.clicked() {
         Some(false)
     } else if reverse.clicked() {
@@ -1220,14 +1261,19 @@ fn direction_selector(
     }
 }
 fn number(ui: &mut egui::Ui, rect: egui::Rect, value: &mut f64, enabled: bool) {
-    ui.add_enabled_ui(enabled, |ui| {
-        ui.put(
-            rect,
-            egui::DragValue::new(value)
-                .speed(0.1)
-                .range(-1e12..=1e12)
-                .max_decimals(4),
-        );
+    // DragValue uses the style's text-edit minimum width unless it is scoped.
+    // Constrain it to the recorded rectangle so adjacent fields never overlap.
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        ui.spacing_mut().text_edit_width = (rect.width() - 20.).max(20.);
+        ui.add_enabled_ui(enabled, |ui| {
+            ui.put(
+                rect,
+                egui::DragValue::new(value)
+                    .speed(0.1)
+                    .range(-1e12..=1e12)
+                    .max_decimals(4),
+            );
+        });
     });
 }
 fn unit_selector(
@@ -1243,6 +1289,7 @@ fn unit_selector(
             ui.spacing_mut().combo_width = rect.width();
             egui::ComboBox::from_id_salt(id)
                 .width(rect.width())
+                .truncate()
                 .selected_text(match unit {
                     AlignmentUnit::Physical if delay => "t (ps)",
                     AlignmentUnit::Corrected if delay => "t_cor (ps)",
@@ -1293,7 +1340,7 @@ fn rail(
             ACCENT,
         );
         ui.painter().line_segment(
-            [egui::pos2(x, y + 9.), egui::pos2(x, rect.bottom())],
+            [egui::pos2(x, y + 9.), egui::pos2(x, rect.top() + 28.)],
             Stroke::new(1_f32, ACCENT),
         );
     }
@@ -1442,6 +1489,7 @@ mod tests {
                     &mut render,
                     &StepControl {
                         position: egui::pos2(20., 20.),
+                        size: Vec2::new(58., 26.),
                         kind: MotionKind::Scanner,
                         id: "scanner-2",
                         axis: 1,

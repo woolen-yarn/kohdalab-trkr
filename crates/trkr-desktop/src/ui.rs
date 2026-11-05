@@ -1,5 +1,6 @@
 mod alignment;
 mod demo;
+mod device_inventory;
 mod devices;
 mod eta;
 mod measurement_settings;
@@ -126,6 +127,7 @@ fn edit(ui: &mut egui::Ui, v: &mut String) {
 }
 pub struct App {
     measurement_settings: Option<measurement_settings::Draft>,
+    inventory_dialog: Option<device_inventory::InventoryDialog>,
     pending_device_selection: Option<measurement_settings::PendingSelection>,
     selection_retry_blocked: Option<(Workflow, crate::inventory::DeviceIds)>,
     inventory: crate::inventory::Inventory,
@@ -257,6 +259,7 @@ impl App {
         p[4].slow = Axis::Y;
         let mut app = Self {
             measurement_settings: None,
+            inventory_dialog: None,
             pending_device_selection: None,
             selection_retry_blocked: None,
             inventory: Default::default(),
@@ -451,7 +454,10 @@ impl App {
         if state.starts_with("alignment-") {
             self.enable_alignment_preview(state == "alignment-scanner");
         }
-        if matches!(state, "measurement-settings" | "multiple-devices") {
+        if matches!(
+            state,
+            "measurement-settings" | "multiple-devices" | "add-device" | "delete-device"
+        ) {
             self.enable_alignment_preview(false);
             self.alignment_tab = false;
             self.snapshot.registered_devices.clear();
@@ -461,6 +467,17 @@ impl App {
             self.sync_all_outputs();
             if state == "measurement-settings" {
                 self.open_measurement_settings();
+            } else if state == "add-device" {
+                self.inventory_dialog = Some(device_inventory::InventoryDialog::Add {
+                    class: devices::DeviceClass::Scanner,
+                    label: "Probe".into(),
+                });
+            } else if state == "delete-device" {
+                self.inventory_dialog = Some(device_inventory::InventoryDialog::Delete {
+                    class: devices::DeviceClass::Scanner,
+                    id: "scanner-2".into(),
+                    error: None,
+                });
             } else {
                 self.devices_scrolled_smoke = true;
             }
@@ -591,13 +608,13 @@ impl App {
             .is_some_and(Value::is_object);
         let motion = self
             .settings
-            .hardware()
+            .profile_hardware()
             .ok()
             .map(|hardware| hardware.motion);
         if let Some(delay) = motion
             .as_ref()
             .and_then(|motion| motion.delay.as_ref())
-            .and_then(|delay| delay.normalized().ok())
+            .and_then(|delay| delay.normalized_profile().ok())
         {
             self.stage_model = delay.controller;
             self.stage_preset = delay.stage.unwrap_or_else(|| "SGSP46-500".into());
@@ -885,7 +902,7 @@ impl App {
                 .map_err(|error| format!("{} profile: {error}", workflow.name()))?;
         }
         self.inventory = crate::inventory::Inventory::from_profile(&self.settings.raw)?;
-        self.settings.hardware().map(|_| ())
+        self.settings.profile_hardware().map(|_| ())
     }
     fn config(&mut self) -> Result<engine::HardwareConfig, String> {
         self.sync();
@@ -1380,6 +1397,9 @@ impl App {
                     self.log.clear();
                     self.note("DEMO — synthetic data · no hardware");
                     self.switch_workflow(workflow);
+                    if smoke.layout_only && self.measurement_settings.is_some() {
+                        self.open_measurement_settings();
+                    }
                     if !smoke.layout_only && workflow != Workflow::Trkr {
                         let mut plan = self.plan().clone();
                         plan.fast_range = Range {
@@ -1648,11 +1668,7 @@ impl App {
             let mut form = precision::Form::new(ui, &mut self.geometry, rect.min);
             form.enabled = !self.demo_viewer;
             let w = rect.width();
-            form.group(
-                "lockin_group",
-                precision::rect(0., 0., w, rect.height()),
-                "Lock-in",
-            );
+            precision::record(form.geometry, "lockin_group", rect);
             form.toggle(
                 "lockin_device",
                 precision::rect(11., 27., 71., 24.),
@@ -1902,11 +1918,7 @@ impl App {
             form.enabled = !self.demo_viewer;
             let w = rect.width();
             if i == 0 {
-                form.group(
-                    &format!("motion_{axis}_group"),
-                    precision::rect(0., 0., w, rect.height()),
-                    title,
-                );
+                precision::record(form.geometry, &format!("motion_{axis}_group"), rect);
             } else {
                 precision::record(form.geometry, &format!("motion_{axis}_group"), rect);
                 form.label(
@@ -2655,28 +2667,6 @@ impl App {
         if self.workflow != plan.workflow {
             plan = self.plan().clone();
         }
-        let settings_rect = rect(area.max.x - 98., area.min.y, 92., 24.);
-        precision::record(
-            &mut self.geometry,
-            "measurement_settings_button",
-            settings_rect,
-        );
-        if ui
-            .scope(|ui| {
-                ui.add_enabled_ui(
-                    !self.demo_viewer
-                        && !running
-                        && !self.controller.has_pending()
-                        && self.pending_device_selection.is_none(),
-                    |ui| ui.put(settings_rect, egui::Button::new("Settings…")),
-                )
-                .inner
-            })
-            .inner
-            .clicked()
-        {
-            self.open_measurement_settings();
-        }
         precision::record(&mut self.geometry, "measurement_tabs", area);
         let page = rect(
             area.min.x + 2.,
@@ -2708,7 +2698,7 @@ impl App {
         let hints_fast = self.scan_hints(plan.fast, &plan);
         let hints_slow = self.scan_hints(plan.slow, &plan);
         let scan_column_width = ((settings - 24.) * 0.5).round();
-        let (start, stop, save, browse);
+        let (start, stop, save, browse, settings_clicked);
         {
             let mut form = Form::new(ui, &mut self.geometry, page.min);
             form.enabled = !running && !self.demo_viewer;
@@ -2866,13 +2856,19 @@ impl App {
                 {
                     form.value(
                         "invalid_axis_pair",
-                        rect(9., 169., settings - 18., 16.),
+                        rect(112., 172., settings - 121., 16.),
                         warning,
                         Color32::from_rgb(245, 183, 82),
                     );
                 }
             }
             form.enabled = !running && !self.demo_viewer;
+            settings_clicked = form.button(
+                "measurement_settings_button",
+                rect(9., 169., 96., 24.),
+                "Settings…",
+                !self.controller.has_pending() && self.pending_device_selection.is_none(),
+            );
             form.group(
                 "output_group",
                 rect(side_x, 12., side, 96.),
@@ -2917,7 +2913,7 @@ impl App {
                 &mut output.auto_timestamp_suffix,
                 "Auto",
             );
-            form.group("run_group", rect(side_x, 120., side, 64.), "Run");
+            form.group("run_group", rect(side_x, 120., side, 73.), "Run");
             let usable = side - 22. - 12.;
             let first = (usable / 3.).round();
             let second = (usable * 2. / 3.).round() - first;
@@ -2977,6 +2973,9 @@ impl App {
         }
         self.plans[Self::ix(self.workflow)] = plan;
         self.select_plot_axes();
+        if settings_clicked {
+            self.open_measurement_settings();
+        }
         if browse {
             self.begin_dialog(
                 if self.demo_viewer {
@@ -3787,132 +3786,7 @@ impl eframe::App for App {
                                     }
                                     let available = ui.max_rect();
                                     let origin = available.min + Vec2::new(9., 0.);
-                                    let mut y = origin.y;
-                                    self.device_selector(
-                                        ui,
-                                        devices::DeviceClass::Lockin,
-                                        precision::rect(origin.x, y, card_width, 26.),
-                                    );
-                                    y += 30.;
-                                    let highlighted = self.device_highlighted(
-                                        "lockin",
-                                        &self.inventory.selected.lockin,
-                                    );
-                                    ui.scope(|ui| {
-                                        if !highlighted {
-                                            ui.multiply_opacity(0.55);
-                                        }
-                                        self.lockin(
-                                            ui,
-                                            precision::rect(
-                                                origin.x,
-                                                y,
-                                                card_width,
-                                                self.device_height(0),
-                                            ),
-                                        );
-                                    });
-                                    y += self.device_height(0) + 8.;
-                                    self.device_selector(
-                                        ui,
-                                        devices::DeviceClass::Delay,
-                                        precision::rect(origin.x, y, card_width, 26.),
-                                    );
-                                    y += 30.;
-                                    let highlighted = self.device_highlighted(
-                                        "delay",
-                                        &self.inventory.selected.delay,
-                                    );
-                                    ui.scope(|ui| {
-                                        if !highlighted {
-                                            ui.multiply_opacity(0.55);
-                                        }
-                                        self.motion(
-                                            ui,
-                                            0,
-                                            "Delay Stage",
-                                            Device::T,
-                                            precision::rect(
-                                                origin.x,
-                                                y,
-                                                card_width,
-                                                self.device_height(1),
-                                            ),
-                                        );
-                                    });
-                                    y += self.device_height(1) + 8.;
-                                    self.device_selector(
-                                        ui,
-                                        devices::DeviceClass::Scanner,
-                                        precision::rect(origin.x, y, card_width, 26.),
-                                    );
-                                    y += 30.;
-                                    let highlighted = self.device_highlighted(
-                                        "scanner",
-                                        &self.inventory.selected.scanner,
-                                    );
-                                    ui.scope(|ui| {
-                                        if !highlighted {
-                                            ui.multiply_opacity(0.55);
-                                        }
-                                        let scanner_area = precision::rect(
-                                            origin.x,
-                                            y,
-                                            card_width,
-                                            self.device_height(2) + self.device_height(3) + 8.,
-                                        );
-                                        precision::record(
-                                            &mut self.geometry,
-                                            "scanner_group",
-                                            scanner_area,
-                                        );
-                                        ui.painter().rect(
-                                            scanner_area,
-                                            10.,
-                                            PANEL,
-                                            Stroke::new(1_f32, BORDER),
-                                            egui::StrokeKind::Inside,
-                                        );
-                                        self.motion(
-                                            ui,
-                                            1,
-                                            "X",
-                                            Device::X,
-                                            precision::rect(
-                                                origin.x,
-                                                y,
-                                                card_width,
-                                                self.device_height(2),
-                                            ),
-                                        );
-                                        y += self.device_height(2) + 4.;
-                                        ui.painter().line_segment(
-                                            [
-                                                egui::pos2(origin.x + 10., y),
-                                                egui::pos2(origin.x + card_width - 10., y),
-                                            ],
-                                            Stroke::new(1_f32, BORDER),
-                                        );
-                                        y += 4.;
-                                        self.motion(
-                                            ui,
-                                            2,
-                                            "Y",
-                                            Device::Y,
-                                            precision::rect(
-                                                origin.x,
-                                                y,
-                                                card_width,
-                                                self.device_height(3),
-                                            ),
-                                        );
-                                        y += self.device_height(3) + 8.;
-                                    });
-                                    y = self.inactive_device_cards(
-                                        ui,
-                                        egui::pos2(origin.x, y),
-                                        card_width,
-                                    );
+                                    let y = self.device_inventory_cards(ui, origin, card_width);
                                     ui.set_min_size(Vec2::new(available.width(), y - origin.y));
                                 });
                             },
@@ -4008,6 +3882,7 @@ impl eframe::App for App {
                 self.plots(ui, columns.plots);
             });
         self.measurement_settings_dialog(ctx);
+        self.device_inventory_dialog(ctx);
         self.smoke_tick(ctx);
         self.demo_smoke_tick(ctx);
     }

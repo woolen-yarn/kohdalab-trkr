@@ -211,7 +211,7 @@ impl Settings {
 
         normalize_profile_aliases(&mut raw);
         let settings = Self { raw };
-        settings.hardware()?;
+        settings.profile_hardware()?;
         for workflow in Workflow::ALL {
             settings.plan(workflow)?;
         }
@@ -224,7 +224,7 @@ impl Settings {
     }
     pub fn save(&self, path: &Path) -> Result<(), String> {
         validate_application(&self.raw)?;
-        self.hardware()?;
+        self.profile_hardware()?;
         if regular_file_exists(path, "Configuration")? {
             let existing = read_config_value(path, "Configuration").map_err(|e| {
                 format!(
@@ -246,6 +246,12 @@ impl Settings {
     }
 
     pub fn hardware(&self) -> Result<HardwareConfig, String> {
+        self.hardware_config(false)
+    }
+    pub fn profile_hardware(&self) -> Result<HardwareConfig, String> {
+        self.hardware_config(true)
+    }
+    fn hardware_config(&self, draft: bool) -> Result<HardwareConfig, String> {
         validate_measurement_device_selections(&self.raw)?;
         let instruments = &self.raw["instruments"];
         for (group, keys) in [("delay_stage", &["t"][..]), ("scanner", &["x", "y"][..])] {
@@ -291,7 +297,11 @@ impl Settings {
             })
             .transpose()?;
         let motion = MotionConfig { delay, x, y };
-        motion.validate()?;
+        if draft {
+            motion.validate_profile()?;
+        } else {
+            motion.validate()?;
+        }
         Ok(HardwareConfig {
             device_ids: self
                 .raw

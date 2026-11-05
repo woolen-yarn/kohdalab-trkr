@@ -400,7 +400,7 @@ impl Columns {
         let h = viewport.height();
         let left = if left_collapsed { 40. } else { 384. };
         let right = if collapsed { 27. } else { Self::RIGHT_WIDTH };
-        let top = 226.;
+        let top = 235.;
         let center_width = (w - left - right - 32.).max(Self::WIDTH);
         let c = rect(left + 16., 8., center_width, h - 16.);
         let measurement = rect(c.min.x + 9., 17., c.width() - 18., top);

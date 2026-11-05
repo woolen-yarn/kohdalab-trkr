@@ -283,6 +283,13 @@ fn canonical(s: &str) -> String {
 }
 impl DelayConfig {
     pub fn normalized(&self) -> Result<Self, String> {
+        self.normalize(true)
+    }
+    /// Validate an editable profile before a serial port has been assigned.
+    pub fn normalized_profile(&self) -> Result<Self, String> {
+        self.normalize(false)
+    }
+    fn normalize(&self, require_port: bool) -> Result<Self, String> {
         let mut c = self.clone();
         c.controller = canonical(&c.controller);
         c.model()?;
@@ -297,7 +304,7 @@ impl DelayConfig {
                 .get_or_insert(preset.screw_lead_mm_per_rev);
             c.step_angle_deg.get_or_insert(preset.step_angle_deg);
         }
-        if c.port.trim().is_empty() {
+        if require_port && c.port.trim().is_empty() {
             return Err("Delay stage serial port is required".into());
         }
         positive(c.timeout, "Serial timeout")?;
@@ -492,6 +499,13 @@ impl DelayConfig {
 }
 impl ScannerConfig {
     pub fn normalized(&self) -> Result<Self, String> {
+        self.normalize(true)
+    }
+    /// Validate an editable profile before a serial port has been assigned.
+    pub fn normalized_profile(&self) -> Result<Self, String> {
+        self.normalize(false)
+    }
+    fn normalize(&self, require_port: bool) -> Result<Self, String> {
         let mut c = self.clone();
         c.controller = canonical(&c.controller);
         let model = c.model()?;
@@ -506,7 +520,7 @@ impl ScannerConfig {
             c.max_pos.get_or_insert(descriptor.maximum);
             c.resolution.get_or_insert(descriptor.resolution);
         }
-        if c.port.trim().is_empty() {
+        if require_port && c.port.trim().is_empty() {
             return Err("Scanner serial port is required".into());
         }
         positive(c.timeout, "Serial timeout")?;
@@ -698,6 +712,16 @@ impl ScannerConfig {
 }
 
 impl MotionConfig {
+    /// Profile drafts may omit a port; all numeric/calibration checks still apply.
+    pub fn validate_profile(&self) -> Result<(), String> {
+        if let Some(c) = &self.delay {
+            c.normalized_profile()?;
+        }
+        for c in [&self.x, &self.y].into_iter().flatten() {
+            c.normalized_profile()?;
+        }
+        Ok(())
+    }
     pub fn validate(&self) -> Result<(), String> {
         if let Some(c) = &self.delay {
             c.normalized()?;

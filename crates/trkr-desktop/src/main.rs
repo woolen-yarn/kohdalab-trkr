@@ -111,6 +111,8 @@ fn layout_capture(
         "alignment-scanner",
         "measurement-settings",
         "multiple-devices",
+        "add-device",
+        "delete-device",
     ]
     .contains(&state)
     {
