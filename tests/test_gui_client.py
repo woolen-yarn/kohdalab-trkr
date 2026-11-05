@@ -20,11 +20,14 @@ def test_select_devices_is_additive_and_rejects_empty_ids(api_module, monkeypatc
     client = api_module.GuiClient(timeout=1)
     sent = []
     monkeypatch.setattr(client, "_job", lambda action, **kwargs: sent.append((action, kwargs)) or {"id": "selection"})
-    assert client.select_devices(scanner="scanner-2")["id"] == "selection"
-    assert sent == [("select_devices", {"request_id": None, "scanner": "scanner-2"})]
+    assert client.select_devices(scanner="scanner-2", workflow="srkr")["id"] == "selection"
+    assert sent == [("select_devices", {"request_id": None, "scanner": "scanner-2", "workflow": "srkr"})]
     for invalid in ("", " ", 2):
         with pytest.raises(ValueError):
             client.select_devices(delay=invalid)
+    for invalid in ("", " ", 2):
+        with pytest.raises(ValueError):
+            client.select_devices(workflow=invalid)
     assert len(sent) == 1
 
 

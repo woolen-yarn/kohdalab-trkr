@@ -189,6 +189,7 @@ impl Bridge {
     fn idle(&self, app: &App) -> Result<(), ApiError> {
         if app.snapshot.running
             || app.measurement_pending
+            || app.pending_device_selection.is_some()
             || (self.owner.is_none() && app.controller.has_pending())
             || self.active.is_some()
         {
@@ -306,7 +307,10 @@ impl Bridge {
                             "Wait for the GUI snapshot copy before acquiring Python control".into(),
                         );
                     }
-                    if app.dialog.is_some() || app.initialize_axis.is_some() {
+                    if app.dialog.is_some()
+                        || app.initialize_axis.is_some()
+                        || app.measurement_settings.is_some()
+                    {
                         return Err("Close the GUI dialog before acquiring Python control".into());
                     }
                     let label = body
@@ -477,15 +481,20 @@ impl Bridge {
                 {
                     return Err("Plan workflow mismatch".into());
                 }
-                app.sync();
+                app.sync_all_plans()?;
                 let mut settings = app.settings.clone();
                 settings.set_plan(&plan)?;
-                app.switch_workflow(plan.workflow);
                 let index = App::ix(plan.workflow);
-                app.plans[index] = plan;
-                sync_shared_coordinates(&mut app.plans, app.workflow);
                 app.settings = settings;
-                app.select_plot_axes();
+                // `set_plan` records the zero on the physical device selected
+                // by its workflow. Refresh the UI inventory before a later
+                // config/status query can absorb an older displayed zero.
+                app.inventory = crate::inventory::Inventory::from_profile(&app.settings.raw)?;
+                app.refresh_plan_coordinates()?;
+                app.plans[index] = app.settings.plan(plan.workflow)?;
+                if app.workflow == plan.workflow {
+                    app.select_plot_axes();
+                }
                 return Ok(Self::config_view(app)?);
             }
             "set_output" => {
@@ -538,13 +547,7 @@ impl Bridge {
                 return Err("Plan workflow does not match selected workflow".into());
             }
             plan.targets()?;
-            if !app.source_demo
-                && (!app.snapshot.devices[0]
-                    || engine::active_axes(&plan)
-                        .iter()
-                        .enumerate()
-                        .any(|(i, needed)| *needed && !app.snapshot.devices[i + 1]))
-            {
+            if !app.source_demo && !app.workflow_connected(&plan) {
                 return Err("Connect the required devices before starting".into());
             }
             output = match body.get("output") {
@@ -557,114 +560,113 @@ impl Bridge {
             if action == "connect" && app.source_demo {
                 return Err("Select hardware source before connecting devices".into());
             }
-            let selection_rollback = (action == "select_devices").then(|| app.settings.clone());
-            let command = match action {
-                "select_devices" => {
-                    app.sync();
-                    app.sync_inventory()?;
-                    let mut inventory = app.inventory.clone();
-                    for (field, target) in [
-                        ("lockin", &mut inventory.selected.lockin),
-                        ("delay", &mut inventory.selected.delay),
-                        ("scanner", &mut inventory.selected.scanner),
-                    ] {
-                        if let Some(value) = body.get(field).filter(|v| !v.is_null()) {
-                            *target = value
-                                .as_str()
-                                .filter(|s| !s.trim().is_empty())
-                                .ok_or("Device IDs must be nonempty strings")?
-                                .to_owned();
+            if action == "select_devices" {
+                app.sync_all_plans()?;
+                let workflow = selected_workflow(body, app.workflow)?;
+                let mut ids = app.settings.workflow_device_ids(workflow)?;
+                for (field, target) in [
+                    ("lockin", &mut ids.lockin),
+                    ("delay", &mut ids.delay),
+                    ("scanner", &mut ids.scanner),
+                ] {
+                    if let Some(value) = body.get(field).filter(|v| !v.is_null()) {
+                        *target = value
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .ok_or("Device IDs must be nonempty strings")?
+                            .to_owned();
+                    }
+                }
+                let mut settings = app.settings.clone();
+                settings.set_workflow_devices(workflow, ids)?;
+                settings.select_workflow(workflow)?;
+                app.request_device_selection(settings, workflow, Some(id.clone()))?;
+            } else {
+                let command = match action {
+                    "connect" if body.get("devices").is_none_or(Value::is_null) => {
+                        app.sync();
+                        app.sync_inventory()?;
+                        Command::ConnectInventory {
+                            inventory: app.inventory.clone(),
                         }
                     }
-                    inventory.validate()?;
-                    let mut profile = app.settings.raw.clone();
-                    inventory.project_selected(&mut profile)?;
-                    let settings = Settings::from_value(profile)?;
-                    let config = settings.hardware()?;
-                    app.settings = settings;
-                    app.hydrate();
-                    app.live.clear();
-                    Command::Select { config }
-                }
-                "connect" if body.get("devices").is_none_or(Value::is_null) => {
-                    app.sync();
-                    app.sync_inventory()?;
-                    Command::ConnectInventory {
-                        inventory: app.inventory.clone(),
+                    "connect" => Command::Connect {
+                        config: app.config()?,
+                        devices: devices(body, app.configured_devices())?,
+                    },
+                    "disconnect" if body.get("devices").is_none_or(Value::is_null) => {
+                        Command::DisconnectAll
                     }
-                }
-                "connect" => Command::Connect {
-                    config: app.config()?,
-                    devices: devices(body, app.configured_devices())?,
-                },
-                "disconnect" if body.get("devices").is_none_or(Value::is_null) => {
-                    Command::DisconnectAll
-                }
-                "disconnect" => Command::Disconnect {
-                    devices: devices(body, vec![Device::Lockin, Device::T, Device::X, Device::Y])?,
-                },
-                "read" => Command::Read,
-                "lockin_settings" => Command::LockinSettings,
-                "set_lockin" => Command::SetLockin {
-                    setting: body["setting"].as_str().ok_or("Missing setting")?.into(),
-                    value: body["value"].clone(),
-                },
-                "auto_lockin" => Command::AutoLockin {
-                    action: body["auto_action"]
-                        .as_str()
-                        .ok_or("Missing auto_action")?
-                        .into(),
-                },
-                "move" => {
-                    if app.source_demo {
-                        return Err("Hardware move is unavailable in Demo mode".into());
-                    }
-                    let targets: [Option<f64>; 3] = serde_json::from_value(body["targets"].clone())
+                    "disconnect" => Command::Disconnect {
+                        devices: devices(
+                            body,
+                            vec![Device::Lockin, Device::T, Device::X, Device::Y],
+                        )?,
+                    },
+                    "read" => Command::Read,
+                    "lockin_settings" => Command::LockinSettings,
+                    "set_lockin" => Command::SetLockin {
+                        setting: body["setting"].as_str().ok_or("Missing setting")?.into(),
+                        value: body["value"].clone(),
+                    },
+                    "auto_lockin" => Command::AutoLockin {
+                        action: body["auto_action"]
+                            .as_str()
+                            .ok_or("Missing auto_action")?
+                            .into(),
+                    },
+                    "move" => {
+                        if app.source_demo {
+                            return Err("Hardware move is unavailable in Demo mode".into());
+                        }
+                        let targets: [Option<f64>; 3] = serde_json::from_value(
+                            body["targets"].clone(),
+                        )
                         .map_err(|_| "targets must be [t, x, y], with null for unchanged axes")?;
-                    if targets.iter().all(Option::is_none) {
-                        return Err("Select at least one move axis".into());
+                        if targets.iter().all(Option::is_none) {
+                            return Err("Select at least one move axis".into());
+                        }
+                        let coordinate: Coordinate = serde_json::from_value(
+                            body.get("coordinate")
+                                .cloned()
+                                .unwrap_or(json!("measurement")),
+                        )
+                        .map_err(|e| e.to_string())?;
+                        Command::Move {
+                            config: app.config()?,
+                            targets,
+                            coordinate,
+                            // Alignment may have a different selected group
+                            // from the currently viewed measurement tab.
+                            zero: app.selected_zero(),
+                            approach: engine::spatial_approach(),
+                        }
                     }
-                    let coordinate: Coordinate = serde_json::from_value(
-                        body.get("coordinate")
-                            .cloned()
-                            .unwrap_or(json!("measurement")),
-                    )
-                    .map_err(|e| e.to_string())?;
-                    Command::Move {
-                        config: app.config()?,
-                        targets,
-                        coordinate,
-                        zero: app.plan().zero,
-                        approach: engine::spatial_approach(),
+                    "initialize" => {
+                        if app.source_demo {
+                            return Err(
+                                "Hardware initialization is unavailable in Demo mode".into()
+                            );
+                        }
+                        let axis = body["axis"]
+                            .as_u64()
+                            .filter(|a| *a < 3)
+                            .ok_or("axis must be 0, 1 or 2")?
+                            as usize;
+                        Command::Initialize {
+                            config: app.config()?,
+                            axis,
+                            home: bool_field(body, "home", false)?,
+                            move_to_origin: bool_field(body, "move_to_origin", true)?,
+                        }
                     }
+                    _ => return Err("Unknown GUI API action".into()),
+                };
+                let motion = matches!(command, Command::Move { .. } | Command::Initialize { .. });
+                app.controller.send_remote(id.clone(), command)?;
+                if motion {
+                    app.snapshot.running = true;
                 }
-                "initialize" => {
-                    if app.source_demo {
-                        return Err("Hardware initialization is unavailable in Demo mode".into());
-                    }
-                    let axis = body["axis"]
-                        .as_u64()
-                        .filter(|a| *a < 3)
-                        .ok_or("axis must be 0, 1 or 2")? as usize;
-                    Command::Initialize {
-                        config: app.config()?,
-                        axis,
-                        home: bool_field(body, "home", false)?,
-                        move_to_origin: bool_field(body, "move_to_origin", true)?,
-                    }
-                }
-                _ => return Err("Unknown GUI API action".into()),
-            };
-            let motion = matches!(command, Command::Move { .. } | Command::Initialize { .. });
-            if let Err(error) = app.controller.send_remote(id.clone(), command) {
-                if let Some(settings) = selection_rollback {
-                    app.settings = settings;
-                    app.hydrate();
-                }
-                return Err(error.into());
-            }
-            if motion {
-                app.snapshot.running = true;
             }
         }
         let receipt = json!({"id":id,"status":"running","rows":0,"output":output,"error":null,"error_code":null,"stop_requested":false,"stop_reason":null,"kind":action});
@@ -1067,7 +1069,7 @@ mod tests {
         app.inventory
             .project_selected(&mut app.settings.raw)
             .unwrap();
-        let request = json!({"action":"select_devices", "scanner":"scanner-2",
+        let request = json!({"action":"select_devices", "workflow":"srkr", "scanner":"scanner-2",
             "request_id":uuid::Uuid::new_v4().to_string()});
         let receipt = call(&mut bridge, &mut app, &request).unwrap();
         finish(&mut app, &mut bridge);
@@ -1077,6 +1079,20 @@ mod tests {
         assert_eq!(app.inventory.selected.delay, original.delay);
         assert_eq!(app.inventory.selected.lockin, original.lockin);
         assert_eq!(app.plan().zero[1..], [21., -3.]);
+        assert_eq!(
+            app.settings
+                .workflow_device_ids(Workflow::Srkr)
+                .unwrap()
+                .scanner,
+            "scanner-2"
+        );
+        assert_eq!(
+            app.settings
+                .workflow_device_ids(Workflow::SignalMonitor)
+                .unwrap()
+                .scanner,
+            original.scanner
+        );
         assert!(!app.any_hardware_connected());
         assert_eq!(call(&mut bridge, &mut app, &request).unwrap(), result);
         assert!(
@@ -1219,7 +1235,7 @@ mod tests {
             view["profile"]["measurements"]["srkr"]["output"]["filename"],
             "field_1T"
         );
-        assert_eq!(app.workflow, Workflow::Srkr);
+        assert_eq!(app.workflow, Workflow::SignalMonitor);
         assert_eq!(app.plans[4].zero, [2., 3., 4.]);
         let read = call(
             &mut bridge,

@@ -8,12 +8,14 @@ This is feature-development evidence, not a hardware qualification or release re
 
 | Check / 検証 | Result / 結果 |
 | --- | --- |
-| Rust workspace tests | 339 passed, 0 failed / 成功339、失敗0 |
+| Rust workspace tests | 355 passed, 0 failed / 成功355、失敗0 |
 | Python API, notebook, packaging and layout-validator tests | 67 passed, 0 failed / 成功67、失敗0 |
 | Rust formatting and Clippy (`--workspace --all-targets -- -D warnings`) | Passed / 成功 |
 | Desktop debug build, macOS | Passed / 成功 |
 | Actual GUI, five measurement tabs × expanded/scrolled device panels | 10 geometry captures passed; fixed outer widths, Config rows, position fields and Output/Run margins retained / 10画面成功。外側の固定幅、Config行、位置欄、Output/Run余白を維持 |
 | Alignment synthetic GUI | 2 delay panels at 1566×700 and 4 scanner panels at 1566×820 logical pixels, Retina 2×; visually inspected / 合成データで表示・目視確認 |
+| Measurement Settings and inactive devices | Settings at 1566×700, inactive cards at 1566×900, Retina 2×; current captures visually inspected / Settingsと未選択機器の表示を目視確認 |
+| Compiled GUI + Python client | Demo TRKR and SRKR, 3 rows each: workflow-specific selection, zeros, saved/reloaded profile, `.run.json` device IDs, and GUI survival after Python close verified / 実GUIのDemoで測定別選択・ゼロ・保存と再読込・機器ID・Python終了後のGUI存続を確認 |
 | Physical instruments / 実機 | Not operated or qualified / 未操作・未検証 |
 
 Focused regressions cover shared serial-port ownership, per-axis SHOT302GS Stop,
@@ -37,3 +39,15 @@ Direction応答による未接続軸の設定上書きは修正済みです。
 
 See [the bilingual guide and screenshots](../guides/multiple-devices-alignment.md).
 使い方と画面は[英日ガイド](../guides/multiple-devices-alignment.md)を参照してください。
+
+The measurement Settings follow-up also covers independent workflow bindings,
+device-owned coordinate zeros, staged OK/Cancel edits, correlated selection
+rollback, and history-tab changes during acquisition. Independent review
+confirmed the idle-restore retry guard and pending-selection UI lock. The actual
+GUI Demo check found and corrected stale device IDs in run metadata after a
+cross-workflow switch; Demo now records the requested run configuration.
+
+測定Settingsの追加では、測定別の機器割当、装置ごとのゼロ位置、OK/Cancel、切替失敗時の
+復帰、測定中の履歴タブ切替を検証しました。独立レビューでは、自動復帰失敗時の再試行防止と
+切替確認中の操作制限を確認しています。実GUIのDemo試験で、測定切替後のメタデータに
+前の機器IDが残る問題を修正し、その測定で指定した設定を記録することを確認しました。

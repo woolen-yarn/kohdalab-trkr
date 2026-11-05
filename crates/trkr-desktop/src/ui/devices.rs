@@ -52,7 +52,10 @@ impl App {
             ));
             self.inventory.selected.scanner = "scanner-1".into();
         }
-        for (axis, value) in ["t_ps", "x_um", "y_um"].into_iter().zip(self.plan().zero) {
+        for (axis, value) in ["t_ps", "x_um", "y_um"]
+            .into_iter()
+            .zip(self.selected_zero())
+        {
             Self::path_set(
                 &mut self.settings.raw,
                 &["measurements", "move_abs", "zero", axis],
@@ -61,21 +64,6 @@ impl App {
         }
         self.inventory.absorb_selected(&self.settings.raw)?;
         self.inventory.project_selected(&mut self.settings.raw)
-    }
-
-    fn inventory_config(&self) -> Result<engine::HardwareConfig, String> {
-        let lockin = self.inventory.lockin()?;
-        let scanner = self.inventory.scanner()?;
-        Ok(engine::HardwareConfig {
-            device_ids: self.inventory.selected.clone(),
-            model: lockin.model,
-            address: lockin.address,
-            motion: trkr_motion::MotionConfig {
-                delay: self.inventory.delay()?.map(|d| d.config.clone()),
-                x: scanner.and_then(|s| s.x.clone()),
-                y: scanner.and_then(|s| s.y.clone()),
-            },
-        })
     }
 
     pub(super) fn device_selector(
@@ -122,6 +110,7 @@ impl App {
                     |ui| {
                         egui::ComboBox::from_id_salt(("device-instance", salt))
                             .width((area.width() - 84.).max(100.))
+                            .truncate()
                             .selected_text(
                                 entries
                                     .iter()
@@ -140,38 +129,225 @@ impl App {
             });
         });
         if selected != old || add {
-            self.sync();
-            if let Err(error) = self.sync_inventory() {
-                self.note(error);
-                return;
+            self.select_device(class, selected, add);
+        }
+    }
+
+    fn select_device(&mut self, class: DeviceClass, mut selected: String, add: bool) {
+        if let Err(error) = self.sync_all_plans() {
+            self.note(error);
+            return;
+        }
+        let previous_settings = self.settings.clone();
+        let result = (|| {
+            let previous_ids = self.inventory.selected.clone();
+            if add {
+                selected = self.add_device(class)?;
             }
-            let previous_settings = self.settings.clone();
-            let result = (|| {
-                if add {
-                    selected = self.add_device(class)?;
-                }
-                match class {
-                    DeviceClass::Lockin => self.inventory.selected.lockin = selected,
-                    DeviceClass::Delay => self.inventory.selected.delay = selected,
-                    DeviceClass::Scanner => self.inventory.selected.scanner = selected,
-                }
-                self.inventory.project_selected(&mut self.settings.raw)?;
-                self.hydrate();
-                self.controller.send(Command::Select {
-                    config: self.inventory_config()?,
-                })?;
-                self.live.clear();
-                self.snapshot.signal = None;
-                self.snapshot.devices = [false; 4];
-                self.snapshot.position = Default::default();
-                Ok::<(), String>(())
-            })();
-            if let Err(error) = result {
-                self.settings = previous_settings;
-                self.hydrate();
-                self.note(error);
+            match class {
+                DeviceClass::Lockin => self.inventory.selected.lockin = selected,
+                DeviceClass::Delay => self.inventory.selected.delay = selected,
+                DeviceClass::Scanner => self.inventory.selected.scanner = selected,
+            }
+            self.inventory.project_selected(&mut self.settings.raw)?;
+            let ids = self.inventory.selected.clone();
+            let mut settings = self.settings.clone();
+            // Materialize other workflows against the old selection, not
+            // the newly added/selected entry.
+            if !self.alignment_tab {
+                let mut inventory = self.inventory.clone();
+                inventory.selected = previous_ids;
+                inventory.project_selected(&mut settings.raw)?;
+                settings.set_workflow_devices(self.workflow, ids)?;
+                settings.select_workflow(self.workflow)?;
+            } else {
+                let mut inventory = self.inventory.clone();
+                inventory.selected = previous_ids.clone();
+                inventory.project_selected(&mut settings.raw)?;
+                settings.set_workflow_devices(self.workflow, previous_ids)?;
+                self.inventory.project_selected(&mut settings.raw)?;
+            }
+            self.settings = previous_settings.clone();
+            self.hydrate();
+            self.request_device_selection(settings, self.workflow, None)
+        })();
+        if let Err(error) = result {
+            self.settings = previous_settings;
+            self.hydrate();
+            self.note(error);
+        }
+    }
+
+    pub(super) fn device_highlighted(&self, kind: &str, id: &str) -> bool {
+        if self.alignment_tab && !self.measurement_pending {
+            return self.alignment.highlights(kind, id);
+        }
+        let workflow = if self.measurement_pending {
+            self.active_workflow
+        } else {
+            self.workflow
+        };
+        let fallback = match kind {
+            "lockin" => &self.inventory.selected.lockin,
+            "delay" => &self.inventory.selected.delay,
+            "scanner" => &self.inventory.selected.scanner,
+            _ => return false,
+        };
+        // Bindings are validated at load/edit time. Rendering a small badge
+        // must not deserialize and validate the whole inventory every frame.
+        self.settings.raw["measurements"][workflow.key()]["device_ids"][kind]
+            .as_str()
+            .unwrap_or(fallback)
+            == id
+    }
+
+    pub(super) fn inactive_device_cards(
+        &mut self,
+        ui: &mut egui::Ui,
+        origin: egui::Pos2,
+        width: f32,
+    ) -> f32 {
+        let mut entries = Vec::new();
+        for d in &self.inventory.lockins {
+            if d.id != self.inventory.selected.lockin {
+                entries.push((
+                    DeviceClass::Lockin,
+                    "lockin",
+                    d.id.clone(),
+                    d.name.clone(),
+                    format!("{} · GPIB {}", d.model.name(), d.address),
+                ));
             }
         }
+        for d in &self.inventory.delays {
+            if d.id != self.inventory.selected.delay {
+                entries.push((
+                    DeviceClass::Delay,
+                    "delay",
+                    d.id.clone(),
+                    d.name.clone(),
+                    d.config
+                        .stage
+                        .clone()
+                        .unwrap_or_else(|| d.config.controller.clone()),
+                ));
+            }
+        }
+        for s in &self.inventory.scanners {
+            if s.id != self.inventory.selected.scanner {
+                let label =
+                    s.x.as_ref()
+                        .or(s.y.as_ref())
+                        .map(|c| c.controller.as_str())
+                        .unwrap_or("X / Y");
+                entries.push((
+                    DeviceClass::Scanner,
+                    "scanner",
+                    s.id.clone(),
+                    s.name.clone(),
+                    label.into(),
+                ));
+            }
+        }
+        let mut y = origin.y;
+        let mut chosen = None;
+        for (class, kind, id, name, label) in entries {
+            let active = self.device_highlighted(kind, &id);
+            let connected = self
+                .snapshot
+                .registered_devices
+                .iter()
+                .find(|d| d.kind == kind && d.id == id)
+                .is_some_and(|d| d.connected.iter().any(|v| *v));
+            let area = precision::rect(origin.x, y, width, 76.);
+            precision::record(&mut self.geometry, &format!("inventory_{id}"), area);
+            ui.painter().rect(
+                area,
+                10.,
+                if active {
+                    PANEL
+                } else {
+                    PANEL.gamma_multiply(0.9)
+                },
+                Stroke::new(
+                    1_f32,
+                    if active {
+                        BORDER
+                    } else {
+                        BORDER.gamma_multiply(0.62)
+                    },
+                ),
+                egui::StrokeKind::Inside,
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(area.shrink2(Vec2::new(10., 6.)))
+                    .layout(egui::Layout::top_down(egui::Align::Min)),
+                |ui| {
+                    let text = if active {
+                        TEXT
+                    } else {
+                        Color32::from_rgb(153, 157, 168)
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Label::new(egui::RichText::new(&name).color(text)).truncate())
+                            .on_hover_text(&name);
+                        ui.label(
+                            egui::RichText::new(if active {
+                                if self.alignment_tab {
+                                    "ALIGNMENT"
+                                } else {
+                                    "IN USE"
+                                }
+                            } else {
+                                "INACTIVE"
+                            })
+                            .size(9.)
+                            .color(text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .add_enabled(
+                                    !self.snapshot.running
+                                        && !self.controller.has_pending()
+                                        && !self.demo_viewer,
+                                    egui::Button::new(if self.alignment_tab {
+                                        "Details"
+                                    } else {
+                                        "Use"
+                                    })
+                                    .small(),
+                                )
+                                .clicked()
+                            {
+                                chosen = Some((class, id.clone()));
+                            }
+                        });
+                    });
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(label).small().color(text)).truncate(),
+                    );
+                    ui.label(
+                        egui::RichText::new(if connected {
+                            "Connected"
+                        } else {
+                            "Disconnected"
+                        })
+                        .small()
+                        .color(if connected {
+                            Color32::from_rgb(93, 196, 146)
+                        } else {
+                            text
+                        }),
+                    );
+                },
+            );
+            y += 84.;
+        }
+        if let Some((class, id)) = chosen {
+            self.select_device(class, id, false);
+        }
+        y
     }
 
     fn add_device(&mut self, class: DeviceClass) -> Result<String, String> {

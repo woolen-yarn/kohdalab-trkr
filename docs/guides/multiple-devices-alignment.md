@@ -16,18 +16,60 @@ movement controls are disabled. / 2026-11-05の開発版・macOS Retina 2倍で�
 
 ## Connections and measurement selection / 接続と測定対象
 
+Each measurement tab has **Settings… → Measurement Settings**, with **Devices**
+and **Timing** sections. Signal Monitor, TRKR, SRKR, STRKR and SRKR 2D each remember
+one lock-in, one delay stage and one X/Y scanner pair. **OK** applies the staged
+choice; **Cancel** discards it. Use **Config → Save** to persist it to JSON.
+The existing Wait/Interval control and the Timing section edit the same value.
+
+各測定タブの **Settings… → Measurement Settings** に **Devices** と **Timing** を
+まとめています。Signal Monitor・TRKR・SRKR・STRKR・SRKR 2Dごとに、ロックイン・
+遅延ステージ・X/Yスキャナ組を各1台ずつ記憶します。**OK** で反映し、**Cancel** で
+編集を破棄します。JSONへの保存は **Config → Save** です。従来のWait/Interval欄と
+Timingは同じ値を編集します。
+
+Selected devices retain their normal card brightness. Other stored devices are
+shown as compact **INACTIVE** cards with their actual connection status; **Use**
+assigns one to the visible measurement tab. Selection does not disconnect other
+instruments. Each device retains its own calibration and coordinate zero; tabs
+using the same device share that zero. The spatial rotation angle remains shared.
+
+選択された機器は通常の明るさ、他の登録機器は控えめな **INACTIVE** カードで表示し、
+実際の接続状態を併記します。**Use** で表示中の測定タブに割り当てられます。
+未選択機器の接続は維持されます。校正・座標ゼロは装置ごとに保持し、同じ装置を使う
+測定タブはゼロを共有します。空間座標の回転角は従来どおり共通です。
+
+Viewing another plot tab during a run keeps the running measurement's instruments
+selected and highlighted. The viewed tab's selection is restored when idle.
+Selection is locked while it is being confirmed by the worker; failure restores
+the previous choice and reports the error without repeatedly retrying.
+Alignment panel bindings stay independent; the visible Alignment panels determine
+the highlighted motion devices. **Details** opens another device's left-side
+controls without changing measurement assignments.
+
+測定中に別タブのグラフを見ても、実行中の機器と強調表示は維持されます。処理終了後に
+表示中タブの機器へ切り替わります。切替確認中は編集を制限し、失敗時は元に戻して
+エラーを表示します。同じ失敗を自動で繰り返しません。Alignmentのパネル割当は独立で、
+表示中のAlignmentパネルに対応する機器を強調します。**Details** は測定の割当を変えず、
+別の機器の左パネル操作を開きます。
+
+![Measurement Settings, synthetic development capture / 測定設定・開発版の合成画面](../images/measurement-settings-development.png)
+
+![Inactive devices in the scrollable rail, synthetic development capture / 左パネルの未選択機器・開発版の合成画面](../images/inactive-devices-development.png)
+
 Use **+ Add** above each device card to register another lock-in, delay stage,
 or X/Y scanner pair. Configure its address/port, controller, actuator and axis.
-The selector above each card chooses the **one device of that type used for
-measurement**. Switching the selector retains other connections. Scanner X and
+The selector above each card is a shortcut to the **visible tab's device choice**
+(or the device being inspected in Alignment). Switching retains other connections. Scanner X and
 Y are together in one Scanner group; they can use separate CONEX-CC ports or the
 two U/V hardware axes of a shared CONEX-AGAP connection. Disconnect a device
 before changing its controller, port, calibration or axis. Direction has a
 separate live update that preserves the displayed coordinate.
 
 各機器カード上部の **+ Add** でロックイン、遅延ステージ、X/Yスキャナ組を追加し、
-アドレス・ポート・制御器・アクチュエータ・軸を設定します。各カード上部の選択が
-**測定に使う各種類1台**を指定します。切替前の機器の接続は維持されます。
+アドレス・ポート・制御器・アクチュエータ・軸を設定します。各カード上部からも
+**表示中タブの測定機器**を選べます（Alignmentでは詳細を表示する機器の選択）。
+切替前の機器の接続は維持されます。
 ScannerはX/Yを1組にまとめ、CONEX-CCの別々のポート、またはCONEX-AGAPの
 共通接続の装置軸U/Vを指定できます。装置軸U/Vは、回転した測定座標u/vとは別です。
 制御器・ポート・校正・軸を変更するときは、その機器を切断してから設定します。
@@ -134,14 +176,17 @@ configuration, round trips, direction and effective motion calibration.
 装置の生の読取値はraw CSV、選択ID・設定・往復数・方向・実効校正は`.run.json`に
 記録します。
 
-Python GUI clients can use `gui.select_devices(scanner="scanner-2")` and wait
-for the returned receipt before starting the next run. Omitted kinds retain
-their selection. `gui.connect()` / `gui.disconnect()` with no device list apply
-to the inventory; an explicit legacy list still addresses the selected devices.
-The common API advertises `control.select_devices` for the same operation.
+Python GUI clients can use `gui.select_devices(workflow="srkr", scanner="scanner-2")`
+and wait for the returned receipt before starting the next run. Omitted kinds
+retain that measurement's selection. When `workflow` is omitted, the visible
+measurement tab is used. `gui.connect()` / `gui.disconnect()` with no device
+list apply to the inventory; an explicit legacy list still addresses the
+selected devices. The common API advertises `control.select_devices` for the
+same operation.
 
-Pythonからは `gui.select_devices(scanner="scanner-2")` の完了を待って次の測定を
-開始できます。省略した種類の選択は維持します。機器リストを省略した
+Pythonからは `gui.select_devices(workflow="srkr", scanner="scanner-2")` の完了を
+待って次の測定を開始できます。省略した種類の選択はその測定で維持します。
+`workflow`を省略した場合は表示中の測定タブを使います。機器リストを省略した
 `gui.connect()` / `gui.disconnect()` は一覧全体に適用し、従来の機器リストを
 明示した場合は選択中の機器を操作します。共通APIの同じ操作名は
 `control.select_devices`です。

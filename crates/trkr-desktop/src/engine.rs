@@ -1272,7 +1272,12 @@ impl Session {
                 }
             });
         }
-        let context_config = self.config.as_ref().unwrap_or(&requested_config);
+        // Demo does not connect/select a hardware rig. Its run provenance must
+        // still describe this command, not a previously inspected device group.
+        let context_config = match source {
+            Source::Demo => &requested_config,
+            Source::Gpib { .. } => self.config.as_ref().unwrap_or(&requested_config),
+        };
         let context_result = preparation_error.map_or(Ok(()), Err).and_then(|()| {
             csv.as_mut()
                 .map(|recording| {

@@ -46,6 +46,191 @@ fn app_bundle_uses_resources_and_portable_uses_executable_directory() {
 }
 
 use super::*;
+
+fn settings_with_device_inventory() -> Settings {
+    let mut raw = Settings::default().raw;
+    let mut inventory = Inventory::from_profile(&raw).unwrap();
+
+    let mut lockin = inventory.lockins[0].clone();
+    lockin.id = "lockin-2".into();
+    lockin.name = "Lock-in 2".into();
+    lockin.address = 13;
+    inventory.lockins.push(lockin);
+
+    let mut delay = inventory.delays[0].clone();
+    delay.id = "delay-2".into();
+    delay.name = "Delay 2".into();
+    delay.config.port = "COM7".into();
+    delay.zero_ps = 20.;
+    inventory.delays.push(delay);
+
+    let mut scanner = inventory.scanners[0].clone();
+    scanner.id = "scanner-2".into();
+    scanner.name = "Scanner 2".into();
+    scanner.x.as_mut().unwrap().port = "COM12".into();
+    scanner.y.as_mut().unwrap().port = "COM12".into();
+    scanner.zero_um = [30., 40.];
+    inventory.scanners.push(scanner);
+    inventory.project_selected(&mut raw).unwrap();
+    Settings::from_value(raw).unwrap()
+}
+
+fn alternate_device_ids() -> DeviceIds {
+    DeviceIds {
+        lockin: "lockin-2".into(),
+        delay: "delay-2".into(),
+        scanner: "scanner-2".into(),
+    }
+}
+
+#[test]
+fn workflow_devices_materialize_independently_from_legacy_selection() {
+    let mut settings = settings_with_device_inventory();
+    let original = settings.workflow_device_ids(Workflow::Srkr).unwrap();
+    settings
+        .set_workflow_devices(Workflow::Trkr, alternate_device_ids())
+        .unwrap();
+
+    assert_eq!(
+        settings.workflow_device_ids(Workflow::Trkr).unwrap(),
+        alternate_device_ids()
+    );
+    assert_eq!(
+        settings.workflow_device_ids(Workflow::Srkr).unwrap(),
+        original
+    );
+    for workflow in Workflow::ALL {
+        assert!(settings.raw["measurements"][workflow.key()]["device_ids"].is_object());
+    }
+    assert_eq!(
+        settings.raw["device_inventory"]["selected"]["lockin"],
+        "lockin-1"
+    );
+
+    settings.select_workflow(Workflow::Trkr).unwrap();
+    assert_eq!(
+        settings.hardware().unwrap().device_ids,
+        alternate_device_ids()
+    );
+    assert_eq!(
+        settings.raw["instruments"]["lockin"]["main"]["resource"],
+        "GPIB0::13::INSTR"
+    );
+}
+
+#[test]
+fn workflow_plan_zeros_follow_the_selected_device_group() {
+    let mut settings = settings_with_device_inventory();
+    settings
+        .set_workflow_devices(Workflow::Trkr, alternate_device_ids())
+        .unwrap();
+    let mut plan = settings.plan(Workflow::Trkr).unwrap();
+    assert_eq!(plan.zero, [20., 30., 40.]);
+    plan.zero = [21., 31., 41.];
+    settings.set_plan(&plan).unwrap();
+
+    assert_eq!(settings.plan(Workflow::Trkr).unwrap().zero, [21., 31., 41.]);
+    assert_eq!(
+        settings.plan(Workflow::Srkr).unwrap().zero,
+        [-122., 61.5756, 477.0136]
+    );
+    assert_eq!(
+        settings.raw["device_inventory"]["scanners"][1]["zero_um"],
+        json!([31., 41.])
+    );
+}
+
+#[test]
+fn workflows_sharing_a_device_share_its_zero_coordinates() {
+    let mut settings = settings_with_device_inventory();
+    settings
+        .set_workflow_devices(Workflow::Trkr, alternate_device_ids())
+        .unwrap();
+    settings
+        .set_workflow_devices(Workflow::Srkr, alternate_device_ids())
+        .unwrap();
+    let mut plan = settings.plan(Workflow::Trkr).unwrap();
+    plan.zero = [23., 33., 43.];
+    settings.set_plan(&plan).unwrap();
+    assert_eq!(settings.plan(Workflow::Srkr).unwrap().zero, [23., 33., 43.]);
+}
+
+#[test]
+fn workflow_device_ids_roundtrip_and_reject_missing_inventory_members() {
+    let mut settings = settings_with_device_inventory();
+    settings
+        .set_workflow_devices(Workflow::Strkr, alternate_device_ids())
+        .unwrap();
+    let reloaded = Settings::from_value(settings.raw.clone()).unwrap();
+    assert_eq!(
+        reloaded.workflow_device_ids(Workflow::Strkr).unwrap(),
+        alternate_device_ids()
+    );
+
+    let mut invalid = reloaded.raw.clone();
+    invalid["measurements"]["trkr"]["device_ids"]["scanner"] = json!("missing");
+    assert!(
+        Settings::from_value(invalid)
+            .unwrap_err()
+            .contains("does not exist")
+    );
+}
+
+#[test]
+fn legacy_profile_keeps_its_implicit_device_group() {
+    let settings = Settings::default();
+    assert!(settings.raw.get("device_inventory").is_none());
+    assert_eq!(
+        settings.workflow_device_ids(Workflow::Trkr).unwrap(),
+        DeviceIds {
+            lockin: "lockin-1".into(),
+            delay: "delay-1".into(),
+            scanner: "scanner-1".into(),
+        }
+    );
+    assert_eq!(
+        settings.plan(Workflow::Trkr).unwrap().zero,
+        [-122., 61.5756, 477.0136]
+    );
+}
+
+#[test]
+fn device_selection_materialization_creates_omitted_legacy_workflows() {
+    let mut settings = settings_with_device_inventory();
+    settings.raw["measurements"]
+        .as_object_mut()
+        .unwrap()
+        .remove("strkr");
+    let mut settings = Settings::from_value(settings.raw).unwrap();
+
+    settings
+        .set_workflow_devices(Workflow::Trkr, alternate_device_ids())
+        .unwrap();
+    for workflow in Workflow::ALL {
+        assert!(settings.raw["measurements"][workflow.key()].is_object());
+        assert!(settings.raw["measurements"][workflow.key()]["device_ids"].is_object());
+    }
+}
+
+#[test]
+fn explicit_device_ids_are_complete_and_valid_even_without_inventory() {
+    let mut raw = Settings::default().raw;
+    raw["measurements"]["trkr"]["device_ids"] =
+        json!({"lockin":"lockin-1", "delay":"delay-1", "scanner":"missing"});
+    assert!(
+        Settings::from_value(raw)
+            .unwrap_err()
+            .contains("does not exist")
+    );
+
+    let mut raw = Settings::default().raw;
+    raw["measurements"]["trkr"]["device_ids"] = json!({"lockin":"lockin-1"});
+    assert!(
+        Settings::from_value(raw)
+            .unwrap_err()
+            .contains("must include a string delay")
+    );
+}
 #[test]
 fn profile_plan_roundtrip_preserves_custom_keys() {
     let mut s = Settings::default();

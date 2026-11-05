@@ -79,6 +79,21 @@ impl Default for AlignmentUi {
 }
 
 impl AlignmentUi {
+    pub(super) fn highlights(&self, kind: &str, id: &str) -> bool {
+        match (self.page, kind) {
+            (AlignmentPage::Delay, "delay") => self
+                .delay_panels
+                .iter()
+                .flatten()
+                .any(|selected| selected == id),
+            (AlignmentPage::Scanner, "scanner") => self
+                .scanner_panels
+                .iter()
+                .flatten()
+                .any(|selected| selected == id),
+            _ => false,
+        }
+    }
     fn delay_id(&mut self, slot: usize, available: &[DeviceOption]) -> Option<String> {
         if self.delay_panels[slot]
             .as_ref()
@@ -173,25 +188,6 @@ impl App {
     /// selected.  It intentionally keeps all configuration and device cards
     /// in their normal left/right panels.
     pub(super) fn alignment_view(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
-        // Measurement offsets are editable in the left panel, including when
-        // Alignment is visible. Keep both views on the same selected zero.
-        let zero = self.plan().zero;
-        if let Some(entry) = self
-            .inventory
-            .delays
-            .iter_mut()
-            .find(|e| e.id == self.inventory.selected.delay)
-        {
-            entry.zero_ps = zero[0];
-        }
-        if let Some(entry) = self
-            .inventory
-            .scanners
-            .iter_mut()
-            .find(|e| e.id == self.inventory.selected.scanner)
-        {
-            entry.zero_um = [zero[1], zero[2]];
-        }
         let locked = self.demo_viewer
             || self.snapshot.running
             || self.controller.has_pending()

@@ -1,7 +1,11 @@
 //! Reads and updates the existing Python JSON profiles without dropping user keys.
 pub(crate) mod compatibility;
 
-use crate::{engine::HardwareConfig, lockin::Model};
+use crate::{
+    engine::HardwareConfig,
+    inventory::{DeviceIds, Inventory},
+    lockin::Model,
+};
 use compatibility::{
     normalize_measurement_alias, normalize_profile_aliases, validate_profile_shape,
 };
@@ -199,8 +203,10 @@ impl Settings {
         validate_application(&raw)?;
         normalize_measurement_alias(&mut raw);
         validate_profile_shape(&raw)?;
+        let inventory = Inventory::from_profile(&raw)?;
+        validate_workflow_device_ids(&raw, &inventory)?;
         if raw.get("device_inventory").is_some() {
-            crate::inventory::Inventory::from_profile(&raw)?.project_selected(&mut raw)?;
+            inventory.project_selected(&mut raw)?;
         }
 
         normalize_profile_aliases(&mut raw);
@@ -301,14 +307,51 @@ impl Settings {
             motion,
         })
     }
+
+    /// Return the instrument group recorded for a workflow. Profiles written
+    /// before multi-device support implicitly use the current legacy group.
+    pub fn workflow_device_ids(&self, workflow: Workflow) -> Result<DeviceIds, String> {
+        let inventory = Inventory::from_profile(&self.raw)?;
+        device_ids_for_workflow(&self.raw, workflow, &inventory)
+    }
+
+    /// Store a workflow-local instrument group without selecting it for the
+    /// live worker. The first edit materializes every workflow's legacy
+    /// fallback, so later changes cannot silently retarget another workflow.
+    pub fn set_workflow_devices(
+        &mut self,
+        workflow: Workflow,
+        device_ids: DeviceIds,
+    ) -> Result<(), String> {
+        let mut raw = self.raw.clone();
+        let mut inventory = Inventory::from_profile(&raw)?;
+        let fallback = current_inventory_selection(&raw, &inventory)?;
+        inventory.selected = device_ids.clone();
+        inventory.validate()?;
+        materialize_workflow_device_ids(&mut raw, &fallback)?;
+        set_workflow_device_ids(&mut raw, workflow, &device_ids)?;
+        inventory.selected = fallback;
+        inventory.project_selected(&mut raw)?;
+        *self = Self::from_value(raw)?;
+        Ok(())
+    }
+
+    /// Make one workflow's stored instrument group the canonical projection
+    /// used by the existing worker. This has no I/O and is safe to stage before
+    /// a subsequent worker Select command.
+    pub fn select_workflow(&mut self, workflow: Workflow) -> Result<(), String> {
+        let mut raw = self.raw.clone();
+        let mut inventory = Inventory::from_profile(&raw)?;
+        inventory.selected = device_ids_for_workflow(&raw, workflow, &inventory)?;
+        inventory.validate()?;
+        inventory.project_selected(&mut raw)?;
+        *self = Self::from_value(raw)?;
+        Ok(())
+    }
+
     pub fn plan(&self, workflow: Workflow) -> Result<Plan, String> {
         let v = &self.raw["measurements"][workflow.key()];
-        let z = &self.raw["measurements"]["move_abs"]["zero"];
-        let zero = [
-            number(z, "t_ps", 0.)?,
-            number(z, "x_um", 0.)?,
-            number(z, "y_um", 0.)?,
-        ];
+        let (zero, coordinate_raw) = self.workflow_zero_and_profile(workflow)?;
         let scan = &v["scan"];
         let fast = match workflow {
             Workflow::SignalMonitor | Workflow::Trkr => Axis::T,
@@ -353,7 +396,7 @@ impl Settings {
             v["coordinate"].as_str().unwrap_or("measurement"),
             workflow,
             fast,
-            &self.raw,
+            &coordinate_raw,
         )?;
         let returns = match v.get("return_to_zero") {
             Some(Value::Bool(b)) => [*b, *b],
@@ -396,9 +439,7 @@ impl Settings {
         p.targets()?;
         self.raw["experiment"] = json!(p.experiment);
         self.raw["coordinates"]["spatial"]["theta_deg"] = json!(p.theta_deg);
-        for (i, key) in ["t_ps", "x_um", "y_um"].into_iter().enumerate() {
-            self.raw["measurements"]["move_abs"]["zero"][key] = json!(p.zero[i]);
-        }
+        self.set_workflow_zero(p.workflow, p.zero)?;
         let v = &mut self.raw["measurements"][p.workflow.key()];
         if !v.is_object() {
             *v = json!({});
@@ -435,6 +476,156 @@ impl Settings {
         }
         Ok(())
     }
+
+    fn workflow_zero_and_profile(&self, workflow: Workflow) -> Result<([f64; 3], Value), String> {
+        if self.raw.get("device_inventory").is_none() {
+            let z = &self.raw["measurements"]["move_abs"]["zero"];
+            return Ok((
+                [
+                    number(z, "t_ps", 0.)?,
+                    number(z, "x_um", 0.)?,
+                    number(z, "y_um", 0.)?,
+                ],
+                self.raw.clone(),
+            ));
+        }
+        let mut inventory = Inventory::from_profile(&self.raw)?;
+        inventory.selected = self.workflow_device_ids(workflow)?;
+        inventory.validate()?;
+        let zero = [
+            inventory.delay()?.map(|entry| entry.zero_ps).unwrap_or(0.),
+            inventory
+                .scanner()?
+                .map(|entry| entry.zero_um[0])
+                .unwrap_or(0.),
+            inventory
+                .scanner()?
+                .map(|entry| entry.zero_um[1])
+                .unwrap_or(0.),
+        ];
+        let mut raw = self.raw.clone();
+        inventory.project_selected(&mut raw)?;
+        Ok((zero, raw))
+    }
+
+    fn set_workflow_zero(&mut self, workflow: Workflow, zero: [f64; 3]) -> Result<(), String> {
+        if self.raw.get("device_inventory").is_none() {
+            for (i, key) in ["t_ps", "x_um", "y_um"].into_iter().enumerate() {
+                self.raw["measurements"]["move_abs"]["zero"][key] = json!(zero[i]);
+            }
+            return Ok(());
+        }
+        let mut inventory = Inventory::from_profile(&self.raw)?;
+        let current = inventory.selected.clone();
+        let selected = self.workflow_device_ids(workflow)?;
+        if let Some(delay) = inventory
+            .delays
+            .iter_mut()
+            .find(|entry| entry.id == selected.delay)
+        {
+            delay.zero_ps = zero[0];
+        }
+        if let Some(scanner) = inventory
+            .scanners
+            .iter_mut()
+            .find(|entry| entry.id == selected.scanner)
+        {
+            scanner.zero_um = [zero[1], zero[2]];
+        }
+        inventory.selected = current;
+        inventory.validate()?;
+        inventory.project_selected(&mut self.raw)
+    }
+}
+
+fn current_inventory_selection(raw: &Value, inventory: &Inventory) -> Result<DeviceIds, String> {
+    raw.get("device_inventory")
+        .and_then(|value| value.get("selected"))
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("Device selection: {error}"))?
+        .map(Ok)
+        .unwrap_or_else(|| Ok(inventory.selected.clone()))
+}
+
+fn device_ids_for_workflow(
+    raw: &Value,
+    workflow: Workflow,
+    inventory: &Inventory,
+) -> Result<DeviceIds, String> {
+    let Some(value) = raw["measurements"][workflow.key()].get("device_ids") else {
+        return Ok(inventory.selected.clone());
+    };
+    let fields = value
+        .as_object()
+        .ok_or_else(|| format!("{} device_ids must be an object", workflow.name()))?;
+    for field in ["lockin", "delay", "scanner"] {
+        if !fields.get(field).is_some_and(Value::is_string) {
+            return Err(format!(
+                "{} device_ids must include a string {field}",
+                workflow.name()
+            ));
+        }
+    }
+    let ids: DeviceIds = serde_json::from_value(value.clone())
+        .map_err(|error| format!("{} device_ids: {error}", workflow.name()))?;
+    let mut candidate = inventory.clone();
+    candidate.selected = ids.clone();
+    candidate.validate()?;
+    Ok(ids)
+}
+
+fn validate_workflow_device_ids(raw: &Value, inventory: &Inventory) -> Result<(), String> {
+    for workflow in Workflow::ALL {
+        device_ids_for_workflow(raw, workflow, inventory)?;
+    }
+    Ok(())
+}
+
+fn materialize_workflow_device_ids(raw: &mut Value, fallback: &DeviceIds) -> Result<(), String> {
+    for workflow in Workflow::ALL {
+        let measurement = workflow_settings_mut(raw, workflow)?;
+        measurement
+            .entry("device_ids")
+            .or_insert_with(|| json!(fallback));
+    }
+    Ok(())
+}
+
+fn set_workflow_device_ids(
+    raw: &mut Value,
+    workflow: Workflow,
+    device_ids: &DeviceIds,
+) -> Result<(), String> {
+    let measurement = workflow_settings_mut(raw, workflow)?;
+    measurement.insert("device_ids".into(), json!(device_ids));
+    Ok(())
+}
+
+fn workflow_settings_mut(
+    raw: &mut Value,
+    workflow: Workflow,
+) -> Result<&mut serde_json::Map<String, Value>, String> {
+    let root = raw
+        .as_object_mut()
+        .ok_or("Configuration must be a JSON object")?;
+    let measurements = root.entry("measurements").or_insert_with(|| json!({}));
+    if measurements.is_null() {
+        *measurements = json!({});
+    }
+    let measurements = measurements
+        .as_object_mut()
+        .ok_or("Profile /measurements must be an object")?;
+    let settings = measurements
+        .entry(workflow.key())
+        .or_insert_with(|| json!({}));
+    if settings.is_null() {
+        *settings = json!({});
+    }
+    settings
+        .as_object_mut()
+        .ok_or_else(|| format!("{} settings must be an object", workflow.name()))
 }
 
 fn regular_file_exists(path: &Path, label: &str) -> Result<bool, String> {

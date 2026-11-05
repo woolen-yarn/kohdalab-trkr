@@ -2,6 +2,7 @@ mod alignment;
 mod demo;
 mod devices;
 mod eta;
+mod measurement_settings;
 mod remote;
 use crate::{axis_choices, precision};
 use crate::{
@@ -124,6 +125,9 @@ fn edit(ui: &mut egui::Ui, v: &mut String) {
     ui.add(egui::TextEdit::singleline(v).desired_width(ui.available_width().clamp(80.0, 220.0)));
 }
 pub struct App {
+    measurement_settings: Option<measurement_settings::Draft>,
+    pending_device_selection: Option<measurement_settings::PendingSelection>,
+    selection_retry_blocked: Option<(Workflow, crate::inventory::DeviceIds)>,
     inventory: crate::inventory::Inventory,
     alignment: alignment::AlignmentUi,
     alignment_tab: bool,
@@ -252,6 +256,9 @@ impl App {
         p[4].fast = Axis::X;
         p[4].slow = Axis::Y;
         let mut app = Self {
+            measurement_settings: None,
+            pending_device_selection: None,
+            selection_retry_blocked: None,
             inventory: Default::default(),
             alignment: Default::default(),
             alignment_tab: false,
@@ -443,6 +450,20 @@ impl App {
         self.right_collapsed = state == "right-collapsed";
         if state.starts_with("alignment-") {
             self.enable_alignment_preview(state == "alignment-scanner");
+        }
+        if matches!(state, "measurement-settings" | "multiple-devices") {
+            self.enable_alignment_preview(false);
+            self.alignment_tab = false;
+            self.snapshot.registered_devices.clear();
+            for output in &mut self.outputs {
+                output.dir = "demo/runs".into();
+            }
+            self.sync_all_outputs();
+            if state == "measurement-settings" {
+                self.open_measurement_settings();
+            } else {
+                self.devices_scrolled_smoke = true;
+            }
         }
         if let Some(smoke) = &mut self.smoke {
             smoke.layout_only = true;
@@ -720,6 +741,12 @@ impl App {
     }
     fn sync(&mut self) {
         self.settings.normalize_profile_aliases();
+        let theta = self.plan().theta_deg;
+        Self::path_set(
+            &mut self.settings.raw,
+            &["coordinates", "spatial", "theta_deg"],
+            json!(theta),
+        );
         Self::path_set(
             &mut self.settings.raw,
             &["instruments", "lockin", "main", "model"],
@@ -848,10 +875,8 @@ impl App {
     }
     fn sync_all_plans(&mut self) -> Result<(), String> {
         self.sync();
-        // The profile has one shared physical zero.  The currently selected
-        // workflow is its authoritative editor; copying it before validation
-        // prevents a later tab from silently overwriting that edit on Save.
-        sync_shared_coordinates(&mut self.plans, self.workflow);
+        self.sync_inventory()?;
+        self.refresh_plan_coordinates()?;
         for workflow in Workflow::ALL {
             let index = Self::ix(workflow);
             let plan = self.plans[index].clone();
@@ -859,13 +884,11 @@ impl App {
                 .set_plan(&plan)
                 .map_err(|error| format!("{} profile: {error}", workflow.name()))?;
         }
-        self.sync_inventory()?;
+        self.inventory = crate::inventory::Inventory::from_profile(&self.settings.raw)?;
         self.settings.hardware().map(|_| ())
     }
     fn config(&mut self) -> Result<engine::HardwareConfig, String> {
         self.sync();
-        let p = self.plan().clone();
-        self.settings.set_plan(&p)?;
         self.sync_inventory()?;
         self.settings.hardware()
     }
@@ -1024,15 +1047,27 @@ impl App {
         out: Option<PathBuf>,
         remote_id: Option<String>,
     ) -> Result<(), String> {
-        if self.snapshot.running || self.measurement_pending {
+        if self.snapshot.running
+            || self.measurement_pending
+            || self.pending_device_selection.is_some()
+        {
             return Err("A measurement or motion is already running".into());
         }
-        self.sync();
+        self.sync_all_plans()?;
         let mut settings = self.settings.clone();
         settings.set_plan(&plan)?;
+        settings.select_workflow(plan.workflow)?;
         let config = settings.hardware()?;
+        let source = if self.source_demo {
+            Source::Demo
+        } else {
+            Source::Gpib {
+                model: config.model,
+                address: config.address,
+            }
+        };
         let command = Command::Run {
-            source: self.source(),
+            source,
             config,
             plan: plan.clone(),
             output: out.clone(),
@@ -1042,12 +1077,13 @@ impl App {
         } else {
             self.controller.send(command)?;
         }
-        // Commit the accepted plan atomically; all tabs share one zero/theta,
-        // just as they do when the GUI editor switches workflow or saves.
+        // Commit the accepted plan and its device roles together. Run selects
+        // this configuration in the worker before any acquisition or motion.
         self.settings = settings;
-        self.switch_workflow(plan.workflow);
+        self.switch_workflow_view(plan.workflow);
+        self.hydrate();
         self.plans[Self::ix(self.workflow)] = plan.clone();
-        sync_shared_coordinates(&mut self.plans, self.workflow);
+        self.refresh_plan_coordinates()?;
         self.select_plot_axes();
         self.active_live_origin = if self.source_demo {
             engine::ReadingOrigin::Demo
@@ -1186,7 +1222,9 @@ impl App {
                     }
                 }
                 Event::Error(e) => self.note(e),
-                Event::RemoteFinished { .. } => {}
+                Event::RemoteFinished { id, result, .. } => {
+                    self.finish_device_selection(&id, &result)
+                }
             }
         }
     }
@@ -1833,7 +1871,7 @@ impl App {
         let unit = if i == 0 { "ps" } else { "um" };
         let axis = ["t", "x", "y"][i];
         let physical = self.snapshot.position.physical[i];
-        let zero = self.plan().zero[i];
+        let zero = self.selected_zero()[i];
         let corrected = physical.map(|current| current - zero);
         let mut zero_edit = zero;
         let value = |value: Option<f64>| {
@@ -2327,12 +2365,14 @@ impl App {
         if refresh {
             self.refresh_ports();
         }
-        self.pm().zero[i] = zero_edit;
+        if zero_edit != zero {
+            self.set_selected_zero(i, zero_edit);
+        }
         if use_current && let Some(current) = physical {
-            self.pm().zero[i] = current;
+            self.set_selected_zero(i, current);
         }
         if move_corrected {
-            self.manual[i] = self.plan().zero[i] + self.corrected_manual[i];
+            self.manual[i] = self.selected_zero()[i] + self.corrected_manual[i];
             move_to = Some(self.manual[i]);
         }
         if let Some(target) = move_to {
@@ -2444,9 +2484,36 @@ impl App {
         if workflow == self.workflow {
             return;
         }
+        if !self.demo_viewer
+            && !self.snapshot.running
+            && !self.measurement_pending
+            && !self.controller.has_pending()
+            && self.pending_device_selection.is_none()
+        {
+            let result = self.sync_all_plans().and_then(|_| {
+                let ids = self.settings.workflow_device_ids(workflow)?;
+                if ids != self.inventory.selected {
+                    let mut settings = self.settings.clone();
+                    settings.select_workflow(workflow)?;
+                    self.request_device_selection(settings, workflow, None)?;
+                } else {
+                    self.switch_workflow_view(workflow);
+                }
+                Ok::<(), String>(())
+            });
+            if let Err(error) = result {
+                self.note(error);
+            }
+            return;
+        }
+        self.switch_workflow_view(workflow);
+    }
+    fn switch_workflow_view(&mut self, workflow: Workflow) {
+        if workflow == self.workflow {
+            return;
+        }
         let previous = self.workflow;
         if !self.demo_viewer {
-            sync_shared_coordinates(&mut self.plans, previous);
             self.sync_output(previous);
         }
         self.saved_traces[Self::ix(previous)] = std::mem::take(&mut self.trace);
@@ -2585,8 +2652,30 @@ impl App {
             return;
         }
         self.switch_workflow(selected);
-        if selected != plan.workflow {
+        if self.workflow != plan.workflow {
             plan = self.plan().clone();
+        }
+        let settings_rect = rect(area.max.x - 98., area.min.y, 92., 24.);
+        precision::record(
+            &mut self.geometry,
+            "measurement_settings_button",
+            settings_rect,
+        );
+        if ui
+            .scope(|ui| {
+                ui.add_enabled_ui(
+                    !self.demo_viewer
+                        && !running
+                        && !self.controller.has_pending()
+                        && self.pending_device_selection.is_none(),
+                    |ui| ui.put(settings_rect, egui::Button::new("Settings…")),
+                )
+                .inner
+            })
+            .inner
+            .clicked()
+        {
+            self.open_measurement_settings();
         }
         precision::record(&mut self.geometry, "measurement_tabs", area);
         let page = rect(
@@ -3592,6 +3681,7 @@ impl eframe::App for App {
         self.poll_remote();
         self.poll_dialog();
         self.poll_snapshot_copy();
+        self.restore_workflow_devices();
         if !self.alignment_tab
             || self.python_locked()
             || ctx.input(|i| !i.focused || i.viewport().close_requested())
@@ -3628,7 +3718,7 @@ impl eframe::App for App {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(18, 19, 23)))
             .show(ctx, |ui| {
-                if python_locked {
+                if python_locked || self.pending_device_selection.is_some() {
                     ui.disable();
                 }
                 let viewport = ui.max_rect();
@@ -3681,7 +3771,13 @@ impl eframe::App for App {
                                     .auto_shrink([false, false])
                                     .max_height(device_area.height());
                                 if self.devices_scrolled_smoke {
-                                    scroll = scroll.vertical_scroll_offset(200.);
+                                    scroll = scroll.vertical_scroll_offset(
+                                        if self.inventory.scanners.len() > 1 {
+                                            700.
+                                        } else {
+                                            200.
+                                        },
+                                    );
                                 }
                                 scroll.show(ui, |ui| {
                                     if (self.snapshot.running || self.controller.has_pending())
@@ -3698,15 +3794,24 @@ impl eframe::App for App {
                                         precision::rect(origin.x, y, card_width, 26.),
                                     );
                                     y += 30.;
-                                    self.lockin(
-                                        ui,
-                                        precision::rect(
-                                            origin.x,
-                                            y,
-                                            card_width,
-                                            self.device_height(0),
-                                        ),
+                                    let highlighted = self.device_highlighted(
+                                        "lockin",
+                                        &self.inventory.selected.lockin,
                                     );
+                                    ui.scope(|ui| {
+                                        if !highlighted {
+                                            ui.multiply_opacity(0.55);
+                                        }
+                                        self.lockin(
+                                            ui,
+                                            precision::rect(
+                                                origin.x,
+                                                y,
+                                                card_width,
+                                                self.device_height(0),
+                                            ),
+                                        );
+                                    });
                                     y += self.device_height(0) + 8.;
                                     self.device_selector(
                                         ui,
@@ -3714,18 +3819,27 @@ impl eframe::App for App {
                                         precision::rect(origin.x, y, card_width, 26.),
                                     );
                                     y += 30.;
-                                    self.motion(
-                                        ui,
-                                        0,
-                                        "Delay Stage",
-                                        Device::T,
-                                        precision::rect(
-                                            origin.x,
-                                            y,
-                                            card_width,
-                                            self.device_height(1),
-                                        ),
+                                    let highlighted = self.device_highlighted(
+                                        "delay",
+                                        &self.inventory.selected.delay,
                                     );
+                                    ui.scope(|ui| {
+                                        if !highlighted {
+                                            ui.multiply_opacity(0.55);
+                                        }
+                                        self.motion(
+                                            ui,
+                                            0,
+                                            "Delay Stage",
+                                            Device::T,
+                                            precision::rect(
+                                                origin.x,
+                                                y,
+                                                card_width,
+                                                self.device_height(1),
+                                            ),
+                                        );
+                                    });
                                     y += self.device_height(1) + 8.;
                                     self.device_selector(
                                         ui,
@@ -3733,58 +3847,72 @@ impl eframe::App for App {
                                         precision::rect(origin.x, y, card_width, 26.),
                                     );
                                     y += 30.;
-                                    let scanner_area = precision::rect(
-                                        origin.x,
-                                        y,
+                                    let highlighted = self.device_highlighted(
+                                        "scanner",
+                                        &self.inventory.selected.scanner,
+                                    );
+                                    ui.scope(|ui| {
+                                        if !highlighted {
+                                            ui.multiply_opacity(0.55);
+                                        }
+                                        let scanner_area = precision::rect(
+                                            origin.x,
+                                            y,
+                                            card_width,
+                                            self.device_height(2) + self.device_height(3) + 8.,
+                                        );
+                                        precision::record(
+                                            &mut self.geometry,
+                                            "scanner_group",
+                                            scanner_area,
+                                        );
+                                        ui.painter().rect(
+                                            scanner_area,
+                                            10.,
+                                            PANEL,
+                                            Stroke::new(1_f32, BORDER),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        self.motion(
+                                            ui,
+                                            1,
+                                            "X",
+                                            Device::X,
+                                            precision::rect(
+                                                origin.x,
+                                                y,
+                                                card_width,
+                                                self.device_height(2),
+                                            ),
+                                        );
+                                        y += self.device_height(2) + 4.;
+                                        ui.painter().line_segment(
+                                            [
+                                                egui::pos2(origin.x + 10., y),
+                                                egui::pos2(origin.x + card_width - 10., y),
+                                            ],
+                                            Stroke::new(1_f32, BORDER),
+                                        );
+                                        y += 4.;
+                                        self.motion(
+                                            ui,
+                                            2,
+                                            "Y",
+                                            Device::Y,
+                                            precision::rect(
+                                                origin.x,
+                                                y,
+                                                card_width,
+                                                self.device_height(3),
+                                            ),
+                                        );
+                                        y += self.device_height(3) + 8.;
+                                    });
+                                    y = self.inactive_device_cards(
+                                        ui,
+                                        egui::pos2(origin.x, y),
                                         card_width,
-                                        self.device_height(2) + self.device_height(3) + 8.,
                                     );
-                                    precision::record(
-                                        &mut self.geometry,
-                                        "scanner_group",
-                                        scanner_area,
-                                    );
-                                    ui.painter().rect(
-                                        scanner_area,
-                                        10.,
-                                        PANEL,
-                                        Stroke::new(1_f32, BORDER),
-                                        egui::StrokeKind::Inside,
-                                    );
-                                    self.motion(
-                                        ui,
-                                        1,
-                                        "X",
-                                        Device::X,
-                                        precision::rect(
-                                            origin.x,
-                                            y,
-                                            card_width,
-                                            self.device_height(2),
-                                        ),
-                                    );
-                                    y += self.device_height(2) + 4.;
-                                    ui.painter().line_segment(
-                                        [
-                                            egui::pos2(origin.x + 10., y),
-                                            egui::pos2(origin.x + card_width - 10., y),
-                                        ],
-                                        Stroke::new(1_f32, BORDER),
-                                    );
-                                    y += 4.;
-                                    self.motion(
-                                        ui,
-                                        2,
-                                        "Y",
-                                        Device::Y,
-                                        precision::rect(
-                                            origin.x,
-                                            y,
-                                            card_width,
-                                            self.device_height(3),
-                                        ),
-                                    );
-                                    y += self.device_height(3) + 8.;
                                     ui.set_min_size(Vec2::new(available.width(), y - origin.y));
                                 });
                             },
@@ -3879,6 +4007,7 @@ impl eframe::App for App {
                 );
                 self.plots(ui, columns.plots);
             });
+        self.measurement_settings_dialog(ctx);
         self.smoke_tick(ctx);
         self.demo_smoke_tick(ctx);
     }
@@ -4386,18 +4515,6 @@ fn output_filename(profile: &OutputProfile, demo: bool) -> String {
         format!("demo_{name}")
     } else {
         name.to_owned()
-    }
-}
-fn workflow_index(workflow: Workflow) -> usize {
-    workflow.index()
-}
-fn sync_shared_coordinates(plans: &mut [Plan; 5], selected: Workflow) {
-    let selected = &plans[workflow_index(selected)];
-    let zero = selected.zero;
-    let theta_deg = selected.theta_deg;
-    for plan in plans {
-        plan.zero = zero;
-        plan.theta_deg = theta_deg;
     }
 }
 fn output_dir() -> String {

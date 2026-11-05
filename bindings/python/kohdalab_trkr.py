@@ -501,11 +501,13 @@ class GuiClient:
         return self._job("connect", **payload)
 
     def select_devices(self, *, lockin: str | None = None, delay: str | None = None,
-                       scanner: str | None = None, request_id: str | None = None) -> dict[str, Any]:
-        """Select registered measurement devices without closing other connections.
+                       scanner: str | None = None, workflow: str | None = None,
+                       request_id: str | None = None) -> dict[str, Any]:
+        """Select registered devices for one measurement without closing connections.
 
-        測定対象の登録IDを選択します。他の機器の接続は維持します。
-        Omitted IDs retain the current selection; use config() to inspect IDs.
+        指定した測定の登録IDを選択します。他の機器の接続は維持します。
+        Omitted IDs retain that measurement's selection. With no workflow, the
+        GUI's currently visible measurement is used; use config() to inspect IDs.
         """
         payload: dict[str, Any] = {}
         for name, value in (("lockin", lockin), ("delay", delay), ("scanner", scanner)):
@@ -513,6 +515,10 @@ class GuiClient:
                 if not isinstance(value, str) or not value.strip():
                     raise ValueError(f"{name} must be a nonempty device ID")
                 payload[name] = value
+        if workflow is not None:
+            if not isinstance(workflow, str) or not workflow.strip():
+                raise ValueError("workflow must be a nonempty string or None")
+            payload["workflow"] = workflow
         return self._job("select_devices", request_id=request_id, **payload)
 
     def disconnect(self, devices: list[str] | None = None, *, request_id: str | None = None) -> dict[str, Any]:

@@ -701,33 +701,35 @@ fn gpib_resource_requires_canonical_portable_address() {
 
 #[test]
 fn shared_coordinates_follow_selected_profile_without_changing_scan_settings() {
-    let base = Plan::default();
-    let mut plans = std::array::from_fn(|_| base.clone());
-    plans[workflow_index(Workflow::Trkr)].workflow = Workflow::Trkr;
-    plans[workflow_index(Workflow::Srkr)].workflow = Workflow::Srkr;
-    plans[workflow_index(Workflow::Strkr)].workflow = Workflow::Strkr;
-    plans[workflow_index(Workflow::Srkr2d)].workflow = Workflow::Srkr2d;
-    plans[workflow_index(Workflow::Trkr)].fast_range = Range {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let mut plans = app.plans.clone();
+    plans[Workflow::Trkr.index()].fast_range = Range {
         min: -10.,
         max: 20.,
         step: 2.,
     };
-    plans[workflow_index(Workflow::Srkr)].fast_range = Range {
+    plans[Workflow::Srkr.index()].fast_range = Range {
         min: -31.,
         max: 27.,
         step: 0.5,
     };
-    plans[workflow_index(Workflow::Srkr)].zero = [12., 34., 56.];
-    plans[workflow_index(Workflow::Srkr)].theta_deg = 18.5;
+    plans[Workflow::Srkr.index()].zero = [12., 34., 56.];
+    plans[Workflow::Srkr.index()].theta_deg = 18.5;
 
-    sync_shared_coordinates(&mut plans, Workflow::Srkr);
+    app.plans = plans;
+    app.workflow = Workflow::Srkr;
+    for (axis, zero) in [12., 34., 56.].into_iter().enumerate() {
+        app.set_selected_zero(axis, zero);
+    }
+    app.sync_all_plans().unwrap();
+    let plans = app.plans;
 
     for plan in &plans {
         assert_eq!(plan.zero, [12., 34., 56.]);
         assert_eq!(plan.theta_deg, 18.5);
     }
     assert_eq!(
-        plans[workflow_index(Workflow::Trkr)].fast_range,
+        plans[Workflow::Trkr.index()].fast_range,
         Range {
             min: -10.,
             max: 20.,
@@ -735,7 +737,7 @@ fn shared_coordinates_follow_selected_profile_without_changing_scan_settings() {
         }
     );
     assert_eq!(
-        plans[workflow_index(Workflow::Srkr)].fast_range,
+        plans[Workflow::Srkr.index()].fast_range,
         Range {
             min: -31.,
             max: 27.,

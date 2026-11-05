@@ -7,6 +7,44 @@ fn config() -> HardwareConfig {
         motion: MotionConfig::default(),
     }
 }
+
+#[test]
+fn demo_run_metadata_uses_requested_devices_instead_of_previous_selection() {
+    let mut previous = config();
+    previous.device_ids.scanner = "scanner-2".into();
+    let mut session = Session {
+        config: Some(previous),
+        ..Default::default()
+    };
+    let requested = config();
+    let plan = Plan {
+        workflow: Workflow::SignalMonitor,
+        n_points: 2,
+        interval_s: 0.,
+        ..Default::default()
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("demo.csv");
+    let (send, _events) = mpsc::sync_channel(64);
+    session
+        .acquire(
+            Source::Demo,
+            requested.clone(),
+            &plan,
+            Some(&output),
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap();
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(directory.path().join("demo.run.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        metadata["context"]["configured_hardware"]["device_ids"],
+        serde_json::json!(requested.device_ids)
+    );
+    assert_eq!(metadata["rows"], 2);
+}
 #[test]
 fn live_monitor_reads_fresh_signals_on_its_own_cadence_without_catchup() {
     let (send, events) = mpsc::sync_channel(10);
