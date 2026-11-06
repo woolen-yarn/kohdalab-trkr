@@ -2,7 +2,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 mod alignment_config;
 mod axis_choices;
-#[cfg(test)]
 mod compatibility;
 mod config;
 mod engine;
@@ -404,7 +403,11 @@ mod compatibility_tests {
     fn revision_one_command_and_rejection_wire_shapes_are_stable() {
         assert_eq!(compatibility::JSON_LINES_API_REVISION, 1);
         assert_eq!(compatibility::PROFILE_REVISION, 1);
-        assert_eq!(compatibility::RECORDING_REVISION, 5);
+        assert_eq!(compatibility::RECORDING_REVISION, 7);
+        assert!(
+            include_str!("../../../bindings/python/kohdalab_trkr.py")
+                .contains("RECORDING_COMPATIBILITY_REVISION = 7")
+        );
         assert_eq!(
             engine::FIELDS,
             &[

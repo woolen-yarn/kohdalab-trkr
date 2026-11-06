@@ -149,7 +149,8 @@ impl RawWriter {
         take(10, &["unit"]);
         take(15, &["result", "status"]);
         take(16, &["wire_error", "error"]);
-        // Exact CSV values are already durable in main.csv; retain raw constituents instead.
+        // Keep raw numeric constituents and unrounded derived values, not a
+        // duplicate array of formatted main-CSV strings.
         details.remove("csv_values");
         if let Some(Value::Object(mut timing)) = details.remove("timing") {
             for (index, key) in [

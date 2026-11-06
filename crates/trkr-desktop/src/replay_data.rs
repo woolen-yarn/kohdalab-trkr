@@ -299,6 +299,7 @@ fn parse_row(
                 .unwrap_or("legacy_status_unknown")
                 .into(),
             canonical_target: Default::default(),
+            delay_csv_format: Default::default(),
         },
         elapsed: number("elapsed_s")?
             .or(number("acquisition_elapsed_s")?)
