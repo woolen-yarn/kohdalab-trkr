@@ -3801,7 +3801,7 @@ impl eframe::App for App {
             && self.snapshot.devices[0]
             && self.last_settings.elapsed() >= Duration::from_secs(5)
         {
-            let _ = self.controller.send(Command::LockinSettings);
+            let _ = self.controller.refresh_lockin_settings();
             self.last_settings = Instant::now();
         }
         ctx.request_repaint_after(Duration::from_millis(

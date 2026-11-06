@@ -466,13 +466,56 @@ fn remote_failure_code(command: &Command) -> Option<&'static str> {
     })
 }
 
+/// Display refreshes share the device worker but do not reserve the UI for an
+/// operator action. Keep this distinction internal to the queue, not the API.
+struct WorkerCommand {
+    command: Command,
+    remote_id: Option<String>,
+    background_refresh: bool,
+}
+impl WorkerCommand {
+    fn operation(command: Command, remote_id: Option<String>) -> Self {
+        Self {
+            command,
+            remote_id,
+            background_refresh: false,
+        }
+    }
+    fn refresh_settings() -> Self {
+        Self {
+            command: Command::LockinSettings,
+            remote_id: None,
+            background_refresh: true,
+        }
+    }
+}
+
+/// Drop an automatic read that has not started when an operator action is
+/// already waiting. In-flight device I/O still completes on this same worker.
+fn receive_worker_command(
+    requests: &Receiver<WorkerCommand>,
+    timeout: Duration,
+    pending: &AtomicUsize,
+    settings_refresh_pending: &AtomicBool,
+) -> Result<WorkerCommand, mpsc::RecvTimeoutError> {
+    loop {
+        let request = requests.recv_timeout(timeout)?;
+        if request.background_refresh && pending.load(Ordering::Acquire) > 0 {
+            settings_refresh_pending.store(false, Ordering::Release);
+            continue;
+        }
+        return Ok(request);
+    }
+}
+
 pub struct Controller {
     hold: alignment::HoldLease,
     pub events: Receiver<Event>,
-    commands: Sender<(Command, Option<String>)>,
+    commands: Sender<WorkerCommand>,
     cancel: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     pending: Arc<AtomicUsize>,
+    settings_refresh_pending: Arc<AtomicBool>,
     read_only: bool,
     thread: Option<thread::JoinHandle<()>>,
 }
@@ -499,6 +542,29 @@ impl Controller {
     pub(crate) fn has_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire) > 0
     }
+    /// At most one display-only settings query may be queued/in flight. Actual
+    /// operations still use `send`/`send_remote` and retain their pending guard.
+    pub(crate) fn refresh_lockin_settings(&self) -> Result<(), String> {
+        if self.read_only {
+            return Err(OperationError::ReadOnly.into());
+        }
+        if self.has_pending()
+            || self.busy.load(Ordering::Acquire)
+            || self.settings_refresh_pending.swap(true, Ordering::AcqRel)
+        {
+            return Ok(());
+        }
+        if self
+            .commands
+            .send(WorkerCommand::refresh_settings())
+            .is_err()
+        {
+            self.settings_refresh_pending
+                .store(false, Ordering::Release);
+            return Err(OperationError::WorkerStopped.into());
+        }
+        Ok(())
+    }
     fn enqueue(&self, command: Command, remote_id: Option<String>) -> Result<(), String> {
         if self.read_only && !matches!(command, Command::Stop | Command::Shutdown) {
             return Err(OperationError::ReadOnly.into());
@@ -515,7 +581,11 @@ impl Controller {
             self.cancel.store(false, Ordering::Release);
         }
         self.pending.fetch_add(1, Ordering::AcqRel);
-        if self.commands.send((command, remote_id)).is_err() {
+        if self
+            .commands
+            .send(WorkerCommand::operation(command, remote_id))
+            .is_err()
+        {
             self.pending.fetch_sub(1, Ordering::AcqRel);
             if job {
                 self.busy.store(false, Ordering::Release);
@@ -531,7 +601,9 @@ impl Controller {
 impl Drop for Controller {
     fn drop(&mut self) {
         self.stop();
-        let _ = self.commands.send((Command::Shutdown, None));
+        let _ = self
+            .commands
+            .send(WorkerCommand::operation(Command::Shutdown, None));
         if let Some(handle) = self.thread.take() {
             while !handle.is_finished() {
                 let _ = self.events.recv_timeout(Duration::from_millis(20));
@@ -554,7 +626,7 @@ pub fn controller_read_only() -> Controller {
 }
 
 fn controller_with_mode(read_only: bool) -> Controller {
-    let (tx, rx) = mpsc::channel::<(Command, Option<String>)>();
+    let (tx, rx) = mpsc::channel::<WorkerCommand>();
     let (send, events) = mpsc::sync_channel(2048);
     let cancel = Arc::new(AtomicBool::new(false));
     let busy = Arc::new(AtomicBool::new(false));
@@ -562,6 +634,8 @@ fn controller_with_mode(read_only: bool) -> Controller {
     let working = busy.clone();
     let pending = Arc::new(AtomicUsize::new(0));
     let pending_worker = pending.clone();
+    let settings_refresh_pending = Arc::new(AtomicBool::new(false));
+    let settings_refresh_worker = settings_refresh_pending.clone();
     let hold = alignment::HoldLease::default();
     let worker_hold = hold.clone();
     let handle = thread::spawn(move || {
@@ -581,7 +655,12 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 position_due,
                 now,
             );
-            let (cmd, remote_id) = match rx.recv_timeout(timeout) {
+            let request = match receive_worker_command(
+                &rx,
+                timeout,
+                &pending_worker,
+                &settings_refresh_worker,
+            ) {
                 Ok(c) => c,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -626,6 +705,11 @@ fn controller_with_mode(read_only: bool) -> Controller {
                     continue;
                 }
             };
+            let WorkerCommand {
+                command: cmd,
+                remote_id,
+                background_refresh,
+            } = request;
             if matches!(cmd, Command::Shutdown) {
                 break;
             }
@@ -713,7 +797,11 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 .into();
                 working.store(false, Ordering::Release);
             }
-            pending_worker.fetch_sub(1, Ordering::AcqRel);
+            if background_refresh {
+                settings_refresh_worker.store(false, Ordering::Release);
+            } else {
+                pending_worker.fetch_sub(1, Ordering::AcqRel);
+            }
             let _ = send.send(Event::State(Box::new(session.state.clone())));
             if acquisition {
                 let _ = send.send(Event::Finished(
@@ -752,6 +840,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
         cancel,
         busy,
         pending,
+        settings_refresh_pending,
         read_only,
         thread: Some(handle),
     }
