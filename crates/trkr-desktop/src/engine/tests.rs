@@ -1,4 +1,125 @@
 use super::*;
+
+fn paused_controller() -> (Controller, Receiver<WorkerCommand>) {
+    let (commands, requests) = mpsc::channel();
+    let (_, events) = mpsc::sync_channel(8);
+    (
+        Controller {
+            hold: alignment::HoldLease::default(),
+            events,
+            commands,
+            cancel: Arc::new(AtomicBool::new(false)),
+            busy: Arc::new(AtomicBool::new(false)),
+            pending: Arc::new(AtomicUsize::new(0)),
+            settings_refresh_pending: Arc::new(AtomicBool::new(false)),
+            read_only: false,
+            thread: None,
+        },
+        requests,
+    )
+}
+
+#[test]
+fn display_refresh_is_coalesced_and_yields_to_start() {
+    let (controller, requests) = paused_controller();
+    controller.refresh_lockin_settings().unwrap();
+    controller.refresh_lockin_settings().unwrap();
+    assert!(!controller.has_pending());
+    assert!(controller.settings_refresh_pending.load(Ordering::Acquire));
+    controller
+        .send(Command::Run {
+            source: Source::Demo,
+            config: config(),
+            plan: Plan::default(),
+            output: None,
+        })
+        .unwrap();
+    assert!(controller.has_pending());
+    assert!(controller.busy.load(Ordering::Acquire));
+    controller.refresh_lockin_settings().unwrap();
+    assert!(matches!(
+        receive_worker_command(
+            &requests,
+            Duration::ZERO,
+            &controller.pending,
+            &controller.settings_refresh_pending,
+        )
+        .unwrap(),
+        WorkerCommand {
+            command: Command::Run { .. },
+            remote_id: None,
+            background_refresh: false
+        }
+    ));
+    assert!(requests.try_recv().is_err());
+    assert!(!controller.settings_refresh_pending.load(Ordering::Acquire));
+    assert_eq!(controller.pending.load(Ordering::Acquire), 1);
+}
+
+#[test]
+fn explicit_settings_queries_keep_their_pending_and_remote_receipts() {
+    let (controller, requests) = paused_controller();
+    controller.send(Command::LockinSettings).unwrap();
+    controller
+        .send_remote("settings-1".into(), Command::LockinSettings)
+        .unwrap();
+    assert_eq!(controller.pending.load(Ordering::Acquire), 2);
+    controller.refresh_lockin_settings().unwrap();
+    assert!(matches!(
+        requests.try_recv().unwrap(),
+        WorkerCommand {
+            command: Command::LockinSettings,
+            remote_id: None,
+            background_refresh: false
+        }
+    ));
+    assert!(
+        matches!(requests.try_recv().unwrap(), WorkerCommand { command: Command::LockinSettings, remote_id: Some(id), background_refresh: false } if id == "settings-1")
+    );
+    assert!(requests.try_recv().is_err());
+    assert!(!controller.settings_refresh_pending.load(Ordering::Acquire));
+}
+
+#[test]
+fn display_refresh_failure_retires_without_underflowing_pending() {
+    let controller = controller();
+    for _ in 0..2 {
+        controller.refresh_lockin_settings().unwrap();
+        // An unconnected worker fails without opening any device. Completion
+        // must release the refresh slot so a later scheduled refresh can run.
+        let Event::Error(error) = controller
+            .events
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+        else {
+            panic!("expected unconnected settings error");
+        };
+        assert_eq!(error, "Connect a lock-in first");
+        assert!(matches!(
+            controller
+                .events
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
+            Event::State(_)
+        ));
+        assert!(!controller.has_pending());
+        assert!(!controller.settings_refresh_pending.load(Ordering::Acquire));
+    }
+}
+
+#[test]
+fn display_refresh_respects_read_only_mode_and_closed_worker() {
+    let (mut controller, requests) = paused_controller();
+    controller.read_only = true;
+    assert!(controller.refresh_lockin_settings().is_err());
+    assert!(requests.try_recv().is_err());
+    controller.read_only = false;
+    drop(requests);
+    assert!(controller.refresh_lockin_settings().is_err());
+    assert!(!controller.has_pending());
+    assert!(!controller.settings_refresh_pending.load(Ordering::Acquire));
+}
+
 #[test]
 fn direction_failure_identifies_its_device_and_axis_without_hardware() {
     let mut session = Session::default();
