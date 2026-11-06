@@ -53,13 +53,25 @@ See [hardware and transport](docs/reference/hardware.md) for stage/actuator pres
 1. Install the application or extract the complete portable package. / アプリをインストールするか、portable版をフォルダーごと展開します。
 2. Explore synthetic data using the separate Demo application before connecting hardware. / 実機を接続する前に、専用Demoアプリで合成データを試します。
 3. Load a reviewed profile, check the selected devices, ports, origins, calibration, and limits, then connect deliberately. / 確認済み設定を読み込み、機器・ポート・原点・校正・制限を確認してから接続します。
-4. Choose a workflow and output location. Keep the CSV and its `.run.json` metadata together. / 測定と保存先を選びます。CSVと付随する`.run.json`は一緒に保管してください。
+4. Choose a workflow and output location. Keep the analysis `.csv`, `.raw.csv` and `.run.json` together. / 測定と保存先を選びます。解析用`.csv`・`.raw.csv`・`.run.json`は一緒に保管してください。
 
 Python/Jupyter access / Python・Jupyterからの利用: [client guide](bindings/python/README.md) · [notebooks](notebook/).
 
 Python can attach to the desktop GUI or launch it with a JSON profile, then exclusively control measurements, motion, and output settings while keeping the live plots and Stop available. / Pythonから既存GUIへ接続、またはJSON設定で新規起動し、ライブプロット・Stopを使いながら測定・移動・保存先を排他制御できます。
 
 TRKR saves its user profile at `~/.kohdalab/trkr/config/config.json` (`%USERPROFILE%\.kohdalab\trkr\config\config.json` on Windows). Results default to `~/.kohdalab/trkr/results`, runtime API descriptors to `~/.kohdalab/trkr/run`, and logs to `~/.kohdalab/trkr/logs`. On the first normal launch, the profile is created from embedded safe defaults; this does not connect hardware or enable outputs. Existing valid, invalid, or future-version files are never replaced automatically. Demo settings use the separate `config/demo.json`. The standard installed locations are `C:\Program Files\Kohdalab\KohdaLab TRKR` and `/Applications/KohdaLab TRKR.app`. / TRKRのユーザー設定は`~/.kohdalab/trkr/config/config.json`（Windowsでは`%USERPROFILE%\.kohdalab\trkr\config\config.json`）に保存されます。結果は`~/.kohdalab/trkr/results`、実行時APIの検出ファイルは`~/.kohdalab/trkr/run`、ログは`~/.kohdalab/trkr/logs`です。通常の初回起動では内蔵の安全な既定値から自動作成されますが、機器接続や出力有効化は行いません。既存の有効・不正・将来版のファイルは自動で置き換えません。Demo設定は`config/demo.json`を使用します。標準のインストール先は`C:\Program Files\Kohdalab\KohdaLab TRKR`と`/Applications/KohdaLab TRKR.app`です。
+
+## Saved data / 保存仕様
+
+| File / ファイル | Contents / 内容 |
+| --- | --- |
+| `<name>.csv` | Analysis signals, units, actual/target coordinates and quality flags. Delay decimals use observed ps/pulse with a guard decimal; this is formatting, not an accuracy guarantee. / 解析用信号・単位・実測／指令座標・品質フラグ。遅延の桁数は実測ps/pulseに予備1桁を加えた表記で、確度の保証ではありません。 |
+| `<name>.raw.csv` | Exact decoded device replies, native scanner/stage readings, unrounded delay coordinates, timing windows and errors. Idle live polling is excluded. / 装置の文字列応答、scanner／stageの生読取、丸め前の遅延座標、取得時間窓・エラー。待機中のライブ照会は含めません。 |
+| `<name>.run.json` | Plan, device assignments/calibration, observed start settings, software identity, completion state and file hashes. / 測定計画・機器割当・校正、開始時の読戻し設定、ソフトウェア情報、終了状態・ハッシュ。 |
+
+From 0.5.2, the run-start lock-in snapshot includes reference phase, source and harmonic for SR5210/SR7265/SR830/LI5640. This reference phase is distinct from measured signal `Theta_deg`. Read failures remain explicit; front-panel changes during a run are not continuously recorded. See [measurement integrity](docs/reference/measurement-integrity.md) for precision and limitations.
+
+0.5.2からSR5210／SR7265／SR830／LI5640の開始時スナップショットに参照位相・参照源・高調波次数を保存します。参照位相は信号の`Theta_deg`とは別です。読取失敗は明示し、測定途中の本体設定変更を連続記録するものではありません。桁数と制約は[測定記録の仕様](docs/reference/measurement-integrity.md)を参照してください。
 
 ## Development / 開発
 

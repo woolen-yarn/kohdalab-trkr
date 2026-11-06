@@ -7,7 +7,8 @@
 //! separately from storage timing. CSV columns/readers remain supported.
 //! Revision 5 separates analysis/raw CSV; revision 6 retains only the measured
 //! LI5640 pair. Revision 7 formats delay CSV coordinates using observed pulse
-//! quantization while preserving unrounded derived coordinates in raw CSV.
+//! quantization while preserving unrounded derived coordinates in raw CSV,
+//! and records run-start lock-in reference phase/source/harmonic settings.
 
 /// JSON-lines commands and events emitted by `--stdio`.
 #[cfg(test)]

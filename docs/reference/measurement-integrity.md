@@ -143,6 +143,21 @@ old sidecars or rewrite historical runs to make them resemble a new acquisition.
 維持します。過去の測定を新規取得のように書き換えたり、旧付属ファイルを削除しません。
 
 
+## Reference settings / 参照設定
+
+Version 0.5.2 records `context.lockin_settings.value.reference` in run JSON and the corresponding `settings_snapshot` exchange in raw CSV. `phase_deg` is the instrument reference offset, **not** the measured signal `Theta_deg`; `source` preserves the numeric code and its model-specific meaning; `harmonic` is the reference multiplier. These are read-only queries once at run start, separate from the periodic GUI refresh. They are not simultaneous readings or a continuous trace of front-panel changes. A failed settings snapshot records `query_failed` and its error; no default reference value is invented. Raw responses retain native formatting, including the SR5210 quadrant/millidegree pair. Demo does not claim a hardware readback.
+
+0.5.2ではrun JSONの上記項目とraw CSVの`settings_snapshot`に参照設定を保存します。`phase_deg`は装置の参照位相で、測定信号の`Theta_deg`ではありません。参照源は数値コードと機種ごとの意味、高調波は倍率を残します。開始時に一度だけ読取り専用で照会し、周期ライブ更新には追加しません。同時取得や測定中の本体操作の連続記録ではありません。失敗時は`query_failed`とエラーを保存し、既定値で補いません。SR5210の象限・ミリ度を含む生応答の表記も保持します。Demoは実機の読戻しとして扱いません。
+
+| Model / 機種 | Phase / 位相 | Source / 参照源 | Harmonic / 高調波 |
+| --- | --- | --- | --- |
+| SR830 | `PHAS?`, degrees / 度 | `FMOD?`: 0 external, 1 internal | `HARM?` |
+| SR7265 | `REFP.`, degrees / 度 | `IE`: 0 internal, 1 external TTL, 2 external analog | `REFN` |
+| LI5640 | `PHAS?`, degrees / 度 | `RSRC?`: 0 external, 1 internal, 2 signal | `HARM?` |
+| SR5210 | `P`: quadrant × 90 + millidegrees / 1000, no wrapping / 折返しなし | `IE`: 0 external, 1 internal | `F2F`: 0 fundamental, 1 second harmonic |
+
+Command definitions / コマンド根拠: [SRS SR830 manual](https://www.thinksrs.com/downloads/PDFs/Manuals/SR830m.pdf), [AMETEK 7265 AN1002](https://www.ameteksi.com/-/media/ameteksi/download_links/documentations/7225/an1002_using_the_model_7225_and_7265_lock-in_amplifiers_with_software_written_for_the_sr830.pdf), [NF LI5640 manual](https://www.nfcorp.co.jp/files/LI5640_InstructionManual_Jp-1.pdf), [EG&G 5210 manual §6.4.03](https://www.artisantg.com/info/Princeton_Applied_Research_EG_G_5210_Manual_201972510325.pdf). Protocol tests use simulated replies; this change is not a new physical-instrument qualification. / テストは模擬応答を使用し、新たな実機検証ではありません。
+
 ## Stored digits / 保存する桁
 
 Starting with 0.5.2 (recording revision 7), main CSV `t_ps` and `t_cor_ps`

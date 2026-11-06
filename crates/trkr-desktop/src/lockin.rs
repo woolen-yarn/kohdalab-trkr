@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use trkr_core::{DisplayMode, Signal};
 
+mod reference;
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Model {
     Sr830,
@@ -122,6 +124,7 @@ pub type RecordedRead = RecordedOperation<Signal>;
 pub fn read_recorded(model: Model, io: &mut impl Io) -> RecordedRead {
     recorded(io, |io| read(model, io))
 }
+#[cfg(test)]
 pub fn settings_recorded(model: Model, io: &mut impl Io) -> RecordedOperation<Value> {
     recorded(io, |io| settings_impl(io, model))
 }
@@ -367,12 +370,16 @@ pub fn status_recorded_cancellable(
 ) -> RecordedOperation<Value> {
     status_recorded(model, &mut Cancellable { io, cancel })
 }
-pub fn settings_recorded_cancellable(
+pub fn run_settings_recorded_cancellable(
     model: Model,
     io: &mut impl CancellableIo,
     cancel: &std::sync::atomic::AtomicBool,
 ) -> RecordedOperation<Value> {
-    settings_recorded(model, &mut Cancellable { io, cancel })
+    recorded(&mut Cancellable { io, cancel }, |io| {
+        let mut settings = settings_impl(io, model)?;
+        settings["reference"] = reference::read(io, model)?;
+        Ok(settings)
+    })
 }
 
 #[cfg(test)]
@@ -1003,14 +1010,14 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    struct Fake {
+    pub(super) struct Fake {
         replies: VecDeque<Result<String, String>>,
         commands: Vec<String>,
         fail_write: Option<&'static str>,
         invalidated: bool,
     }
     impl Fake {
-        fn new(replies: &[&str]) -> Self {
+        pub(super) fn new(replies: &[&str]) -> Self {
             Self {
                 replies: replies.iter().map(|v| Ok((*v).into())).collect(),
                 commands: vec![],
@@ -1065,6 +1072,42 @@ mod tests {
                 .iter()
                 .any(|command| command.starts_with("OTYP"))
         );
+    }
+
+    #[test]
+    fn run_snapshot_adds_reference_provenance_without_changing_live_queries() {
+        use std::sync::atomic::AtomicBool;
+        let cancel = AtomicBool::new(false);
+        let base = ["0", "0", "0", "0", "0", "0", "0", "0"];
+        let mut live = Fake::new(&base);
+        assert!(
+            settings(&mut live, Model::Li5640)
+                .unwrap()
+                .get("reference")
+                .is_none()
+        );
+        let mut replies = base.to_vec();
+        replies.extend(["-12.3400\r\n", "0", "3"]);
+        let mut run = Fake::new(&replies);
+        let snapshot = run_settings_recorded_cancellable(Model::Li5640, &mut run, &cancel);
+        let value = snapshot.result.unwrap();
+        assert_eq!(value["reference"]["phase_deg"], -12.34);
+        assert_eq!(value["reference"]["harmonic"], 3);
+        assert_eq!(&run.commands[..live.commands.len()], live.commands);
+        assert_eq!(snapshot.exchanges[8].reply.as_deref(), Some("-12.3400\r\n"));
+        assert!(snapshot.exchanges.iter().all(|e| e.operation == "query"));
+
+        let mut failed = Fake::new(&base);
+        let snapshot = run_settings_recorded_cancellable(Model::Li5640, &mut failed, &cancel);
+        assert!(snapshot.result.is_err());
+        assert_eq!(snapshot.exchanges.last().unwrap().command, "PHAS?\n");
+        assert!(snapshot.exchanges.last().unwrap().error.is_some());
+
+        let mut stopped = Fake::new(&replies);
+        let snapshot =
+            run_settings_recorded_cancellable(Model::Li5640, &mut stopped, &AtomicBool::new(true));
+        assert!(snapshot.result.is_err());
+        assert!(stopped.commands.is_empty());
     }
 
     #[test]

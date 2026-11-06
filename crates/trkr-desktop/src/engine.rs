@@ -1341,7 +1341,7 @@ impl Session {
                 .gpib
                 .as_mut()
                 .ok_or(OperationError::LockinDisconnected)?;
-            let mut snapshot = lockin::settings_recorded_cancellable(model, gpib, cancel);
+            let mut snapshot = lockin::run_settings_recorded_cancellable(model, gpib, cancel);
             if let Ok(value) = &mut snapshot.result
                 && let Some(object) = value.as_object_mut()
             {
