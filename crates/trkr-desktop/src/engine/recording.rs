@@ -12,6 +12,9 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use trkr_core::{Axis, Coordinate, DisplayMode, Plan, Workflow};
 
+mod delay_format;
+pub(crate) use delay_format::DelayCsvFormat;
+
 pub const FIELDS: &[&str] = &[
     "run_id",
     "point_index",
@@ -209,7 +212,7 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         "simulation": matches!(source, Source::Demo), "source": format!("{source:?}"),
         "plan": plan, "experiment":plan.experiment, "timestamp": utc_now()?,
         "schema_version": 3,
-        "recording_revision": 6,
+        "recording_revision": crate::compatibility::RECORDING_REVISION,
         "csv_schema": "trkr_analysis_v1", "raw_schema": "raw_csv_v1",
         "run_id":run_id, "status":"running", "rows":0,
         "software": {"version":env!("CARGO_PKG_VERSION"), "git_commit":option_env!("KOHDALAB_BUILD_COMMIT")},
@@ -221,7 +224,14 @@ pub(super) fn create_csv(path: &Path, source: Source, plan: &Plan) -> Result<Rec
         },
         "csv_numeric_format": "shortest_roundtrip_scientific",
         "csv_scientific_fields": ["X", "Y", "R"],
-        "other_numeric_fields": "shortest_roundtrip_python_compatible",
+        "other_numeric_fields": "shortest_roundtrip_python_compatible_except_delay_coordinates",
+        "delay_numeric_format": {
+            "fields": ["t_ps", "t_cor_ps", "target_t_cor_ps"],
+            "policy": "observed_pulse_resolution_with_one_decimal_guard_digit; preserve_nominal_target_precision",
+            "parameters": "context.delay_csv_format",
+            "unknown_resolution": "shortest_roundtrip_python_compatible",
+            "unrounded_values": "raw.csv reading details_json.unrounded_delay",
+        },
         "precision_policy": "no_accuracy_claim",
         "signal_component_policy": "LI5640: selected measured pair only, other columns blank, signal_xy_only/signal_rtheta_only flags; no derived components",
         "timing_policy": {
@@ -406,6 +416,35 @@ fn csv_voltage(value: f64) -> Result<String, String> {
     Ok(format!("{sign}{}{fraction}e{exponent:+03}", &digits[..1]))
 }
 
+/// Keep the exact derived delay values alongside native readbacks in raw CSV.
+/// Main CSV formatting never changes these values or the in-memory positions.
+pub(super) fn unrounded_delay(plan: &Plan, sample: &Sample) -> Option<Value> {
+    let nominal_target = if plan.workflow == Workflow::SignalMonitor {
+        None
+    } else if plan.fast == Axis::T {
+        Some(sample.target.fast)
+    } else if plan.workflow.is_2d() && plan.slow == Axis::T {
+        sample.target.slow
+    } else {
+        None
+    };
+    let target = nominal_target.and_then(|value| {
+        if plan.coordinate == Coordinate::Measurement {
+            Some(value)
+        } else {
+            sample.recording.canonical_target[0]
+        }
+    });
+    let position = sample.position.physical[0];
+    (position.is_some() || target.is_some()).then(|| {
+        serde_json::json!({
+            "t_ps": position,
+            "t_cor_ps": position.map(|value| value - plan.zero[0]),
+            "target_t_cor_ps": target,
+        })
+    })
+}
+
 pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
     let mut result = vec![String::new(); FIELDS.len()];
     let mut put =
@@ -458,23 +497,34 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
                             "um"
                         }
                     ),
-                    csv_float(match axis {
-                        Axis::T | Axis::X | Axis::Y => {
-                            let index = match axis {
-                                Axis::T => 0,
-                                Axis::X => 1,
-                                _ => 2,
-                            };
-                            sample.recording.canonical_target[index]
-                                .or_else(|| {
-                                    (plan.coordinate == Coordinate::Measurement).then_some(value)
-                                })
-                                .ok_or(
-                                    "Raw-coordinate export requires resolved canonical targets",
-                                )?
+                    {
+                        let target = match axis {
+                            // The requested measurement target is already in ps;
+                            // adding/subtracting the zero would add binary tails.
+                            Axis::T if plan.coordinate == Coordinate::Measurement => value,
+                            Axis::T | Axis::X | Axis::Y => {
+                                let index = match axis {
+                                    Axis::T => 0,
+                                    Axis::X => 1,
+                                    _ => 2,
+                                };
+                                sample.recording.canonical_target[index]
+                                    .or_else(|| {
+                                        (plan.coordinate == Coordinate::Measurement)
+                                            .then_some(value)
+                                    })
+                                    .ok_or(
+                                        "Raw-coordinate export requires resolved canonical targets",
+                                    )?
+                            }
+                            _ => value,
+                        };
+                        if axis == Axis::T {
+                            sample.recording.delay_csv_format.target(target)
+                        } else {
+                            csv_float(target)
                         }
-                        _ => value,
-                    }),
+                    },
                 );
             }
         }
@@ -502,11 +552,15 @@ pub(crate) fn row(plan: &Plan, sample: &Sample) -> Result<Vec<String>, String> {
     for (i, axis) in ["t", "x", "y"].iter().enumerate() {
         let unit = if i == 0 { "ps" } else { "um" };
         if let Some(value) = sample.position.physical[i] {
-            put(&format!("{axis}_{unit}"), csv_float(value));
-            put(
-                &format!("{axis}_cor_{unit}"),
-                csv_float(corrected[i].unwrap()),
-            );
+            let format = |value| {
+                if i == 0 {
+                    sample.recording.delay_csv_format.readback(value)
+                } else {
+                    csv_float(value)
+                }
+            };
+            put(&format!("{axis}_{unit}"), format(value));
+            put(&format!("{axis}_cor_{unit}"), format(corrected[i].unwrap()));
         }
     }
     if let (Some(x), Some(y)) = (corrected[1], corrected[2]) {
@@ -626,6 +680,11 @@ mod tests {
             serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap())
                 .unwrap();
         assert_eq!(metadata["schema_version"], 3);
+        assert_eq!(metadata["recording_revision"], 7);
+        assert_eq!(
+            metadata["delay_numeric_format"]["parameters"],
+            "context.delay_csv_format"
+        );
         assert_eq!(
             metadata["csv_numeric_format"],
             "shortest_roundtrip_scientific"
@@ -815,6 +874,126 @@ mod tests {
     }
     fn cell<'a>(row: &'a [String], name: &str) -> &'a str {
         &row[FIELDS.iter().position(|field| *field == name).unwrap()]
+    }
+
+    #[test]
+    fn delay_csv_rounds_all_workflows_but_preserves_unrounded_raw_values() {
+        let calibration: trkr_motion::DelayCalibration =
+            serde_json::from_value(serde_json::json!({
+                "controller": "SHOT302GS", "stage": "SGSP46-500", "port": "test",
+                "microstep_division": 20,
+                "effective_pos_um_per_pulse": 1.0,
+                "effective_ps_per_pulse": 0.002 / 0.299_792_458,
+            }))
+            .unwrap();
+        for (workflow, fast, slow) in [
+            (Workflow::SignalMonitor, Axis::T, Axis::X),
+            (Workflow::Trkr, Axis::T, Axis::X),
+            (Workflow::Srkr, Axis::X, Axis::Y),
+            (Workflow::Srkr, Axis::U, Axis::Y),
+            (Workflow::Strkr, Axis::T, Axis::X),
+            (Workflow::Strkr, Axis::V, Axis::T),
+            (Workflow::Srkr2d, Axis::X, Axis::Y),
+        ] {
+            let plan = Plan {
+                workflow,
+                fast,
+                slow,
+                zero: [-244.969, 0., 0.],
+                fast_range: trkr_core::Range {
+                    min: 0.3,
+                    max: 0.3,
+                    step: 0.1,
+                },
+                slow_range: trkr_core::Range {
+                    min: 0.3,
+                    max: 0.3,
+                    step: 0.1,
+                },
+                ..Default::default()
+            };
+            let original = "-49.501718235949715".parse::<f64>().unwrap();
+            let mut sample = test_sample(&plan, [Some(original), Some(12.), Some(24.)]);
+            sample.recording.delay_csv_format =
+                DelayCsvFormat::from_calibration(Some(&calibration), &plan);
+            sample.recording.canonical_target[0] = Some(0.300_000_000_000_011_37);
+            let expected_raw = unrounded_delay(&plan, &sample).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("run.csv");
+            let mut recording = create_csv(&path, Source::Demo, &plan).unwrap();
+            recording
+                .set_context(
+                    &serde_json::json!({"delay_csv_format": sample.recording.delay_csv_format}),
+                )
+                .unwrap();
+            recording
+                .append_audit(&serde_json::json!({
+                    "event": "reading", "point_index": 1,
+                    "position": sample.position,
+                    "unrounded_delay": expected_raw,
+                }))
+                .unwrap();
+            let mut rows = 0;
+            recording
+                .write_sample(&plan, &sample, std::time::Instant::now(), 1, &mut rows)
+                .unwrap();
+            recording.finish().unwrap();
+            assert_eq!(rows, 1);
+            let mut csv = csv::Reader::from_path(&path).unwrap();
+            let row: Vec<String> = csv
+                .records()
+                .next()
+                .unwrap()
+                .unwrap()
+                .iter()
+                .map(str::to_owned)
+                .collect();
+            assert_eq!(cell(&row, "t_ps"), "-49.5017", "{workflow:?}");
+            assert_eq!(cell(&row, "t_cor_ps"), "195.4673", "{workflow:?}");
+            if workflow == Workflow::Trkr || workflow == Workflow::Strkr {
+                assert_eq!(cell(&row, "target_t_cor_ps"), "0.3000");
+            } else {
+                assert!(cell(&row, "target_t_cor_ps").is_empty());
+            }
+            let raw = crate::raw_csv::test_events(&path.with_extension("raw.csv"));
+            let reading = raw
+                .iter()
+                .find(|event| event["event"] == "reading")
+                .unwrap();
+            assert_eq!(reading["unrounded_delay"], expected_raw);
+            assert_eq!(reading["position"]["delay_stage_pulse"], 1234);
+            assert_eq!(
+                sample.position.physical[0].unwrap().to_bits(),
+                original.to_bits()
+            );
+            let metadata: Value =
+                serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                metadata["context"]["delay_csv_format"]["readback_decimals"],
+                4
+            );
+        }
+    }
+
+    #[test]
+    fn unrounded_delay_keeps_raw_unit_targets_canonical_and_missing_axes_missing() {
+        let plan = Plan {
+            workflow: Workflow::Trkr,
+            coordinate: Coordinate::Interface,
+            ..Default::default()
+        };
+        let mut sample = test_sample(&plan, [None; 3]);
+        sample.target.fast = 12.5; // mm input, not ps
+        sample.recording.canonical_target[0] = Some("-49.501718235949715".parse().unwrap());
+        let raw = unrounded_delay(&plan, &sample).unwrap();
+        assert!(raw["t_ps"].is_null() && raw["t_cor_ps"].is_null());
+        assert_eq!(
+            raw["target_t_cor_ps"].as_f64(),
+            sample.recording.canonical_target[0]
+        );
+        let monitor = Plan::default();
+        assert!(unrounded_delay(&monitor, &test_sample(&monitor, [None; 3])).is_none());
     }
     #[test]
     fn every_workflow_exports_available_fixed_axis_readbacks_and_raw_units() {

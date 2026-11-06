@@ -5,12 +5,13 @@ GUI・測定・装置制御はRustで動作します。このクライアント�
 ## 互換性
 
 設定JSONと`--stdio`の命令・イベントはrevision 1を維持します。
-記録はrevision 3です。CSVの列は同じですが、X/Y/Rの固定7桁丸めを廃止し、
-取得したf64値を復元できる指数表記に変更しました。`.run.json`と
+記録はrevision 7です。X/Y/Rは取得したf64値を復元できる指数表記を維持します。
+`t_ps`・`t_cor_ps`は観測済みps/pulseに応じた小数桁で保存し、指令値は入力範囲・Stepの
+細かさも維持します。丸め前の遅延値はraw CSVに保持し、APIの数値は丸めません。`.run.json`と
 `.raw.csv`をCSVと一緒に保管してください。装置応答の文字列を保持し、
 不明な分解能・不確かさを推測しません。桁数は物理的な精度の保証ではありません。
 `PROFILE_COMPATIBILITY_REVISION`と`JSON_LINES_API_REVISION`は`1`、
-`RECORDING_COMPATIBILITY_REVISION`は`5`です。既存設定と旧CSVは引き続き読み取れます。
+`RECORDING_COMPATIBILITY_REVISION`は`7`です。既存設定と旧CSVは引き続き読み取れます。
 旧CSVで丸められた桁は復元できません。
 0.3.6から固定軸の読取も保存し、U/Vの指令値と実読取を区別します。[座標の保存](../../docs/reference/measurement-integrity.md)を参照してください。
 
@@ -255,13 +256,14 @@ The GUI, acquisition, and device control run in Rust. This client passes command
 
 ### Compatibility
 
-Profiles and `--stdio` commands/events remain revision 1. Recording revision 3
-keeps the CSV columns but removes fixed seven-digit X/Y/R rounding. Scientific
-text round-trips the acquired f64 value. Keep `.run.json` and `.raw.csv`
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 7
+retains lossless scientific X/Y/R text. Main CSV t/t_cor use decimals derived from
+observed ps/pulse; targets also preserve requested range/Step precision. Raw CSV
+keeps unrounded delay values, and API numeric values are not rounded. Keep `.run.json` and `.raw.csv`
 with the CSV: raw instrument response text is retained; unknown resolution and
 uncertainty remain unknown. Digit count does not certify physical accuracy.
 `PROFILE_COMPATIBILITY_REVISION` and `JSON_LINES_API_REVISION` remain `1`;
-`RECORDING_COMPATIBILITY_REVISION` is `5`. Existing profiles and old CSV files
+`RECORDING_COMPATIBILITY_REVISION` is `7`. Existing profiles and old CSV files
 remain readable. Digits already rounded out of old CSV files cannot be recovered.
 From 0.3.6, available fixed-axis readings are saved and commanded U/V is separated from measured U/V. See [coordinate recording](../../docs/reference/measurement-integrity.md).
 

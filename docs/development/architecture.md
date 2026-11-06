@@ -12,12 +12,13 @@ See the root README for source-built releases and Notebook access.
 
 ## Compatibility contracts
 
-Profiles and `--stdio` commands/events remain revision 1. Recording revision 3
-retains CSV columns and accepts old files while preserving full acquired f64
-values in X/Y/R and adding versioned metadata/raw-response sidecars. The numeric
-text change intentionally corrects revision-1 rounding; frozen Python fixtures
-are retained to audit the historical behavior separately. Unknown profile keys
-are preserved. See [measurement integrity](../reference/measurement-integrity.md).
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 7
+retains the analysis/raw CSV schemas and accepts old files. X/Y/R preserve acquired
+f64 values. Delay CSV formatting uses observed pulse quantization, while raw CSV
+retains unrounded delay coordinates and run metadata records the format parameters.
+Calculation/API values remain unrounded. Frozen Python fixtures audit historical
+behavior separately; unknown profile keys are preserved. See
+[measurement integrity](../reference/measurement-integrity.md).
 
 
 ## Extending devices and measurements
@@ -56,7 +57,7 @@ checks and device-free GUI smoke tests cover these existing contracts.
 
 ### 互換性の契約
 
-設定と`--stdio`の命令・イベントはrevision 1を維持します。記録revision 3はCSV列と旧ファイル読込を保ち、X/Y/Rの取得f64値を保持して、バージョン付きメタデータと生応答の付属ファイルを追加します。数値表記の変更はrevision 1の丸めの修正です。固定Python参照を変更せず、旧動作を別に検証します。未知の設定項目は保持します。[測定記録の精度](../reference/measurement-integrity.md)を参照してください。
+設定と`--stdio`の命令・イベントはrevision 1を維持します。記録revision 7は解析／raw CSVスキーマと旧ファイル読込を保ち、X/Y/Rの取得f64値を保持します。遅延座標のCSV表記は観測済みパルス換算を使い、丸め前の値をraw、桁数をrunメタデータへ残します。計算・API値は丸めません。固定Python参照を変更せず旧動作を別に検証し、未知の設定項目も保持します。[測定記録の精度](../reference/measurement-integrity.md)を参照してください。
 
 
 ### 機器と測定の拡張

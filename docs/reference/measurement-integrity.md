@@ -145,13 +145,52 @@ old sidecars or rewrite historical runs to make them resemble a new acquisition.
 
 ## Stored digits / 保存する桁
 
-Starting with 0.3.5 (recording revision 2), X_V/Y_V/R_V use shortest scientific
-text that reconstructs the acquired finite f64 exactly. Other numeric fields
-retain shortest Python-compatible round-trip text. CSV columns are unchanged.
-GUI labels may use fewer digits; display formatting never rounds the saved value.
-This is numeric preservation, not a claim that every digit is physically significant.
+Starting with 0.5.2 (recording revision 7), main CSV `t_ps` and `t_cor_ps`
+use fixed decimal places derived from the **observed effective ps per pulse**.
+The decimal grid is at most one tenth of a pulse, so formatting error is at
+most one twentieth of a pulse. The controller microstep, configured calibration
+and optical round trips determine that scale; it is not a claim of physical
+accuracy. For example, a 1 µm pulse and one optical round trip give approximately
+0.00667 ps/pulse: `-49.501718235949715` is written as `-49.5017`.
 
-0.3.5（記録revision 2）から、X_V/Y_V/R_Vは取得した有限f64値を正確に復元できる最短の指数表記で保存します。他の数値列はPython互換の最短往復表記を維持し、CSV列は変更しません。GUI表示は短くても、保存値は表示用に丸めません。これは数値の保持であり、全桁が物理的な有効数字だという保証ではありません。
+`target_t_cor_ps` also preserves the decimal precision of the requested range
+and Step (converting mm input precision to ps). Finer commanded points therefore
+remain distinct even if the stage cannot resolve that motion. Measurement-unit
+targets are saved directly rather than adding and subtracting the zero first.
+Without observed calibration, or if fixed formatting would require more than
+15 decimal places, the corresponding field retains shortest round-trip text.
+
+The raw CSV reading event keeps exact unrounded delay values in
+`details_json.unrounded_delay`, in addition to native pulse/mm readbacks and
+transport responses. Run JSON records the actual formatting parameters at
+`context.delay_csv_format`. Calculations, motion, API samples and plots keep
+their unrounded values. Existing CSVs and Save Now snapshots are not reformatted.
+
+0.5.2（記録revision 7）から、main CSVの`t_ps`・`t_cor_ps`は**接続機器で確認した
+実効ps/pulse**を基準に小数桁数を決めます。出力の最小桁は1パルスの1/10以下、
+丸め誤差は1/20以下です。マイクロステップ・校正・光路の往復数を反映しますが、
+装置の確度を保証する桁数ではありません。例えば1 µm/pulse・光路1往復では
+約0.00667 ps/pulseとなり、`-49.501718235949715`は`-49.5017`と保存します。
+
+`target_t_cor_ps`は入力した範囲・Stepの小数桁も維持します（mm入力はpsへ換算）。
+装置の分解能より細かい指令点も区別し、測定座標の指令値はゼロの加減算をせず
+そのまま使います。実効校正が未取得、または小数点以下15桁を超える精度が必要な
+項目は、従来の最短往復表記で保存します。
+
+丸め前の遅延値はraw CSVのreadingイベントの`details_json.unrounded_delay`へ
+保持し、pulse・mm・通信応答も従来通り残します。実際の出力桁数とps/pulseは
+run JSONの`context.delay_csv_format`で確認できます。計算・移動・API・プロットの
+内部値は丸めません。過去CSVやSave Nowのコピーを再整形することもありません。
+
+Other fields retain their previous precision: X/Y/R use shortest scientific text
+that reconstructs the acquired finite f64 exactly, while spatial coordinates,
+phase and host elapsed time use shortest Python-compatible round-trip text.
+These stored digits are not a measurement-uncertainty estimate. CSV columns stay
+unchanged.
+
+その他の列の保存精度は維持します。X/Y/Rは取得f64を復元できる最短指数表記、
+空間座標・位相・ホスト経過時間はPython互換の最短往復表記です。保存桁を測定の
+不確かさと同一視しません。CSV列名は変更しません。
 
 ## Coordinate recording (0.3.6, revision 3) / 座標の保存
 

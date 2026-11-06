@@ -69,6 +69,9 @@ pub(crate) struct SampleRecording {
     pub quality_flags: String,
     #[serde(skip)]
     pub canonical_target: [Option<f64>; 3],
+    /// Main-CSV formatting only; raw values and API samples remain unrounded.
+    #[serde(skip)]
+    pub delay_csv_format: recording::DelayCsvFormat,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1380,10 +1383,20 @@ impl Session {
             Source::Demo => &requested_config,
             Source::Gpib { .. } => self.config.as_ref().unwrap_or(&requested_config),
         };
+        let delay_csv_format = recording::DelayCsvFormat::from_calibration(
+            if matches!(source, Source::Gpib { .. }) {
+                self.state.delay_calibration.as_ref()
+            } else {
+                None
+            },
+            plan,
+        );
         let context_result = preparation_error.map_or(Ok(()), Err).and_then(|()| {
             csv.as_mut()
                 .map(|recording| {
-                    recording.set_context(&self.recording_context(source, context_config))
+                    let mut context = self.recording_context(source, context_config);
+                    context["delay_csv_format"] = serde_json::json!(delay_csv_format);
+                    recording.set_context(&context)
                 })
                 .transpose()
                 .map(|_| ())
@@ -1586,6 +1599,7 @@ impl Session {
                             run_id: csv.as_ref().map(|r| r.run_id().to_owned()).unwrap_or_default(), point_index:index+1,
                             signal_unit, quality_flags,
                             canonical_target:std::array::from_fn(|i| physical[index][i].map(|v| v-plan.zero[i])),
+                            delay_csv_format,
                         }),
                         timing: Box::new(point_timing),
                         captured_at: Some(captured),
@@ -1615,6 +1629,9 @@ impl Session {
                         });
                         if let Some(exchanges) = exchanges {
                             audit["exchanges"] = exchanges;
+                        }
+                        if let Some(delay) = recording::unrounded_delay(plan, &sample) {
+                            audit["unrounded_delay"] = delay;
                         }
                         csv.append_audit(&audit)?;
                         if let Some(status_event) = status_event { csv.append_audit(&status_event)?; }
@@ -1940,6 +1957,7 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
             "transport": Value::Null,
             "resolution": Value::Null,
             "uncertainty": Value::Null,
+            "delay_csv_format": recording::DelayCsvFormat::default(),
         }))
         .and_then(|()| {
             for (index, target) in targets.iter().enumerate() {
@@ -1953,6 +1971,7 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
                         signal_unit: "V".into(),
                         quality_flags: "simulated".into(),
                         canonical_target: target.corrected.map(Some),
+                        delay_csv_format: Default::default(),
                     }),
                     timing: Box::new(timing::AcquisitionTiming {
                         position: None,
@@ -1977,6 +1996,7 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
                             "input_coordinate":coordinate_name(plan.coordinate),
                     "target": sample.target,
                     "position": sample.position.clone(),
+                    "unrounded_delay": recording::unrounded_delay(&plan, &sample),
                     "timing": sample.timing,
                 }))?;
                 writer.write_sample(&plan, &sample, start, index + 1, &mut rows)?;
