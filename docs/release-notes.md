@@ -1,6 +1,6 @@
-# KohdaLab TRKR 1.0.0
+# KohdaLab TRKR 1.0.1
 
-[Published release / 公開版](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.0)
+The common Python SDK can stop a specified measurement and check its terminal receipt. / 共通Python SDKで測定を指定し、停止結果を確認できます。
 
 TRKR combines lock-in signal acquisition with delay-stage and spatial scanning. The Signal Monitor can use the lock-in independently. Lock-in settings are shown according to the connected model and read back from the instrument.
 TRKRはロックイン信号取得と遅延・空間ステージ走査を行うアプリです。Signal Monitorではロックイン単体で測定できます。設定項目は接続機種に応じて表示し、設定値を実機から読み戻します。

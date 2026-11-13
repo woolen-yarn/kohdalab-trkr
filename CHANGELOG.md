@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.1
 
 - The common Python SDK can stop a specified job and confirm its cleanup. / 共通Python SDKで測定を指定し、停止後の処理を確認できます。
 
