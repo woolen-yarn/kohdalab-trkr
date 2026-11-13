@@ -56,6 +56,28 @@ def packaged_profile(executable: Path) -> Path:
     return bundled
 
 
+def require_startup_profile(reported: object, expected: Path) -> None:
+    """Fail unless the GUI reports `expected` as its active profile file.
+
+    An explicit non-demo `--config` is remembered via `fs::canonicalize`, so the
+    reported string may legitimately differ from `expected` (Windows `\\\\?\\`
+    verbatim prefix, macOS `/var` -> `/private/var`). Compare file identity,
+    not spelling, and report both values when they disagree.
+    """
+    message = (
+        "GUI did not start from the packaged profile copy: "
+        f"config_path={reported!r}, expected {str(expected)!r}"
+    )
+    if not isinstance(reported, str) or not reported:
+        raise ValueError(message)
+    try:
+        same = os.path.samefile(reported, expected)
+    except OSError as error:
+        raise ValueError(f"{message} ({error})") from error
+    if not same:
+        raise ValueError(message)
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("executable", type=Path)
@@ -84,8 +106,7 @@ def main() -> None:
             directory = Path(home) / ".kohdalab" / "trkr" / "run"
             client = wait_for_client(directory, process)
             startup = client.config()
-            if startup["config_path"] != str(profile_path):
-                raise ValueError("GUI did not start from the packaged profile copy")
+            require_startup_profile(startup.get("config_path"), profile_path)
             profile = json.loads(profile_bytes)
             profile["measurements"]["signal_monitor"]["interval_s"] = 0.0
             client.describe()

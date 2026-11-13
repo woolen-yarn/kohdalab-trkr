@@ -62,3 +62,33 @@ def test_packaged_profile_follows_macos_bundle_resources(monkeypatch, tmp_path):
     bundled.write_bytes(source.read_bytes())
     found = module.packaged_profile(tmp_path / "Contents/MacOS/kohdalab-trkr")
     assert found.resolve() == bundled.resolve()
+
+
+def test_startup_profile_accepts_canonicalized_spelling_of_the_same_file(monkeypatch, tmp_path):
+    module = load_verifier(monkeypatch)
+    real = tmp_path / "private" / "home"
+    real.mkdir(parents=True)
+    profile = real / "default.json"
+    profile.write_text("{}")
+    alias = tmp_path / "home"
+    try:
+        alias.symlink_to(real, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlinks unavailable")
+    # The GUI canonicalizes an explicit --config (macOS /var -> /private/var,
+    # Windows verbatim prefix); the verifier holds the non-canonical spelling.
+    module.require_startup_profile(str(profile.resolve()), alias / "default.json")
+
+
+def test_startup_profile_rejects_another_file_with_useful_diagnostics(monkeypatch, tmp_path):
+    module = load_verifier(monkeypatch)
+    expected = tmp_path / "default.json"
+    expected.write_text("{}")
+    other = tmp_path / "other.json"
+    other.write_text("{}")
+    with pytest.raises(ValueError, match=r"config_path='.*other\.json', expected '.*default\.json'"):
+        module.require_startup_profile(str(other), expected)
+    with pytest.raises(ValueError, match=r"missing\.json"):
+        module.require_startup_profile(str(tmp_path / "missing.json"), expected)
+    with pytest.raises(ValueError, match="config_path=None"):
+        module.require_startup_profile(None, expected)
