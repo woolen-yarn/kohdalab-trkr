@@ -1275,6 +1275,51 @@ mod tests {
         assert_eq!(stop["cleanup"], "verified");
         assert_eq!(stop["native"]["status"], "completed");
     }
+
+    #[test]
+    fn common_sdk_stop_with_job_id_targets_that_runs_terminal_receipt() {
+        // Frames exactly as the shared Python SDK sends them: job_id, not run_id.
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        app.plans[App::ix(Workflow::SignalMonitor)].interval_s = 3600.;
+        let acquired = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"acquire","_control_method":"acquire","client_id":A}),
+            )
+            .unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let start = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"start","_control_method":"start","client_id":A,
+                    "lease":acquired["lease"],"workflow":"signal_monitor",
+                    "request_id":uuid::Uuid::new_v4().to_string(),
+                    "output":output.path().join("sdk_stop.csv")}),
+            )
+            .unwrap();
+        let id = start["job_id"].as_str().unwrap().to_owned();
+        let sdk = |method: &str| {
+            kohdalab_control_protocol::prepare(&json!({"method":method,"control_protocol":1,
+                "client_id":A,"lease":acquired["lease"],"job_id":id,
+                "request_id":uuid::Uuid::new_v4().to_string()}))
+            .unwrap()
+        };
+        let stop = bridge.handle(&mut app, &sdk("control.stop")).unwrap();
+        assert_eq!(stop["requested"], true);
+        assert_eq!(stop["job_id"], id);
+        assert_eq!(stop["cleanup"], "pending");
+        finish(&mut app, &mut bridge);
+        let receipt = bridge.handle(&mut app, &sdk("control.result")).unwrap();
+        assert_eq!(receipt["job_id"], id);
+        assert_eq!(receipt["terminal"], true);
+        assert_eq!(receipt["status"], "stopped");
+        assert_eq!(receipt["cleanup"], "verified");
+        // A repeated SDK stop on the terminal job is idempotent, not a new stop.
+        let again = bridge.handle(&mut app, &sdk("control.stop")).unwrap();
+        assert_eq!(again["requested"], false);
+        assert_eq!(again["cleanup"], "verified");
+    }
     #[test]
     fn common_describe_advertises_existing_configuration_and_device_actions() {
         let (_dir, mut bridge) = bridge();

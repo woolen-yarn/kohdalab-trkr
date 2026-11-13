@@ -476,8 +476,19 @@ class ControlClient:
             self.acquire()
         return self._call("stop", **params)
 
-    def stop_and_wait(self, *, timeout=10.0):
+    def stop_and_wait(self, job_id=None, *, timeout=10.0, poll_interval=0.05):
+        """Stop and wait for confirmed cleanup.
+
+        With ``job_id``, stop exactly that job and wait for its own terminal
+        receipt (required by apps whose stop targets a job, e.g. TRKR). Without
+        it, keep the original app-wide stop and global status wait.
+        """
         timeout = _positive(timeout, "timeout")
+        poll_interval = _positive(poll_interval, "poll_interval")
+        if job_id is not None:
+            if not isinstance(job_id, str) or not job_id:
+                raise ValueError("job_id must be a non-empty string")
+            return self._stop_job_and_wait(job_id, timeout, poll_interval)
         self.stop()
         deadline = time.monotonic() + timeout
         while True:
@@ -494,7 +505,40 @@ class ControlClient:
                     code="timeout",
                     outcome_unknown=True,
                 )
-            time.sleep(0.05)
+            time.sleep(poll_interval)
+
+    def _stop_job_and_wait(self, job_id, timeout, poll_interval):
+        # Terminal receipts are stopped idempotently by the application; the
+        # stop ACK itself is never treated as cleanup confirmation.
+        self.stop(job_id=job_id)
+        deadline = time.monotonic() + timeout
+        while True:
+            receipt = self.result(job_id)
+            if receipt.get("job_id") not in (None, job_id):
+                raise ControlError(
+                    "Receipt does not match the requested job",
+                    code="validation",
+                    request_id=job_id,
+                )
+            if receipt.get("terminal") is True:
+                if receipt.get("status") in (
+                    "completed",
+                    "stopped",
+                ) and receipt.get("cleanup") in ("verified", "not_required"):
+                    return receipt
+                raise ControlError(
+                    "Stop cleanup was not confirmed; inspect receipt.native",
+                    code="cleanup_unconfirmed",
+                    request_id=job_id,
+                )
+            if time.monotonic() >= deadline:
+                raise ControlError(
+                    "Stop acknowledgement is not cleanup confirmation",
+                    code="timeout",
+                    request_id=job_id,
+                    outcome_unknown=True,
+                )
+            time.sleep(min(poll_interval, max(0, deadline - time.monotonic())))
 
     def release(self, *, timeout=10.0):
         timeout = _positive(timeout, "timeout")

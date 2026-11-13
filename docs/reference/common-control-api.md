@@ -57,7 +57,7 @@ specific receipt before retrying. The SDK never replays mutations automatically,
 chooses a process by recency, or opens a second instrument connection.
 
 `wait(job_id)` follows explicit ACK-to-job links, never the latest job.
-`stop_and_wait()` requires actual cleanup confirmation. `release()` waits for
+For TRKR, pass the job ID to `stop_and_wait(job["job_id"])` (Python SDK 1.0.2+). The method checks that job’s terminal receipt and cleanup status. `release()` waits for
 confirmed release and cleanup; a timeout is reported rather than hidden. Finish
 or explicitly stop work before releasing when required by the app policy.
 

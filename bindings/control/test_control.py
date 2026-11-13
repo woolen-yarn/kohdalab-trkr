@@ -322,6 +322,99 @@ class BoundaryTests(unittest.TestCase):
         ):
             self.assertEqual(client.stop_and_wait()["cleanup"], "verified")
 
+    def test_stop_and_wait_without_job_keeps_global_stop_for_existing_callers(self):
+        client = ControlClient(endpoint=self.endpoint())
+        with (
+            patch.object(client, "stop", return_value={"requested": True}) as stop,
+            patch.object(client, "result") as result,
+            patch.object(
+                client,
+                "status",
+                return_value={"busy": False, "phase": "ready", "cleanup": "verified"},
+            ),
+        ):
+            client.stop_and_wait(timeout=1)
+        stop.assert_called_once_with()
+        result.assert_not_called()
+
+    def test_stop_and_wait_targets_explicit_job_receipt_not_global_status(self):
+        client = ControlClient(endpoint=self.endpoint())
+        receipts = [
+            {"job_id": "run", "terminal": False, "status": "running",
+             "cleanup": "pending"},
+            {"job_id": "run", "terminal": True, "status": "stopped",
+             "cleanup": "verified"},
+        ]
+        with (
+            patch.object(client, "stop", return_value={"requested": True}) as stop,
+            patch.object(client, "result", side_effect=receipts) as result,
+            patch.object(client, "status") as status,
+        ):
+            done = client.stop_and_wait("run", poll_interval=0.001)
+        self.assertEqual(done["status"], "stopped")
+        stop.assert_called_once_with(job_id="run")
+        self.assertEqual([c.args[0] for c in result.call_args_list], ["run", "run"])
+        status.assert_not_called()
+
+    def test_stop_and_wait_sends_job_id_on_the_wire(self):
+        client = ControlClient(endpoint=self.endpoint())
+        client._description = {
+            "methods": ["control.stop", "control.result"],
+            "safety": {"stop_requires_lease": True},
+        }
+        client._lease = "opaque-test-lease"
+        sent = []
+
+        def exchange(_endpoint, method, payload, _timeout):
+            sent.append((method, payload))
+            if method == "stop":
+                return {"requested": False, "job_id": "run", "cleanup": "verified"}
+            return {"job_id": "run", "terminal": True, "status": "completed",
+                    "cleanup": "verified"}
+
+        with patch("kohdalab_control._exchange", side_effect=exchange):
+            self.assertTrue(client.stop_and_wait("run")["terminal"])
+        self.assertEqual([m for m, _ in sent], ["stop", "result"])
+        self.assertEqual(sent[0][1]["job_id"], "run")
+        self.assertEqual(sent[0][1]["lease"], "opaque-test-lease")
+        uuid.UUID(sent[0][1]["request_id"])
+        self.assertEqual(sent[1][1]["job_id"], "run")
+
+    def test_stop_and_wait_job_rejects_unconfirmed_mismatched_or_late_receipts(self):
+        client = ControlClient(endpoint=self.endpoint())
+        cases = [
+            ({"job_id": "run", "terminal": True, "status": "error",
+              "cleanup": "unknown"}, "cleanup_unconfirmed"),
+            ({"job_id": "run", "terminal": True, "status": "stopped",
+              "cleanup": "pending"}, "cleanup_unconfirmed"),
+            ({"job_id": "other", "terminal": True, "status": "stopped",
+              "cleanup": "verified"}, "validation"),
+            ({"job_id": "run", "terminal": False, "status": "running",
+              "cleanup": "pending"}, "timeout"),
+        ]
+        for receipt, code in cases:
+            with (
+                self.subTest(code=code, receipt=receipt),
+                patch.object(client, "stop", return_value={"requested": True}),
+                patch.object(client, "result", return_value=receipt),
+            ):
+                with self.assertRaises(ControlError) as caught:
+                    client.stop_and_wait("run", timeout=0.01, poll_interval=0.001)
+                self.assertEqual(caught.exception.code, code)
+                self.assertEqual(caught.exception.request_id, "run")
+
+    def test_stop_and_wait_invalid_job_or_poll_has_no_side_effect(self):
+        client = ControlClient(endpoint=self.endpoint())
+        with (
+            patch.object(client, "_call") as call,
+            patch.object(client, "stop") as stop,
+        ):
+            for kwargs in ({"job_id": ""}, {"job_id": 7}, {"poll_interval": 0}):
+                with self.assertRaises(ValueError):
+                    client.stop_and_wait(**kwargs)
+            call.assert_not_called()
+            stop.assert_not_called()
+
     def test_release_ack_with_pending_cleanup_is_not_completion(self):
         client = ControlClient(endpoint=self.endpoint())
         client._lease = "opaque-test-lease"
