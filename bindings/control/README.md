@@ -35,7 +35,9 @@ acquire GUI ownership. Do not use a second native client to open the same device
 Shutter holds its last state; IV verifies output OFF for release; motion/optical
 cleanup and Camera acquisition have their own contracts. They are not made equal
 by the shared API. A stop ACK is not proof of cleanup: use `stop_and_wait()` only
-where stop is advertised. `release()` waits for the application to confirm release;
+where stop is advertised. Apps whose stop targets a job (TRKR) require
+`stop_and_wait(job["job_id"])`, which waits for that job's own terminal receipt
+with verified cleanup; without an ID the original app-wide stop/status wait is kept. `release()` waits for the application to confirm release;
 a failure is reported, not silently treated as success. Complete or explicitly
 stop active work before closing when that application's policy requires it.
 
