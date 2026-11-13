@@ -52,18 +52,33 @@ Architecture: amd64
 Section: science
 Priority: optional
 Maintainer: KohdaLab
-Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libgl1, libegl1, libx11-6, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libwayland-client0
+Depends: libc6 (>= 2.39), libgcc-s1, libstdc++6, libgl1, libegl1, libx11-6, libx11-xcb1, libxcb1, libxcursor1, libxi6, libxrandr2, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1
 Description: Lock-in signal acquisition and delay/spatial scan control
 CONTROL
 dpkg-deb --root-owner-group --build "$deb" "$out/kohdalab-trkr_${version}_amd64.deb"
 
 mkdir "$scratch/extracted"
 tar -C "$scratch/extracted" -xzf "$out/$name.tar.gz"
-dpkg-deb -x "$out/kohdalab-trkr_${version}_amd64.deb" "$scratch/installed"
-for root in "$scratch/extracted/$name" "$scratch/installed/opt/kohdalab/kohdalab-trkr"; do
-  label=$(basename "$(dirname "$root")")
+# winit, xkbcommon and glutin dlopen their X11/Wayland libraries at runtime, so
+# an extracted tree cannot prove the Depends line. TRKR_LINUX_INSTALL_DEB=1 (CI)
+# installs the real package through apt and tests the installed /opt tree.
+if [ "${TRKR_LINUX_INSTALL_DEB:-0}" = 1 ]; then
+  sudo apt-get install -y --no-install-recommends "$out/kohdalab-trkr_${version}_amd64.deb"
+  deb_root=/opt/kohdalab/kohdalab-trkr
+  test "$(readlink -f /usr/bin/kohdalab-trkr)" = "$deb_root/kohdalab-trkr"
+  test "$(readlink -f /usr/bin/kohdalab-trkr-demo)" = "$deb_root/kohdalab-trkr-demo"
+else
+  dpkg-deb -x "$out/kohdalab-trkr_${version}_amd64.deb" "$scratch/installed"
+  deb_root="$scratch/installed/opt/kohdalab/kohdalab-trkr"
+fi
+for label in portable deb; do
+  if [ "$label" = portable ]; then root="$scratch/extracted/$name"; else root="$deb_root"; fi
   cmp target/release/kohdalab-trkr "$root/kohdalab-trkr"
   python3 scripts/verify_packaged_measurements.py "$root/kohdalab-trkr" --output "$out/measurement-$label"
-  xvfb-run -a python3 scripts/verify_common_control.py "$root/kohdalab-trkr" --output "$out/control-$label"
+  # xvfb-run defaults to 640x480x8, which offers no GLX config for the glow
+  # renderer; use a 24-bit screen large enough for the minimum window size.
+  mkdir -p "$out/control-$label"
+  xvfb-run -a -e "$out/control-$label/xvfb.log" -s "-screen 0 1920x1080x24 -nolisten tcp" \
+    python3 scripts/verify_common_control.py "$root/kohdalab-trkr" --output "$out/control-$label"
 done
 (cd "$out" && sha256sum "$name.tar.gz" "kohdalab-trkr_${version}_amd64.deb" > SHA256SUMS-linux.txt)
