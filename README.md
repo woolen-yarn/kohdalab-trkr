@@ -10,13 +10,44 @@ Rust desktop application for time-resolved Kerr rotation measurements, live lock
 
 時間分解カー回転測定、ロックインのライブ表示、ステージ・スキャナ制御を行うRust製デスクトップアプリです。
 
-[Download / ダウンロード](https://github.com/woolen-yarn/kohdalab-trkr/releases) · [Documentation / 文書](docs/README.md) · [Report an issue / 問題の報告](https://github.com/woolen-yarn/kohdalab-trkr/issues)
+[Documentation / 文書](docs/README.md) · [Report an issue / 問題の報告](https://github.com/woolen-yarn/kohdalab-trkr/issues)
 
 - Signal Monitor, TRKR, SRKR, STRKR, and SRKR 2D. / 信号モニターと4種の測定に対応。
 - Live XY/Rθ traces, retained spatial scans, rotated u/v axes, and heatmaps. / XY/Rθのライブ表示、空間スキャンの結果保持、回転u/v軸、ヒートマップ。
 - Shared Rust measurement engine for the desktop GUI and optional Python/Jupyter client. / GUIと任意のPython/Jupyterクライアントで同じRust測定エンジンを使用。
 
-[Try without hardware / 機器なしで試す](docs/guides/quick-start.md) · [Hardware and connections / 機器と接続](docs/reference/hardware.md) · [Python and API / PythonとAPI](docs/reference/common-control-api.md)
+[Downloads / ダウンロード](#downloads--ダウンロード) · [Hardware and verification / 対応機器と実機検証](#hardware-and-verification--対応機器と実機検証) · [Try without hardware / 機器なしで試す](docs/guides/quick-start.md) · [Python and API / PythonとAPI](docs/reference/common-control-api.md)
+
+## Downloads / ダウンロード
+
+[Latest stable release / 最新安定版](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest) · [v1.0.1 release notes / リリースノート](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.1)
+
+| OS / 対応環境 | Installer / インストーラー | Portable / ポータブル |
+| --- | --- | --- |
+| Windows x64 | [Setup (.exe)](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/KohdaLab-TRKR-1.0.1-Setup.exe) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/kohdalab-trkr-1.0.1-windows-x64.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/KohdaLab-TRKR-1.0.1-macos-arm64.dmg) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/kohdalab-trkr-1.0.1-macos-arm64.zip) |
+| Ubuntu 24.04 x64 | [DEB](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/kohdalab-trkr_1.0.1_amd64.deb) | [tar.gz](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/kohdalab-trkr-1.0.1-linux-x86_64.tar.gz) |
+
+[SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/SHA256SUMS.txt) · [Linux SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.1/SHA256SUMS-linux.txt)
+
+Windows Setup is unsigned. macOS uses ad hoc signing and is not notarized. / Windows Setupは未署名です。macOS版はアドホック署名で、Appleの公証を受けていません。
+
+## Hardware and verification / 対応機器と実機検証
+
+| Model / 機器 | Role / 役割 | Connection / 接続方法 | Physical test scope / 実機検証の範囲 |
+| --- | --- | --- | --- |
+| SR7265, SR830, SR5210, LI5640 | Lock-in / ロックイン | GPIB | Signal or settings readback; scope varies by model / 信号・設定の読戻し。検証項目は機種別 |
+| SHOT-302GS + SGSP46-500 | Delay stage / 遅延ステージ | Serial / シリアル | Readback, relative motion and return / 位置取得、相対移動、開始位置への復帰 |
+| CONEX-CC | Scanner / スキャナ | Serial / シリアル | X/Y motion and return / X/Y移動と開始位置付近への復帰 |
+| CONEX-AGAP | Scanner / スキャナ | Serial / シリアル | Query and initialization without movement / 照会・移動なしの初期化 |
+| PM100USB + S130C | Power meter / パワーメーター | USB / Thorlabs TLPMX | Read power and reconnect after release / パワー取得、切断後の再接続 |
+| GSC01, GSC01A; PM100D | Delay controller; power meter / 遅延制御器・パワーメーター | See setup guide / 接続ガイド参照 | Implemented; physical test unrecorded / 実装済み・実機試験記録なし |
+
+The table records Windows tests of release candidates. macOS and Ubuntu hardware operation is unverified. / 表はWindowsの公開候補での記録です。macOS・Ubuntuの実機操作は未検証です。
+
+[Power-meter setup / パワーメーターの設定](docs/guides/power-meter.md)
+
+[Connection guide / 接続手順](docs/reference/hardware.md) · [Verification record / 検証記録](docs/validation/v1-hardware-results.md)
 
 ## Interface / 画面
 
@@ -25,33 +56,6 @@ Rust desktop application for time-resolved Kerr rotation measurements, live lock
 Synthetic TRKR data; no instruments connected. The same interface is used on Windows and macOS.
 
 合成TRKRデータの表示例です。実機は接続していません。Windows・macOSで同じ画面構成を使用します。
-
-## Downloads / ダウンロード
-
-| Channel / 配布区分 | Version / バージョン | Platforms / 対応環境 |
-| --- | --- | --- |
-| Stable / 安定版 | [Latest release / 最新版](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest) | Windows x64 Setup / portable ZIP; macOS Apple silicon DMG / ZIP |
-
-Rust and Python are not required to run the packaged application. Current Windows
-artifacts are unsigned; download packages and checksums together from Releases.
-macOS bundles use ad hoc signing and are not Apple-notarized.
-
-配布版の実行にRustやPythonのインストールは不要です。現在のWindows版は未署名です。Releasesからパッケージとチェックサムを一緒に取得してください。macOS版はアドホック署名で、Appleの公証は受けていません。
-
-## Supported hardware / 対応機器
-
-| Role / 役割 | Implemented models / 実装済み機種 |
-| --- | --- |
-| Lock-in / ロックイン | SR7265, SR830, SR5210, LI5640 |
-| Delay controller / 遅延ステージ制御 | SHOT302GS, GSC01, GSC01A |
-| Scanner controller / スキャナ制御 | CONEX-CC, CONEX-AGAP |
-| Power meter / パワーメータ | Thorlabs PM100USB, PM100D (Windows x64: VISA USBTMC, plus Thorlabs TLPMX/TLPM from 0.5.7 / Windows x64：VISA USBTMC、0.5.7からThorlabs TLPMX/TLPM) |
-
-See [hardware and transport](docs/reference/hardware.md) for stage/actuator presets, GPIB adapters, and validation scope. Implemented protocol support does not imply physical qualification of every device/firmware combination.
-
-ステージ・アクチュエータのプリセット、GPIBアダプター、確認範囲は[対応機器と通信](docs/reference/hardware.md)を参照してください。プロトコルの実装は、すべての機器・ファームウェアの組合せを実機検証済みという意味ではありません。
-
-[Power-meter setup and recording / パワーメータの設定と記録](docs/guides/power-meter.md).
 
 ## Quick start / はじめに
 
