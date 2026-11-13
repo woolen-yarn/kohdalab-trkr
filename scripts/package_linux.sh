@@ -64,6 +64,10 @@ for root in "$scratch/extracted/$name" "$scratch/installed/opt/kohdalab/kohdalab
   label=$(basename "$(dirname "$root")")
   cmp target/release/kohdalab-trkr "$root/kohdalab-trkr"
   python3 scripts/verify_packaged_measurements.py "$root/kohdalab-trkr" --output "$out/measurement-$label"
-  xvfb-run -a python3 scripts/verify_common_control.py "$root/kohdalab-trkr" --output "$out/control-$label"
+  # xvfb-run defaults to 640x480x8, which offers no GLX config for the glow
+  # renderer; use a 24-bit screen large enough for the minimum window size.
+  mkdir -p "$out/control-$label"
+  xvfb-run -a -e "$out/control-$label/xvfb.log" -s "-screen 0 1920x1080x24 -nolisten tcp" \
+    python3 scripts/verify_common_control.py "$root/kohdalab-trkr" --output "$out/control-$label"
 done
 (cd "$out" && sha256sum "$name.tar.gz" "kohdalab-trkr_${version}_amd64.deb" > SHA256SUMS-linux.txt)

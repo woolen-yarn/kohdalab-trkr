@@ -21,8 +21,10 @@ def wait_for_client(directory: Path, process, *, timeout: float = 10.0):
     """Wait for a responding GUI, not merely its early-published descriptor."""
     deadline = time.monotonic() + timeout
     while (remaining := deadline - time.monotonic()) > 0:
-        if process.poll() is not None:
-            raise RuntimeError("GUI exited before its API became ready; see gui.log")
+        if (code := process.poll()) is not None:
+            raise RuntimeError(
+                f"GUI exited with code {code} before its API became ready; see gui.log"
+            )
         endpoints = discover(
             "kohdalab-trkr", directory=directory, probe_timeout=min(0.25, remaining)
         )
@@ -41,10 +43,20 @@ def main() -> None:
     a = p.parse_args()
     a.output.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="kohdalab-trkr-control-") as home:
-        env = dict(os.environ, HOME=home, USERPROFILE=home)
-        log = (a.output / "gui.log").open("w")
+        env = dict(os.environ, HOME=home, USERPROFILE=home, RUST_BACKTRACE="1")
+        # Never let a headless run escape Xvfb onto a developer's Wayland session.
+        env.pop("WAYLAND_DISPLAY", None)
+        # Start explicitly from a private copy of the bundled synthetic profile:
+        # no per-user settings are inspected and the payload is never written.
+        bundled = a.executable.resolve().parent / "config" / "default_demo.json"
+        if not bundled.is_file():
+            bundled = ROOT / "crates/trkr-desktop/assets/default_demo.json"
+        profile_path = Path(home) / "default_demo.json"
+        profile_path.write_bytes(bundled.read_bytes())
+        log_path = a.output / "gui.log"
+        log = log_path.open("w")
         process = subprocess.Popen(
-            [str(a.executable.resolve()), "--gui-api"],
+            [str(a.executable.resolve()), "--gui-api", "--config", str(profile_path)],
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -107,6 +119,11 @@ def main() -> None:
                     }
                 )
             )
+        except BaseException:
+            log.flush()
+            print(f"--- {log_path} (exit {process.poll()}) ---", file=sys.stderr)
+            print(log_path.read_text(errors="replace")[-20000:], file=sys.stderr)
+            raise
         finally:
             process.terminate()
             process.wait(timeout=10)
