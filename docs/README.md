@@ -1,5 +1,11 @@
 # KohdaLab TRKR documentation / ドキュメント
 
+
+- [Download for your OS / OS別ダウンロード](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest)
+- [Install and try Simulation / インストールと模擬操作](guides/quick-start.md)
+- [Hardware and connections / 対応機器と接続](reference/hardware.md)
+- [Python and external API / Pythonと外部API](reference/common-control-api.md)
+
 [Product overview / 製品概要](../README.md) · [Downloads / ダウンロード](https://github.com/woolen-yarn/kohdalab-trkr/releases) · [Contributing / 開発への参加](../CONTRIBUTING.md)
 
 ## User guides / 操作ガイド

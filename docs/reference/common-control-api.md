@@ -16,18 +16,11 @@ python -m pip install ./bindings/control
 ```
 
 ```python
-from kohdalab_control import ControlClient, discover
+from kohdalab_control import ControlClient
 
-instances = discover("kohdalab-iv")
-app = ControlClient("kohdalab-iv")  # exactly one responsive instance required
-print(app.describe())              # no ownership or instrument connection
+app = ControlClient("kohdalab-trkr")
+print(app.describe())
 print(app.status())
-# Review the GUI profile before acquiring or connecting devices.
-with app:
-    job = app.invoke("connect")
-    app.wait(job["job_id"])
-    job = app.invoke("start")
-    finished = app.wait(job["job_id"])
 ```
 
 For multiple instances choose an explicit private descriptor with `endpoint=`.

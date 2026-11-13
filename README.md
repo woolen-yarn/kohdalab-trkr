@@ -16,6 +16,8 @@ Rust desktop application for time-resolved Kerr rotation measurements, live lock
 - Live XY/Rθ traces, retained spatial scans, rotated u/v axes, and heatmaps. / XY/Rθのライブ表示、空間スキャンの結果保持、回転u/v軸、ヒートマップ。
 - Shared Rust measurement engine for the desktop GUI and optional Python/Jupyter client. / GUIと任意のPython/Jupyterクライアントで同じRust測定エンジンを使用。
 
+[Try without hardware / 機器なしで試す](docs/guides/quick-start.md) · [Hardware and connections / 機器と接続](docs/reference/hardware.md) · [Python and API / PythonとAPI](docs/reference/common-control-api.md)
+
 ## Interface / 画面
 
 ![KohdaLab TRKR interface](docs/images/gui-trkr.png)
