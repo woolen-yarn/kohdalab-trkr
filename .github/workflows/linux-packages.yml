@@ -17,10 +17,12 @@ jobs:
       - name: Install build and desktop test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth
-      - name: Build, package and test
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgl1-mesa-dri xvfb xauth \
+            libxkbcommon-x11-0 libx11-xcb1 libxcb1 libxcursor1 libxi6 libxrandr2 libwayland-egl1
+      - name: Build, install the DEB and test portable and installed runtimes
         env:
           LIBGL_ALWAYS_SOFTWARE: '1'
+          TRKR_LINUX_INSTALL_DEB: '1'
         run: bash scripts/package_linux.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
