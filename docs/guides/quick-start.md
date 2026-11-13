@@ -3,7 +3,7 @@
 1. Install to `C:\Program Files\Kohdalab\KohdaLab TRKR` on Windows or `/Applications/KohdaLab TRKR.app` on macOS, or extract the complete portable package.
 2. Explore synthetic data using the separate Demo application before connecting hardware.
 3. Load a reviewed profile, check the selected devices, ports, origins, calibration, and limits, then connect deliberately.
-4. Choose a workflow and output location. Keep the CSV and its `.run.json` metadata together.
+4. Choose a workflow and output location. Keep the main `.csv`, `.raw.csv`, `.log`, and `.run.json` together.
 
 Python/Jupyter access: [client guide](../../bindings/python/README.md) · [notebooks](../../notebook/).
 
