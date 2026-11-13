@@ -1,0 +1,107 @@
+# Native Rust workspace
+
+The maintained TRKR application lives in this workspace. Run from the repository root:
+
+```sh
+cargo run --manifest-path Cargo.toml --locked --bin kohdalab-trkr
+cargo test --manifest-path Cargo.toml --locked
+```
+
+Crates separate the experiment plan, device transport, motion safety and desktop GUI.
+See the root README for source-built releases and Notebook access.
+
+## Compatibility contracts
+
+Profiles and `--stdio` commands/events remain revision 1. Recording revision 8
+retains the analysis/raw CSV schemas and accepts old files. X/Y/R preserve acquired
+f64 values. Delay CSV formatting uses observed pulse quantization, while raw CSV
+retains unrounded delay coordinates and run metadata records the format parameters.
+Calculation/API values remain unrounded. Frozen Python fixtures audit historical
+behavior separately; unknown profile keys are preserved. See
+[measurement integrity](../reference/measurement-integrity.md).
+
+Revision 8 adds optional, sequential power-meter provenance: main CSV `power_W`
+is blank when no meter is selected or a selected meter is unavailable, with a
+`power_unavailable` quality flag in the latter case; acquisition continues. A
+successful native value is converted from W/dBm to W and multiplied by the
+sample correction factor exactly once. Raw records retain native/corrected
+values, wavelength, factor, settings, exchanges, timing and errors; run JSON
+retains the selected meter identity/configuration. This is not a lock-in
+normalization path, does not add a main plot, and idle live polls are not stored.
+
+Only the main CSV power text is rounded to four significant digits (scientific
+notation with trailing zeros). Raw and API retain unrounded values; run JSON
+records this presentation policy and its finite-f64 overflow fallback.
+
+
+## Extending devices and measurements
+
+- Add scanner capability flags to `ScannerModel::capabilities` and actuator
+  calibration defaults to the actuator descriptor in `trkr-motion`. Keep
+  model-specific command syntax in `protocol`; configuration, planning and
+  initialization consume capabilities rather than duplicating model checks.
+- Add lock-in options, terminators and auto commands to `ModelDescriptor`.
+  Keep read conversions and model-specific setting commands in the driver.
+  SR7265 sensitivity still depends on the queried input mode; it must not be
+  replaced with one static table.
+- Add workflow names, ordering, default output names, plot counts and axis
+  constraints to `WorkflowDefinition` in `trkr-core`. Frontends consume the
+  same definition as plan validation. Distinct acquisition, coordinate/profile
+  mappings and plot algorithms still need explicit implementations; the table
+  is not a runtime plugin interface.
+- Keep scan sequencing in `engine/execution.rs` and compensation planning in
+  `MotionRig::plan_move`. Preflight and execution must use the same plan. The
+  single instrument-owning worker executes it, preserving cancellation, STOP,
+  polling deadlines and serial bus access.
+- Add states/errors at their typed source, retaining the legacy string boundary
+  until an explicit protocol revision is introduced. Profile migrations belong
+  in `config/compatibility.rs`; do not reinterpret unknown user metadata.
+
+Before adding a device, run the fake-bus command-order, cancellation, limits and
+readback tests. Before adding a workflow, exercise every axis pair, line entry,
+compensation, completion/Stop return and retained plot. Preserve the frozen
+Python references and compare all existing CSV/profile outputs, with revision-2 lossless voltages checked against the original acquired bits
+and historical revision-1 rounding separately; exclude generation timestamps. Rust workspace tests, strict Clippy, Notebook client
+checks and device-free GUI smoke tests cover these existing contracts.
+
+## 日本語
+
+保守対象のTRKRアプリはこのワークスペースにあります。リポジトリのルートで冒頭の`cargo run`・`cargo test`を実行します。crateは実験計画、機器通信、移動の安全性、GUIに分離しています。ソースからのビルドとNotebook利用はルートREADMEを参照してください。
+
+### 互換性の契約
+
+設定と`--stdio`の命令・イベントはrevision 1を維持します。記録revision 8は解析／raw CSVスキーマと旧ファイル読込を保ち、X/Y/Rの取得f64値を保持します。遅延座標のCSV表記は観測済みパルス換算を使い、丸め前の値をraw、桁数をrunメタデータへ残します。計算・API値は丸めません。固定Python参照を変更せず旧動作を別に検証し、未知の設定項目も保持します。[測定記録の精度](../reference/measurement-integrity.md)を参照してください。
+
+revision 8は任意パワーメータの逐次的な記録由来情報を追加します。メータ未選択または選択済みメータが利用不能ならmain CSVの`power_W`は空欄で、後者には`power_unavailable` quality flagを付け、測定は継続します。正常なネイティブ値はW/dBmからWへ変換し、試料面補正係数を一度だけ掛けます。rawにはネイティブ／補正値、波長、係数、設定、通信、時刻、エラーを残し、run JSONには選択メータのidentity/configurationを残します。これはロックインの正規化経路ではなく、main plotを追加せず、待機中のlive pollも保存しません。
+
+main CSVのパワー文字列だけを有効4桁の指数表記へ丸め、末尾のゼロも残します。raw・APIは丸め前の値を保持し、run JSONには保存規則とf64上限で丸めがoverflowする場合の例外を記録します。
+
+
+### 機器と測定の拡張
+
+- スキャナの機能フラグは`ScannerModel::capabilities`、アクチュエータ校正の既定値は`trkr-motion`の記述子へ追加します。機種固有の構文は`protocol`に置き、設定・計画・初期化は機種判定を重複させず機能フラグを使います。
+- ロックインの選択肢、終端、auto命令は`ModelDescriptor`へ追加します。読取変換と機種固有の設定命令はdriverに保持します。SR7265の感度は取得した入力モードに依存するため、単一固定表に置換しません。
+- 測定名、順序、既定保存名、プロット数、軸制約は`trkr-core`の`WorkflowDefinition`へ追加します。フロントエンドと計画検証は同じ定義を使います。個別の取得処理、座標・設定対応、描画アルゴリズムは明示実装が必要で、この表は実行時プラグインの仕組みではありません。
+- スキャン順序は`engine/execution.rs`、補償計画は`MotionRig::plan_move`へ保持します。事前検証と実行は同じ計画を使い、単一の機器所有workerがキャンセル、STOP、読取期限、シリアル通信を保って実行します。
+- 状態とエラーは型を定義する箇所に追加し、明示的なプロトコル改訂までは既存文字列の境界を保ちます。設定移行は`config/compatibility.rs`に置き、未知メタデータを再解釈しません。
+
+機器追加前に疑似通信の命令順序、キャンセル、制限、読取位置をテストします。測定追加前に全軸ペア、行開始、補償、完了・Stop時の復帰、プロット保持を確認します。固定Python参照を維持し、取得値のビット一致と旧revision 1の丸めを別々に検証し、生成時刻を除外して既存CSVと設定出力を比較します。Rustテスト、厳格なClippy、Notebook連携検証、実機を使わないGUIスモークテストが既存の契約を確認します。
+
+## Acquisition ETA / 取得時間の見積り
+
+The plot ETA is an approximate acquisition countdown derived from elapsed run
+time and observed completed points after the first acquisition, including the motion, compensation, reads,
+and CSV writes seen so far. The one-off initial approach is not extrapolated onto every remaining point. It is unknown before two observations or when
+an estimate becomes overdue. Startup and 2D line changes can shift the pace.
+Return-to-zero is shown as Returning rather than a false zero-second estimate.
+Replay uses the current playback clock and resets the estimate each loop;
+original CSV timestamps do not determine replay duration. No acquisition timing
+or saved data is changed by this display calculation.
+
+PlotのETAは、経過時間と実際に取得した点数から求める取得終了までの目安です。
+最初の取得後の移動・補償・読取・CSV保存時間を含み、初回の接近時間を全点へ外挿しません。
+2回の取得を観測する前や推定期限を
+超えたときは未確定とし、初期移動や2Dの行切替で推定は変化し得ます。
+原点復帰中は0秒とせずReturningを表示します。Demoは現在の再生時間を使い、
+ループごとにリセットします。元CSVの時刻は再生所要時間に使いません。
+この表示計算は、測定のタイミングや保存データを変更しません。

@@ -1,0 +1,777 @@
+{
+  "provenance": {
+    "source_tag": "v0.2.0",
+    "source_commit": "2ed1ed32ec141fd5eff49340aaad8a02b05e1ac0",
+    "modules": [
+      "src/kohdalab/api/config.py",
+      "src/kohdalab/api/models.py",
+      "src/kohdalab/api/measurement_rows.py"
+    ],
+    "csv_output_function": "kohdalab.api.measurement_rows.output_row",
+    "generation": "Archived modules were loaded under empty package shells; kohdalab package initializers and hardware modules were not imported."
+  },
+  "range_cases": [
+    {
+      "id": "ascending_tenths",
+      "min": 0.0,
+      "max": 0.3,
+      "step": 0.1,
+      "points": [
+        0.0,
+        0.1,
+        0.2,
+        0.3
+      ]
+    },
+    {
+      "id": "descending_integer",
+      "min": 3.0,
+      "max": 1.0,
+      "step": -1.0,
+      "points": [
+        3.0,
+        2.0,
+        1.0
+      ]
+    },
+    {
+      "id": "nonaligned_endpoint",
+      "min": -0.2,
+      "max": 0.25,
+      "step": 0.2,
+      "points": [
+        -0.2,
+        0.0,
+        0.2
+      ]
+    },
+    {
+      "id": "nonaligned_descending",
+      "min": 1.0,
+      "max": -0.1,
+      "step": -0.3,
+      "points": [
+        1.0,
+        0.7,
+        0.4,
+        0.1
+      ]
+    },
+    {
+      "id": "fractional_thirds",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.333333333,
+      "points": [
+        0.0,
+        0.333333333,
+        0.666666666,
+        0.999999999
+      ]
+    },
+    {
+      "id": "nine_decimal_increment",
+      "min": 0.0,
+      "max": 3e-09,
+      "step": 1e-09,
+      "points": [
+        0.0,
+        1e-09,
+        2e-09,
+        3e-09
+      ]
+    },
+    {
+      "id": "negative_fractional",
+      "min": -1.25,
+      "max": -0.25,
+      "step": 0.4,
+      "points": [
+        -1.25,
+        -0.85,
+        -0.45
+      ]
+    },
+    {
+      "id": "negative_descending",
+      "min": 1.25,
+      "max": 0.25,
+      "step": -0.4,
+      "points": [
+        1.25,
+        0.85,
+        0.45
+      ]
+    },
+    {
+      "id": "same_point",
+      "min": 7.125,
+      "max": 7.125,
+      "step": 0.5,
+      "points": [
+        7.125
+      ]
+    },
+    {
+      "id": "binary_boundary",
+      "min": 0.1,
+      "max": 0.3000000001,
+      "step": 0.1,
+      "points": [
+        0.1,
+        0.2,
+        0.3
+      ]
+    },
+    {
+      "id": "long_fractional",
+      "min": -0.333333333,
+      "max": 0.666666667,
+      "step": 0.111111111,
+      "points": [
+        -0.333333333,
+        -0.222222222,
+        -0.111111111,
+        -0.0,
+        0.111111111,
+        0.222222222,
+        0.333333333,
+        0.444444444,
+        0.555555555,
+        0.666666666
+      ]
+    },
+    {
+      "id": "negative_step_exact",
+      "min": 9e-09,
+      "max": 0.0,
+      "step": -3e-09,
+      "points": [
+        9e-09,
+        6e-09,
+        3e-09,
+        -0.0
+      ]
+    },
+    {
+      "id": "zero_to_one_seventh",
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.142857143,
+      "points": [
+        0.0,
+        0.142857143,
+        0.285714286,
+        0.428571429,
+        0.571428572,
+        0.714285715,
+        0.857142858
+      ]
+    },
+    {
+      "id": "offset_small_step",
+      "min": 12.345678901,
+      "max": 12.345678904,
+      "step": 1e-09,
+      "points": [
+        12.345678901,
+        12.345678902,
+        12.345678903,
+        12.345678904
+      ]
+    },
+    {
+      "id": "negative_start_fraction",
+      "min": -2.0,
+      "max": -1.0,
+      "step": 0.333333333,
+      "points": [
+        -2.0,
+        -1.666666667,
+        -1.333333334,
+        -1.000000001
+      ]
+    }
+  ],
+  "row_cases": [
+    {
+      "id": "signal_monitor",
+      "plan": {
+        "workflow": "signal_monitor",
+        "fast": "t",
+        "slow": "x",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 0.26,
+        "target_fast": 0.25,
+        "target_slow": null,
+        "corrected": [
+          0.25,
+          0.0,
+          0.0
+        ],
+        "physical": [
+          null,
+          null,
+          null
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {}
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "signal_monitor",
+        "fast_axis": "elapsed_s",
+        "slow_axis": null,
+        "target_elapsed_s": 0.25,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": null,
+        "target_y_cor_um": null,
+        "elapsed_s": 0.26,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": null,
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "signal_monitor",
+        "fast_axis": "elapsed_s",
+        "slow_axis": null,
+        "target_elapsed_s": 0.25,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": null,
+        "target_y_cor_um": null,
+        "elapsed_s": 0.26,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": null,
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      }
+    },
+    {
+      "id": "trkr",
+      "plan": {
+        "workflow": "trkr",
+        "fast": "t",
+        "slow": "x",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 1.5,
+        "target_fast": 12.25,
+        "target_slow": null,
+        "corrected": [
+          12.25,
+          0.0,
+          0.0
+        ],
+        "physical": [
+          112.25,
+          10.5,
+          20.25
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {
+          "delay_stage_mm": 4.125,
+          "delay_stage_pulse": 825
+        }
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "trkr",
+        "fast_axis": "t",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": 12.25,
+        "target_x_cor_um": null,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "trkr",
+        "fast_axis": "t",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": 12.25,
+        "target_x_cor_um": null,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      }
+    },
+    {
+      "id": "srkr_x",
+      "plan": {
+        "workflow": "srkr",
+        "fast": "x",
+        "slow": "y",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 2.0,
+        "target_fast": 4.0,
+        "target_slow": null,
+        "corrected": [
+          0.0,
+          4.0,
+          0.0
+        ],
+        "physical": [
+          100.0,
+          14.5,
+          20.25
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {
+          "x_scanner_mm": 0.0145
+        }
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr",
+        "fast_axis": "x",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr",
+        "fast_axis": "x",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": null,
+        "y_um": null,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": null
+      }
+    },
+    {
+      "id": "srkr_y",
+      "plan": {
+        "workflow": "srkr",
+        "fast": "y",
+        "slow": "x",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 2.25,
+        "target_fast": 5.5,
+        "target_slow": null,
+        "corrected": [
+          0.0,
+          0.0,
+          5.5
+        ],
+        "physical": [
+          100.0,
+          10.5,
+          25.75
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {
+          "y_scanner_deg": 2.575
+        }
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr",
+        "fast_axis": "y",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": null,
+        "target_y_cor_um": 5.5,
+        "elapsed_s": null,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr",
+        "fast_axis": "y",
+        "slow_axis": null,
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": null,
+        "target_y_cor_um": 5.5,
+        "elapsed_s": null,
+        "t_cor_ps": null,
+        "t_ps": null,
+        "x_cor_um": null,
+        "x_um": null,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": null,
+        "delay_stage_pulse": null,
+        "x_scanner_mm": null,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      }
+    },
+    {
+      "id": "strkr_t_x",
+      "plan": {
+        "workflow": "strkr",
+        "fast": "t",
+        "slow": "x",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 3.0,
+        "target_fast": 12.25,
+        "target_slow": 4.0,
+        "corrected": [
+          12.25,
+          4.0,
+          0.0
+        ],
+        "physical": [
+          112.25,
+          14.5,
+          20.25
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {
+          "t_ps": 112.25,
+          "delay_stage_mm": 4.125,
+          "delay_stage_pulse": 825,
+          "x_um": 14.5,
+          "y_um": 25.75,
+          "scanner_x_value": 0.0145,
+          "scanner_x_unit": "mm",
+          "scanner_y_value": 2.575,
+          "scanner_y_unit": "deg"
+        }
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "strkr",
+        "fast_axis": "t",
+        "slow_axis": "x",
+        "target_elapsed_s": null,
+        "target_t_cor_ps": 12.25,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "strkr",
+        "fast_axis": "t",
+        "slow_axis": "x",
+        "target_elapsed_s": null,
+        "target_t_cor_ps": 12.25,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": null,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      }
+    },
+    {
+      "id": "srkr_2d_x_y",
+      "plan": {
+        "workflow": "srkr_2d",
+        "fast": "x",
+        "slow": "y",
+        "zero": [
+          100.0,
+          10.5,
+          20.25
+        ],
+        "theta_deg": 30.0
+      },
+      "sample": {
+        "elapsed_s": 3.25,
+        "target_fast": 4.0,
+        "target_slow": 5.5,
+        "corrected": [
+          0.0,
+          4.0,
+          5.5
+        ],
+        "physical": [
+          100.0,
+          14.5,
+          25.75
+        ],
+        "signal": {
+          "X": 0.00125,
+          "Y": -0.0005,
+          "R": 0.001346291201783626,
+          "Theta": -21.80140948635181
+        },
+        "position": {
+          "t_ps": 112.25,
+          "delay_stage_mm": 4.125,
+          "delay_stage_pulse": 825,
+          "x_um": 14.5,
+          "y_um": 25.75,
+          "scanner_x_value": 0.0145,
+          "scanner_x_unit": "mm",
+          "scanner_y_value": 2.575,
+          "scanner_y_unit": "deg"
+        }
+      },
+      "expected": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr_2d",
+        "fast_axis": "x",
+        "slow_axis": "y",
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": 5.5,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": 0.00125,
+        "Y_V": -0.0005,
+        "R_V": 0.001346291201783626,
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      },
+      "expected_csv": {
+        "timestamp": "2026-07-06T07:08:09+00:00",
+        "measurement": "srkr_2d",
+        "fast_axis": "x",
+        "slow_axis": "y",
+        "target_elapsed_s": null,
+        "target_t_cor_ps": null,
+        "target_x_cor_um": 4.0,
+        "target_y_cor_um": 5.5,
+        "elapsed_s": null,
+        "t_cor_ps": 12.25,
+        "t_ps": 112.25,
+        "x_cor_um": 4.0,
+        "x_um": 14.5,
+        "y_cor_um": 5.5,
+        "y_um": 25.75,
+        "X_V": "1.250000e-03",
+        "Y_V": "-5.000000e-04",
+        "R_V": "1.346291e-03",
+        "Theta_deg": -21.80140948635181,
+        "coordinate": "measurement",
+        "delay_stage_mm": 4.125,
+        "delay_stage_pulse": 825,
+        "x_scanner_mm": 0.0145,
+        "x_scanner_deg": null,
+        "y_scanner_mm": null,
+        "y_scanner_deg": 2.575
+      }
+    }
+  ]
+}

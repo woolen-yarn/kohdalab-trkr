@@ -1,0 +1,1965 @@
+//! Small, process-isolated GPIB client for the KohdaLab helper protocol.
+//!
+//! Instrument/model logic deliberately lives above this crate.  The helper is
+//! an independently licensed executable; this crate only owns framing,
+//! deadlines, and the adapter lease.
+//!
+//! Development shared mode is selected only by KOHDALAB_INSTRUMENT_HUB_CONFIG.
+//! The authenticated hub proxy owns the bus; errors never fall back to a
+//! local native/VISA helper. See docs/development/shared-instruments.md.
+
+use fs2::FileExt;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::{Arc, Mutex, Weak};
+use std::thread;
+use std::time::{Duration, Instant};
+
+pub mod thorlabs;
+
+const STARTUP_TIMEOUT: Duration = Duration::from_secs(5);
+const VISA_LIST_TIMEOUT: Duration = Duration::from_secs(8);
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_FRAME: usize = 256 * 1024;
+const MAX_PAYLOAD: usize = 128 * 1024;
+
+/// Fixed transport failures.  This remains private because callers retain the
+/// established `Result<_, String>` interface, while keeping each failure
+/// category explicit inside the process boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransportError {
+    NativeHelperNotFound,
+    VisaHelperNotFound,
+    HelperStdinUnavailable,
+    HelperStdoutUnavailable,
+    HelperFrameExceededSizeLimit,
+    ReadCancelled,
+    ResponsePending,
+    SessionFailed,
+    CommandTooLong,
+    ResponseTimedOut,
+    HelperExited,
+    VisaHelperStdoutUnavailable,
+    VisaDiscoveryNoBoundedFrame,
+    VisaDiscoveryTimedOut,
+    VisaDiscoveryExited,
+    InvalidVisaResourceList,
+    InvalidAddress,
+    InvalidHexPayload,
+    MalformedHelperFrame,
+    MalformedHelperStatus,
+    MalformedHelperPayload,
+}
+
+impl std::fmt::Display for TransportError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let message = match self {
+            Self::NativeHelperNotFound => {
+                "KohdaLab GPIB helper was not found; set KOHDALAB_TRKR_HELPER_DIR"
+            }
+            Self::VisaHelperNotFound => {
+                "Official VISA helper was not found; GPIB Refresh requires kohdalab-visa-helper"
+            }
+            Self::HelperStdinUnavailable => "GPIB helper stdin was unavailable",
+            Self::HelperStdoutUnavailable => "GPIB helper stdout was unavailable",
+            Self::HelperFrameExceededSizeLimit => "GPIB helper frame exceeded size limit",
+            Self::ReadCancelled => "GPIB read cancelled",
+            Self::ResponsePending => {
+                "GPIB cancelled reply pending; finish cancellation before further I/O"
+            }
+            Self::SessionFailed => "GPIB session has failed; reconnect before further I/O",
+            Self::CommandTooLong => "GPIB command exceeds 4096-byte limit",
+            Self::ResponseTimedOut => "GPIB helper response timed out",
+            Self::HelperExited => "GPIB helper exited unexpectedly",
+            Self::VisaHelperStdoutUnavailable => "Official VISA helper stdout was unavailable",
+            Self::VisaDiscoveryNoBoundedFrame => {
+                "Official VISA helper discovery returned no bounded KIV frame"
+            }
+            Self::VisaDiscoveryTimedOut => "Official VISA helper discovery timed out",
+            Self::VisaDiscoveryExited => "Official VISA helper discovery exited unexpectedly",
+            Self::InvalidVisaResourceList => {
+                "Official VISA helper returned an invalid resource list"
+            }
+            Self::InvalidAddress => "GPIB address must be between 1 and 30",
+            Self::InvalidHexPayload => "Invalid GPIB helper hex payload",
+            Self::MalformedHelperFrame => "Malformed GPIB helper frame",
+            Self::MalformedHelperStatus => "Malformed GPIB helper status",
+            Self::MalformedHelperPayload => "Malformed GPIB helper payload",
+        };
+        formatter.write_str(message)
+    }
+}
+
+impl From<TransportError> for String {
+    fn from(error: TransportError) -> Self {
+        error.to_string()
+    }
+}
+
+pub struct Gpib {
+    session: Arc<Mutex<Session>>,
+    address: u8,
+    backend: &'static str,
+}
+
+/// A process-isolated official-VISA session for one USB instrument.  USB
+/// sessions have their own resource lease and never participate in the GPIB
+/// adapter lease or instrument-hub routing.
+pub struct UsbVisa {
+    session: Arc<Mutex<Session>>,
+    resource: String,
+    timeout: Duration,
+}
+
+/// One serialized helper process.  Address is deliberately kept out of this
+/// state so native GPIB views may share a single adapter without resetting it.
+struct Session {
+    child: Child,
+    input: std::process::ChildStdin,
+    lines: Receiver<Result<String, String>>,
+    // The direct helper owns this compatibility lease. The opt-in instrument
+    // hub owns it instead, so clients may share one controller safely.
+    _lease: Option<Arc<File>>,
+    poisoned: bool,
+    cancelled_reply_deadline: Option<Instant>,
+}
+
+#[derive(Default)]
+pub struct GpibPool {
+    native: Option<Weak<Mutex<Session>>>,
+    visa: std::collections::HashMap<String, Weak<Mutex<Session>>>,
+    visa_lease: Option<Weak<File>>,
+    hub: std::collections::HashMap<u8, Weak<Mutex<Session>>>,
+}
+
+impl Gpib {
+    pub fn open(helper: impl AsRef<Path>, address: u8) -> Result<Self, String> {
+        validate_address(address)?;
+        let helper = helper.as_ref();
+        if let Some(config) = hub_config()? {
+            return Self::spawn_hub_proxy(address, &config, Some(helper));
+        }
+        if !helper.is_file() {
+            return Err(format!("GPIB helper was not found: {}", helper.display()));
+        }
+        Self::spawn_helper(helper, address, &[], "native")
+    }
+
+    /// Connect to the requested primary GPIB address.  When the optional
+    /// official VISA helper exposes that exact endpoint, VISA owns the whole
+    /// session.  In particular, an error from that selected session is never
+    /// retried through the native helper, since opening the latter can reset a
+    /// shared GPIB bus.
+    pub fn connect(address: u8) -> Result<Self, String> {
+        let (native, visa) = helper_paths();
+        Self::connect_with_paths(address, native, visa)
+    }
+
+    /// Identifies the process transport selected by [`connect`].
+    pub fn backend_name(&self) -> &'static str {
+        self.backend
+    }
+
+    fn connect_with_paths(
+        address: u8,
+        native: Option<PathBuf>,
+        visa: Option<PathBuf>,
+    ) -> Result<Self, String> {
+        validate_address(address)?;
+        if let Some(config) = hub_config()? {
+            // Do this before VISA discovery. Once the user selects the shared
+            // service, no local helper or vendor runtime may open the bus.
+            return Self::spawn_hub_proxy(address, &config, native.as_deref());
+        }
+        if let Some(visa_helper) = visa {
+            let resources = visa_resources(&visa_helper)?;
+            let requested = format!("GPIB0::{address}::INSTR");
+            let mut other_gpib = Vec::new();
+            for resource in resources {
+                if resource.eq_ignore_ascii_case(&requested) {
+                    // The VISA helper uses wire address zero because its
+                    // process is already bound to one VISA resource.
+                    return Self::spawn_helper(&visa_helper, 0, &[resource], "official VISA");
+                }
+                if is_gpib_resource(&resource) {
+                    other_gpib.push(resource);
+                }
+            }
+            if !other_gpib.is_empty() {
+                return Err(format!(
+                    "Official VISA found GPIB resource(s) {}, but not {requested}; refusing to open the native GPIB adapter",
+                    other_gpib.join(", ")
+                ));
+            }
+        }
+        let native = native.ok_or_else(|| String::from(TransportError::NativeHelperNotFound))?;
+        Self::open(native, address)
+    }
+
+    fn spawn_helper(
+        helper: &Path,
+        address: u8,
+        args: &[String],
+        backend: &'static str,
+    ) -> Result<Self, String> {
+        if !helper.is_file() {
+            return Err(format!("GPIB helper was not found: {}", helper.display()));
+        }
+        Self::spawn_helper_with_lease(
+            helper,
+            address,
+            args,
+            backend,
+            Some(Arc::new(acquire_lease(backend == "official VISA")?)),
+        )
+    }
+
+    fn spawn_helper_with_lease(
+        helper: &Path,
+        address: u8,
+        args: &[String],
+        backend: &'static str,
+        lease: Option<Arc<File>>,
+    ) -> Result<Self, String> {
+        if !helper.is_file() {
+            return Err(format!("GPIB helper was not found: {}", helper.display()));
+        }
+        Self::spawn_process(helper, address, args, backend, lease)
+    }
+
+    fn spawn_hub_proxy(address: u8, config: &Path, native: Option<&Path>) -> Result<Self, String> {
+        let hub = hub_client(native)?;
+        let args = vec![
+            "--client".to_owned(),
+            "--config".to_owned(),
+            config.display().to_string(),
+            "--app".to_owned(),
+            "KohdaLab TRKR".to_owned(),
+            "--address".to_owned(),
+            address.to_string(),
+        ];
+        Self::spawn_process(&hub, address, &args, "instrument hub", None)
+    }
+
+    fn spawn_process(
+        helper: &Path,
+        address: u8,
+        args: &[String],
+        backend: &'static str,
+        lease: Option<Arc<File>>,
+    ) -> Result<Self, String> {
+        let session = Session::spawn(helper, args, lease)?;
+        Ok(Self {
+            session: Arc::new(Mutex::new(session)),
+            address,
+            backend,
+        })
+    }
+
+    pub fn write(&mut self, command: &str) -> Result<(), String> {
+        self.session()?
+            .request(self.address, "WRITE", command.as_bytes(), None)
+            .map(|_| ())
+    }
+
+    pub fn query(&mut self, command: &str) -> Result<String, String> {
+        let bytes = self
+            .session()?
+            .request(self.address, "QUERY", command.as_bytes(), None)?;
+        String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
+    }
+
+    /// GPIB serial polling is available through the bundled VISA helper.
+    pub fn serial_poll(&mut self) -> Result<Option<u8>, String> {
+        if self.backend != "official VISA" {
+            return Ok(None);
+        }
+        let bytes = self.session()?.request(self.address, "STB", b"", None)?;
+        match bytes.as_slice() {
+            [status] => Ok(Some(*status)),
+            _ => Err("Invalid GPIB serial poll response".into()),
+        }
+    }
+
+    /// Return promptly on Stop while retaining the in-flight reply for recovery.
+    /// No further commands are allowed until that exact reply has been retired.
+    pub fn write_cancellable(&mut self, command: &str, cancel: &AtomicBool) -> Result<(), String> {
+        self.session()?
+            .request(self.address, "WRITE", command.as_bytes(), Some(cancel))
+            .map(|_| ())
+    }
+    pub fn query_cancellable(
+        &mut self,
+        command: &str,
+        cancel: &AtomicBool,
+    ) -> Result<String, String> {
+        let bytes =
+            self.session()?
+                .request(self.address, "QUERY", command.as_bytes(), Some(cancel))?;
+        String::from_utf8(bytes).map_err(|e| format!("GPIB response was not UTF-8: {e}"))
+    }
+    /// Prevent further I/O when an interrupted device protocol left state uncertain.
+    pub fn invalidate(&mut self) {
+        self.session_mut().invalidate();
+    }
+    /// Retire exactly one cancelled helper reply after motion has stopped.
+    /// A healthy late response is discarded, never used as a subsequent value.
+    /// Real transport/protocol failures still invalidate the session.
+    pub fn finish_cancelled_request(&mut self) -> Result<(), String> {
+        self.session_mut().finish_cancelled_request()
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.session()
+            .map(|session| session.poisoned)
+            .unwrap_or(true)
+    }
+    fn session(&self) -> Result<std::sync::MutexGuard<'_, Session>, String> {
+        self.session
+            .lock()
+            .map_err(|_| "GPIB session worker failed".into())
+    }
+    fn session_mut(&mut self) -> std::sync::MutexGuard<'_, Session> {
+        self.session.lock().expect("GPIB session worker failed")
+    }
+}
+
+impl UsbVisa {
+    /// Canonical endpoint used for the exclusive resource lease.
+    pub fn resource(&self) -> &str {
+        &self.resource
+    }
+    /// Connect exclusively to a canonical USB0 VISA resource. `timeout` is
+    /// applied to each helper operation and must be from 1 ms through 10 s.
+    pub fn connect(resource: &str, timeout: Duration) -> Result<Self, String> {
+        let helper = helper_paths()
+            .1
+            .ok_or_else(|| String::from(TransportError::VisaHelperNotFound))?;
+        Self::connect_with_helper(resource, timeout, &helper)
+    }
+
+    fn connect_with_helper(
+        resource: &str,
+        timeout: Duration,
+        helper: &Path,
+    ) -> Result<Self, String> {
+        let resource = normalize_usb_resource(resource)?;
+        validate_usb_timeout(timeout)?;
+        if !helper.is_file() {
+            return Err(format!(
+                "Official VISA helper was not found: {}",
+                helper.display()
+            ));
+        }
+        let session = Session::spawn(
+            helper,
+            std::slice::from_ref(&resource),
+            Some(Arc::new(acquire_usb_lease(&resource)?)),
+        )?;
+        Ok(Self {
+            session: Arc::new(Mutex::new(session)),
+            resource,
+            timeout,
+        })
+    }
+
+    pub fn write(&mut self, command: &str) -> Result<(), String> {
+        let timeout = self.timeout;
+        self.session_mut()?
+            .request_with_timeout(0, "WRITE", command.as_bytes(), timeout)
+            .map(|_| ())
+    }
+
+    pub fn query(&mut self, command: &str) -> Result<String, String> {
+        let timeout = self.timeout;
+        let bytes =
+            self.session_mut()?
+                .request_with_timeout(0, "QUERY", command.as_bytes(), timeout)?;
+        String::from_utf8(bytes).map_err(|e| format!("USB VISA response was not UTF-8: {e}"))
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.session
+            .lock()
+            .map(|session| session.poisoned)
+            .unwrap_or(true)
+    }
+
+    fn session_mut(&mut self) -> Result<std::sync::MutexGuard<'_, Session>, String> {
+        self.session
+            .lock()
+            .map_err(|_| "USB VISA session worker failed".into())
+    }
+}
+
+impl GpibPool {
+    /// Connect one address through this worker-owned pool. Native GPIB views
+    /// share one helper/session; VISA sessions remain resource-bound.
+    pub fn connect(&mut self, address: u8) -> Result<Gpib, String> {
+        let (native, visa) = helper_paths();
+        self.connect_with_paths(address, native, visa)
+    }
+
+    fn connect_with_paths(
+        &mut self,
+        address: u8,
+        native: Option<PathBuf>,
+        visa: Option<PathBuf>,
+    ) -> Result<Gpib, String> {
+        validate_address(address)?;
+        if let Some(config) = hub_config()? {
+            if let Some(session) = self.hub.get(&address).and_then(Weak::upgrade) {
+                return Ok(Gpib {
+                    session,
+                    address,
+                    backend: "instrument hub",
+                });
+            }
+            let gpib = Gpib::spawn_hub_proxy(address, &config, native.as_deref())?;
+            self.hub.insert(address, Arc::downgrade(&gpib.session));
+            return Ok(gpib);
+        }
+        if let Some(visa_helper) = visa {
+            let resources = visa_resources(&visa_helper)?;
+            let requested = format!("GPIB0::{address}::INSTR");
+            let mut other_gpib = Vec::new();
+            for resource in resources {
+                if resource.eq_ignore_ascii_case(&requested) {
+                    let key = resource.to_ascii_uppercase();
+                    if let Some(session) = self.visa.get(&key).and_then(Weak::upgrade) {
+                        return Ok(Gpib {
+                            session,
+                            address: 0,
+                            backend: "official VISA",
+                        });
+                    }
+                    let lease = match self.visa_lease.as_ref().and_then(Weak::upgrade) {
+                        Some(lease) => lease,
+                        None => Arc::new(acquire_lease(true)?),
+                    };
+                    let gpib = Gpib::spawn_helper_with_lease(
+                        &visa_helper,
+                        0,
+                        &[resource],
+                        "official VISA",
+                        Some(lease.clone()),
+                    )?;
+                    self.visa.insert(key, Arc::downgrade(&gpib.session));
+                    self.visa_lease = Some(Arc::downgrade(&lease));
+                    return Ok(gpib);
+                }
+                if is_gpib_resource(&resource) {
+                    other_gpib.push(resource);
+                }
+            }
+            if !other_gpib.is_empty() {
+                return Err(format!(
+                    "Official VISA found GPIB resource(s) {}, but not {requested}; refusing to open the native GPIB adapter",
+                    other_gpib.join(", ")
+                ));
+            }
+        }
+        if let Some(session) = self.native.as_ref().and_then(Weak::upgrade) {
+            return Ok(Gpib {
+                session,
+                address,
+                backend: "native",
+            });
+        }
+        let native = native.ok_or_else(|| String::from(TransportError::NativeHelperNotFound))?;
+        let gpib = Gpib::open(native, address)?;
+        self.native = Some(Arc::downgrade(&gpib.session));
+        Ok(gpib)
+    }
+}
+
+impl Session {
+    fn spawn(helper: &Path, args: &[String], lease: Option<Arc<File>>) -> Result<Self, String> {
+        let mut command = Command::new(helper);
+        command.args(args);
+        suppress_console_window(&mut command);
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("Start GPIB helper: {e}"))?;
+        let input = child.stdin.take().ok_or_else(|| {
+            let _ = child.kill();
+            String::from(TransportError::HelperStdinUnavailable)
+        })?;
+        let output = child.stdout.take().ok_or_else(|| {
+            let _ = child.kill();
+            String::from(TransportError::HelperStdoutUnavailable)
+        })?;
+        let (sender, lines) = mpsc::sync_channel(4);
+        thread::spawn(move || {
+            let mut reader = BufReader::new(output);
+            loop {
+                let mut line = Vec::new();
+                match reader
+                    .by_ref()
+                    .take((MAX_FRAME + 1) as u64)
+                    .read_until(b'\n', &mut line)
+                {
+                    Ok(0) => break,
+                    Ok(n) if n <= MAX_FRAME && line.last() == Some(&b'\n') => {
+                        if sender
+                            .send(Ok(String::from_utf8_lossy(&line[..n - 1]).into_owned()))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(_) => {
+                        let _ =
+                            sender.send(Err(TransportError::HelperFrameExceededSizeLimit.into()));
+                        break;
+                    }
+                    Err(error) => {
+                        let _ = sender.send(Err(format!("Read GPIB helper: {error}")));
+                        break;
+                    }
+                }
+            }
+        });
+        let session = Self {
+            child,
+            input,
+            lines,
+            _lease: lease,
+            poisoned: false,
+            cancelled_reply_deadline: None,
+        };
+        let startup = session.receive(STARTUP_TIMEOUT)?;
+        let (status, payload) = parse_frame(&startup)?;
+        if status != "OK" || !payload.is_empty() {
+            return Err(format!("GPIB helper startup failed: {startup}"));
+        }
+        Ok(session)
+    }
+
+    fn invalidate(&mut self) {
+        self.poisoned = true;
+        let _ = self.child.kill();
+    }
+    fn finish_cancelled_request(&mut self) -> Result<(), String> {
+        let Some(deadline) = self.cancelled_reply_deadline.take() else {
+            return Ok(());
+        };
+        // Motion STOP verification may consume the remaining deadline. A reply
+        // already queued belongs to this one in-flight request and can safely
+        // be retired; only waiting for a missing reply is deadline-limited.
+        let response = match self.lines.try_recv() {
+            Ok(response) => response,
+            Err(mpsc::TryRecvError::Empty) => {
+                self.receive(deadline.saturating_duration_since(Instant::now()))
+            }
+            Err(mpsc::TryRecvError::Disconnected) => Err(TransportError::HelperExited.into()),
+        };
+        let result = response
+            .and_then(|line| parse_frame(&line).map(|(status, bytes)| (status.to_owned(), bytes)))
+            .and_then(|(status, bytes)| match status.as_str() {
+                "OK" => Ok(()),
+                "ERR" => Err(format!(
+                    "GPIB cancelled operation failed: {}",
+                    String::from_utf8_lossy(&bytes)
+                )),
+                _ => Err(format!("Unknown GPIB helper status: {status}")),
+            });
+        if result.is_err() {
+            self.invalidate();
+        }
+        result
+    }
+    fn request(
+        &mut self,
+        address: u8,
+        operation: &str,
+        payload: &[u8],
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>, String> {
+        if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+            return Err(TransportError::ReadCancelled.into());
+        }
+        if self.poisoned {
+            return Err(TransportError::SessionFailed.into());
+        }
+        if self.cancelled_reply_deadline.is_some() {
+            return Err(TransportError::ResponsePending.into());
+        }
+        if payload.len() > 4096 {
+            return Err(TransportError::CommandTooLong.into());
+        }
+        let frame = format!("{operation} {} 10000 {}\n", address, encode_hex(payload));
+        let deadline = Instant::now() + COMMAND_TIMEOUT;
+        let result = (|| {
+            self.input
+                .write_all(frame.as_bytes())
+                .map_err(|e| format!("Write GPIB helper: {e}"))?;
+            self.input
+                .flush()
+                .map_err(|e| format!("Flush GPIB helper: {e}"))?;
+            let line = self.receive_cancellable(COMMAND_TIMEOUT, cancel)?;
+            parse_frame(&line).map(|(status, data)| (status.to_owned(), data))
+        })();
+        let (status, data) = match result {
+            Ok(frame) => frame,
+            Err(error) => {
+                if error == TransportError::ReadCancelled.to_string() {
+                    self.cancelled_reply_deadline = Some(deadline);
+                    return Err(error);
+                }
+                self.poisoned = true;
+                let _ = self.child.kill();
+                return Err(error);
+            }
+        };
+        if status == "ERR" {
+            let message = String::from_utf8_lossy(&data);
+            self.poisoned = true;
+            let _ = self.child.kill();
+            return Err(format!("GPIB helper: {message}"));
+        }
+        if status != "OK" {
+            self.poisoned = true;
+            let _ = self.child.kill();
+            return Err(format!("Unknown GPIB helper status: {status}"));
+        }
+        Ok(data)
+    }
+
+    /// A non-cancellable request with a caller-selected bounded timeout. A
+    /// failure poisons the process so a late reply can never serve a later
+    /// command.
+    fn request_with_timeout(
+        &mut self,
+        address: u8,
+        operation: &str,
+        payload: &[u8],
+        timeout: Duration,
+    ) -> Result<Vec<u8>, String> {
+        if self.poisoned {
+            return Err(TransportError::SessionFailed.into());
+        }
+        if payload.len() > 4096 {
+            return Err(TransportError::CommandTooLong.into());
+        }
+        let timeout_ms = timeout.as_millis();
+        let frame = format!(
+            "{operation} {address} {timeout_ms} {}\n",
+            encode_hex(payload)
+        );
+        let result = (|| {
+            self.input
+                .write_all(frame.as_bytes())
+                .map_err(|e| format!("Write GPIB helper: {e}"))?;
+            self.input
+                .flush()
+                .map_err(|e| format!("Flush GPIB helper: {e}"))?;
+            let line = self.receive(timeout)?;
+            parse_frame(&line).map(|(status, data)| (status.to_owned(), data))
+        })();
+        let (status, data) = match result {
+            Ok(reply) => reply,
+            Err(error) => {
+                self.invalidate();
+                return Err(error);
+            }
+        };
+        if status == "OK" {
+            return Ok(data);
+        }
+        self.invalidate();
+        if status == "ERR" {
+            return Err(format!(
+                "USB VISA helper: {}",
+                String::from_utf8_lossy(&data)
+            ));
+        }
+        Err(format!("Unknown USB VISA helper status: {status}"))
+    }
+
+    fn receive(&self, timeout: Duration) -> Result<String, String> {
+        self.receive_cancellable(timeout, None)
+    }
+    fn receive_cancellable(
+        &self,
+        timeout: Duration,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<String, String> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if cancel.is_some_and(|token| token.load(Ordering::Acquire)) {
+                return Err(TransportError::ReadCancelled.into());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TransportError::ResponseTimedOut.into());
+            }
+            let slice = if cancel.is_some() {
+                remaining.min(Duration::from_millis(20))
+            } else {
+                remaining
+            };
+            match self.lines.recv_timeout(slice) {
+                Ok(result) => return result,
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(TransportError::HelperExited.into());
+                }
+            }
+        }
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        if self.poisoned {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            return;
+        }
+        let _ = self.input.write_all(b"EXIT 0 1000 -\n");
+        let _ = self.input.flush();
+        for _ in 0..20 {
+            if self.child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+pub fn find_helper() -> Result<PathBuf, String> {
+    helper_paths()
+        .0
+        .ok_or_else(|| TransportError::NativeHelperNotFound.into())
+}
+
+/// Lists only VISA-reported GPIB resources.  This intentionally does not
+/// probe addresses through the native adapter: Refresh must not reset or open
+/// a shared GPIB bus.
+pub fn available_gpib_resources() -> Result<Vec<String>, String> {
+    let (native, visa) = helper_paths();
+    if let Some(config) = hub_config()? {
+        return hub_resources(&config, native.as_deref());
+    }
+    let visa = visa.ok_or_else(|| String::from(TransportError::VisaHelperNotFound))?;
+    let mut resources = visa_resources(&visa)?
+        .into_iter()
+        .filter(|resource| is_gpib_resource(resource))
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    Ok(resources)
+}
+
+/// Lists only USB0 VISA resources reported by the official helper. Discovery
+/// only enumerates resources; it does not open an instrument session.
+pub fn available_usb_resources() -> Result<Vec<String>, String> {
+    let visa = helper_paths()
+        .1
+        .ok_or_else(|| String::from(TransportError::VisaHelperNotFound))?;
+    available_usb_resources_with_helper(&visa)
+}
+
+fn available_usb_resources_with_helper(helper: &Path) -> Result<Vec<String>, String> {
+    let mut resources = visa_resources(helper)?
+        .into_iter()
+        .filter_map(|resource| normalize_usb_resource(&resource).ok())
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    Ok(resources)
+}
+
+/// Validate a VISA USB0 resource and return the exact canonical representation
+/// accepted by the native helper: hexadecimal vendor/product IDs, no optional
+/// interface `::0`, and uppercase protocol tokens.
+pub fn normalize_usb_resource(resource: &str) -> Result<String, String> {
+    if resource.is_empty()
+        || resource.len() > 255
+        || !resource.is_ascii()
+        || resource
+            .bytes()
+            .any(|byte| matches!(byte, b'\r' | b'\n' | b'\t'))
+    {
+        return Err("Invalid VISA USB resource string".into());
+    }
+    let fields = resource.split("::").collect::<Vec<_>>();
+    let serial_index = match fields.as_slice() {
+        [interface, _, _, _, protocol]
+            if interface.eq_ignore_ascii_case("USB0") && protocol.eq_ignore_ascii_case("INSTR") =>
+        {
+            3
+        }
+        [interface, _, _, _, zero, protocol]
+            if interface.eq_ignore_ascii_case("USB0")
+                && zero == &"0"
+                && protocol.eq_ignore_ascii_case("INSTR") =>
+        {
+            3
+        }
+        _ => {
+            return Err(
+                "Unsupported VISA USB resource; expected USB0::<VID>::<PID>::<serial>[::0]::INSTR"
+                    .into(),
+            );
+        }
+    };
+    let vid = parse_usb_id(fields[1])?;
+    let pid = parse_usb_id(fields[2])?;
+    let serial = fields[serial_index];
+    if serial.is_empty()
+        || !serial
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err("Invalid VISA USB serial field".into());
+    }
+    Ok(format!("USB0::0x{vid:04X}::0x{pid:04X}::{serial}::INSTR"))
+}
+
+fn parse_usb_id(value: &str) -> Result<u16, String> {
+    let (digits, radix) = if let Some(digits) = value
+        .strip_prefix("0x")
+        .or_else(|| value.strip_prefix("0X"))
+    {
+        (digits, 16)
+    } else {
+        (value, 10)
+    };
+    if digits.is_empty()
+        || digits.len() > 5
+        || !digits.bytes().all(|byte| {
+            if radix == 16 {
+                byte.is_ascii_hexdigit()
+            } else {
+                byte.is_ascii_digit()
+            }
+        })
+    {
+        return Err("Invalid VISA USB vendor or product ID".into());
+    }
+    u16::from_str_radix(digits, radix).map_err(|_| "Invalid VISA USB vendor or product ID".into())
+}
+
+fn validate_usb_timeout(timeout: Duration) -> Result<(), String> {
+    if timeout >= Duration::from_millis(1) && timeout <= Duration::from_secs(10) {
+        Ok(())
+    } else {
+        Err("USB VISA timeout must be between 1 ms and 10 s".into())
+    }
+}
+
+/// An explicit hub setting is authoritative. Falling back to a direct helper
+/// could reset a controller that a different application is already using.
+fn hub_config() -> Result<Option<PathBuf>, String> {
+    let Some(value) = std::env::var_os("KOHDALAB_INSTRUMENT_HUB_CONFIG") else {
+        return Ok(None);
+    };
+    if value.is_empty() {
+        return Err("KOHDALAB_INSTRUMENT_HUB_CONFIG is set but empty.".into());
+    }
+    Ok(Some(PathBuf::from(value)))
+}
+
+fn hub_client(native: Option<&Path>) -> Result<PathBuf, String> {
+    let explicit = std::env::var_os("KOHDALAB_INSTRUMENT_HUB_CLIENT").map(PathBuf::from);
+    let candidate = explicit.or_else(|| {
+        native
+            .and_then(Path::parent)
+            .map(|directory| directory.join(helper_name("kohdalab-instrument-hub")))
+    });
+    let Some(candidate) = candidate else {
+        return Err("Instrument hub is enabled but its client executable was not found. Set KOHDALAB_INSTRUMENT_HUB_CLIENT or install it beside kohdalab-gpib-helper.".into());
+    };
+    if !candidate.is_file() {
+        return Err(format!(
+            "Instrument hub is enabled but its client executable was not found: {}",
+            candidate.display()
+        ));
+    }
+    Ok(candidate)
+}
+
+fn hub_resources(config: &Path, native: Option<&Path>) -> Result<Vec<String>, String> {
+    let hub = hub_client(native)?;
+    let args = vec![
+        "--list".to_owned(),
+        "--config".to_owned(),
+        config.display().to_string(),
+        "--app".to_owned(),
+        "KohdaLab TRKR".to_owned(),
+    ];
+    let mut resources = resource_list(&hub, &args, "instrument hub")?
+        .into_iter()
+        .filter(|resource| is_gpib_resource(resource))
+        .collect::<Vec<_>>();
+    resources.sort();
+    resources.dedup();
+    Ok(resources)
+}
+
+fn helper_paths() -> (Option<PathBuf>, Option<PathBuf>) {
+    let native_name = helper_name("kohdalab-gpib-helper");
+    let visa_name = helper_name("kohdalab-visa-helper");
+    let mut candidates = Vec::new();
+    if let Some(dir) = std::env::var_os("KOHDALAB_TRKR_HELPER_DIR") {
+        candidates.push(PathBuf::from(dir));
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        candidates.push(parent.join("support"));
+        candidates.push(parent.join("../Resources/support"));
+    }
+    candidates.extend([
+        PathBuf::from("portable/windows/native"),
+        PathBuf::from("build/native-gpib"),
+    ]);
+    let native = candidates
+        .iter()
+        .map(|directory| directory.join(&native_name))
+        .find(|path| path.is_file());
+    let visa = candidates
+        .iter()
+        .map(|directory| directory.join(&visa_name))
+        .find(|path| path.is_file());
+    (native, visa)
+}
+
+fn helper_name(stem: &str) -> String {
+    if cfg!(windows) {
+        format!("{stem}.exe")
+    } else {
+        stem.to_owned()
+    }
+}
+
+fn visa_resources(helper: &Path) -> Result<Vec<String>, String> {
+    resource_list(helper, &["--list".to_owned()], "official VISA")
+}
+
+fn resource_list(helper: &Path, args: &[String], backend: &str) -> Result<Vec<String>, String> {
+    let backend = backend.to_owned();
+    let official_visa = backend == "official VISA";
+    let mut command = Command::new(helper);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    suppress_console_window(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("Start {backend} discovery: {e}"))?;
+    let output = child.stdout.take().ok_or_else(|| {
+        if official_visa {
+            String::from(TransportError::VisaHelperStdoutUnavailable)
+        } else {
+            format!("{backend} discovery stdout was unavailable")
+        }
+    })?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let reader_backend = backend.clone();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(output);
+        let mut line = Vec::new();
+        let reply = match reader
+            .by_ref()
+            .take((MAX_FRAME + 1) as u64)
+            .read_until(b'\n', &mut line)
+        {
+            Ok(n) if n > 0 && n <= MAX_FRAME && line.last() == Some(&b'\n') => {
+                Ok(String::from_utf8_lossy(&line[..n - 1]).into_owned())
+            }
+            Ok(_) if reader_backend == "official VISA" => {
+                Err(TransportError::VisaDiscoveryNoBoundedFrame.into())
+            }
+            Ok(_) => Err(format!(
+                "{reader_backend} discovery returned no bounded KIV frame"
+            )),
+            Err(error) if reader_backend == "official VISA" => {
+                Err(format!("Read official VISA helper discovery: {error}"))
+            }
+            Err(error) => Err(format!("Read {reader_backend} discovery: {error}")),
+        };
+        let _ = sender.send(reply);
+    });
+    let reply = match receiver.recv_timeout(VISA_LIST_TIMEOUT) {
+        Ok(reply) => reply,
+        Err(RecvTimeoutError::Timeout) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(if official_visa {
+                TransportError::VisaDiscoveryTimedOut.into()
+            } else {
+                format!("{backend} discovery timed out")
+            });
+        }
+        Err(RecvTimeoutError::Disconnected) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(if official_visa {
+                TransportError::VisaDiscoveryExited.into()
+            } else {
+                format!("{backend} discovery exited unexpectedly")
+            });
+        }
+    };
+    // --list has no further useful output.  Killing after the first complete
+    // frame also bounds a compromised helper that never exits.
+    let _ = child.kill();
+    let _ = child.wait();
+    let reply = reply?;
+    let (status, payload) = parse_frame(&reply)?;
+    if status != "OK" {
+        return Err(if official_visa {
+            format!(
+                "Official VISA helper discovery failed: {}",
+                String::from_utf8_lossy(&payload)
+            )
+        } else {
+            format!(
+                "{backend} discovery failed: {}",
+                String::from_utf8_lossy(&payload)
+            )
+        });
+    }
+    let listing = String::from_utf8(payload).map_err(|error| {
+        if official_visa {
+            format!("Official VISA resource list was not UTF-8: {error}")
+        } else {
+            format!("{backend} resource list was not UTF-8: {error}")
+        }
+    })?;
+    let mut resources = Vec::new();
+    for row in listing.lines() {
+        let resource = row.split('\t').next().unwrap_or_default();
+        if resource.is_empty() || !resource.is_ascii() || resource.len() > 255 {
+            return Err(TransportError::InvalidVisaResourceList.into());
+        }
+        resources.push(resource.to_owned());
+    }
+    Ok(resources)
+}
+
+fn suppress_console_window(command: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW keeps the bundled console helpers invisible while
+        // retaining their piped stdin/stdout protocol.
+        command.creation_flags(0x0800_0000);
+    }
+    #[cfg(not(windows))]
+    let _ = command;
+}
+
+fn is_gpib_resource(resource: &str) -> bool {
+    let mut fields = resource.split("::");
+    let Some(interface) = fields.next() else {
+        return false;
+    };
+    interface
+        .get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("GPIB"))
+        && fields.next().is_some()
+        && fields.next().is_some()
+}
+
+fn acquire_lease(shared: bool) -> Result<File, String> {
+    #[cfg(not(test))]
+    let root = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(test))]
+    let directory = root.join(".kohdalab").join("iv-next-locks");
+    #[cfg(test)]
+    let directory =
+        std::env::temp_dir().join(format!("kohdalab-trkr-lock-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("Create GPIB adapter lease directory: {e}"))?;
+    let path = directory.join("gpib-adapter.lock");
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| format!("Create GPIB adapter lease: {e}"))?;
+    if shared {
+        FileExt::try_lock_shared(&file)
+    } else {
+        FileExt::try_lock_exclusive(&file)
+    }
+    .map_err(|e| format!("GPIB adapter is already in use by another backend: {e}"))?;
+    Ok(file)
+}
+
+fn acquire_usb_lease(resource: &str) -> Result<File, String> {
+    #[cfg(not(test))]
+    let root = std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    #[cfg(not(test))]
+    let directory = root.join(".kohdalab").join("iv-next-locks");
+    #[cfg(test)]
+    let directory =
+        std::env::temp_dir().join(format!("kohdalab-trkr-lock-tests-{}", std::process::id()));
+    std::fs::create_dir_all(&directory)
+        .map_err(|e| format!("Create USB VISA lease directory: {e}"))?;
+    // FNV-1a makes a stable filesystem-safe key from a fully canonical,
+    // bounded ASCII resource; it is an identifier, not a security boundary.
+    let key = resource.bytes().fold(0xcbf29ce484222325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+    });
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(directory.join(format!("usb-visa-{key:016x}.lock")))
+        .map_err(|e| format!("Create USB VISA resource lease: {e}"))?;
+    file.try_lock_exclusive()
+        .map_err(|e| format!("USB VISA resource {resource} is already in use: {e}"))?;
+    Ok(file)
+}
+
+fn validate_address(address: u8) -> Result<(), String> {
+    if (1..=30).contains(&address) {
+        Ok(())
+    } else {
+        Err(TransportError::InvalidAddress.into())
+    }
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    if bytes.is_empty() {
+        "-".to_owned()
+    } else {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value == "-" {
+        return Ok(Vec::new());
+    }
+    if !value.is_ascii() {
+        return Err(TransportError::InvalidHexPayload.into());
+    }
+    if !value.len().is_multiple_of(2) || value.len() > MAX_PAYLOAD * 2 {
+        return Err(TransportError::InvalidHexPayload.into());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|i| {
+            u8::from_str_radix(&value[i..i + 2], 16)
+                .map_err(|_| String::from(TransportError::InvalidHexPayload))
+        })
+        .collect()
+}
+
+fn parse_frame(frame: &str) -> Result<(&str, Vec<u8>), String> {
+    let mut fields = frame.split('\t');
+    if fields.next() != Some("KIV") {
+        return Err(TransportError::MalformedHelperFrame.into());
+    }
+    let status = fields
+        .next()
+        .ok_or_else(|| String::from(TransportError::MalformedHelperStatus))?;
+    let payload = fields
+        .next()
+        .ok_or_else(|| String::from(TransportError::MalformedHelperPayload))?;
+    if fields.next().is_some() {
+        return Err(TransportError::MalformedHelperFrame.into());
+    }
+    Ok((status, decode_hex(payload)?))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    static TEST_LEASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn executable(path: &Path, source: &str) {
+        std::fs::write(path, source).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn stop_retires_only_the_interrupted_reply_and_keeps_the_session() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("delayed-helper.sh");
+        let marker = dir.path().join("started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf started > '{}'\nsleep 0.2\nprintf 'KIV\\tOK\\t6f6c64\\n'\nIFS= read -r line\nprintf 'KIV\\tOK\\t6672657368\\n'\nwhile IFS= read -r line; do :; done\n",
+                marker.display()
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let token = std::sync::Arc::new(AtomicBool::new(false));
+        let cancel = token.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        let error = gpib.query_cancellable("first", &token).unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(!gpib.is_poisoned());
+        assert!(
+            gpib.query("must not be sent")
+                .unwrap_err()
+                .contains("pending")
+        );
+        gpib.finish_cancelled_request().unwrap();
+        assert!(!gpib.is_poisoned());
+        token.store(false, Ordering::Release);
+        assert_eq!(gpib.query_cancellable("second", &token).unwrap(), "fresh");
+    }
+
+    #[test]
+    fn already_received_cancelled_reply_can_be_retired_after_motion_stop_deadline() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("idle-helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\tOK\t-\n'\nwhile IFS= read -r line; do :; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        sender.send(Ok("KIV\tOK\t6f6c64".into())).unwrap();
+        {
+            let mut session = gpib.session.lock().unwrap();
+            session.lines = receiver;
+            session.cancelled_reply_deadline = Some(Instant::now() - Duration::from_secs(1));
+        }
+        gpib.finish_cancelled_request().unwrap();
+        assert!(!gpib.is_poisoned());
+        assert!(
+            gpib.session
+                .lock()
+                .unwrap()
+                .cancelled_reply_deadline
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn failed_cancelled_reply_is_not_a_successful_recovery() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        for response in ["KIV\\tERR\\t626164", "malformed frame"] {
+            let dir = tempfile::tempdir().unwrap();
+            let helper = dir.path().join("bad-helper.sh");
+            executable(
+                &helper,
+                &format!(
+                    "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nsleep 0.1\nprintf '{response}\\n'\nwhile IFS= read -r line; do :; done\n"
+                ),
+            );
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            // Model a sent request cancelled before its reply arrives.
+            let mut session = gpib.session.lock().unwrap();
+            session.input.write_all(b"QUERY 12 10000 58\n").unwrap();
+            session.input.flush().unwrap();
+            session.cancelled_reply_deadline = Some(Instant::now() + Duration::from_secs(2));
+            drop(session);
+            assert!(gpib.finish_cancelled_request().is_err());
+            assert!(gpib.is_poisoned());
+        }
+    }
+
+    #[test]
+    fn stalled_query_is_cancelled_promptly_and_late_replies_cannot_be_reused() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("stalled-helper.sh");
+        let marker = dir.path().join("query-started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf started > '{}'\nwhile IFS= read -r line; do :; done\n",
+                marker.display()
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let stopped_at = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let token = cancel.clone();
+        let stopped = stopped_at.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline, "query never started");
+                thread::sleep(Duration::from_millis(5));
+            }
+            *stopped.lock().unwrap() = Some(Instant::now());
+            token.store(true, Ordering::Release);
+        });
+        let error = gpib.query_cancellable("XY.\r", &cancel).unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"));
+        assert!(stopped_at.lock().unwrap().unwrap().elapsed() < Duration::from_secs(1));
+        assert!(!gpib.is_poisoned());
+        assert!(gpib.query("XY.\r").unwrap_err().contains("pending"));
+        gpib.session.lock().unwrap().cancelled_reply_deadline = Some(Instant::now());
+        assert!(gpib.finish_cancelled_request().is_err());
+        assert!(gpib.is_poisoned());
+        assert!(gpib.query("XY.\r").unwrap_err().contains("reconnect"));
+    }
+
+    #[test]
+    fn cancellation_before_io_preserves_a_healthy_session() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do printf 'KIV\\tOK\\t-\\n'; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        let cancel = AtomicBool::new(true);
+        assert!(
+            gpib.query_cancellable("XY.\r", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(
+            gpib.write_cancellable("DDEF 1,0\n", &cancel)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        assert!(!gpib.is_poisoned());
+        cancel.store(false, Ordering::Release);
+        gpib.write_cancellable("DDEF 1,0\n", &cancel).unwrap();
+    }
+
+    #[test]
+    fn fake_helper_round_trip_and_exit() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("helper.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do case \"$line\" in QUERY*) printf 'KIV\\tOK\\t52454144593F\\n' ;; EXIT*) printf 'KIV\\tOK\\t-\\n'; exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+        );
+        let mut gpib = Gpib::open(&helper, 7).unwrap();
+        assert_eq!(gpib.query("READ?").unwrap(), "READY?");
+        gpib.write("CONF").unwrap();
+    }
+
+    #[test]
+    fn native_pool_shares_one_helper_across_addresses_and_releases_on_last_drop() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-native.sh");
+        let starts = dir.path().join("starts.txt");
+        let wire = dir.path().join("wire.txt");
+        let exited = dir.path().join("exited.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$$\" >> '{}'\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> '{}'; case \"$line\" in QUERY*) printf 'KIV\\tOK\\t6f6b\\n' ;; EXIT*) : > '{}'; exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+                starts.display(),
+                wire.display(),
+                exited.display(),
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, Some(helper.clone()), None)
+            .unwrap();
+        let mut second = pool
+            .connect_with_paths(13, Some(helper.clone()), None)
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&starts).unwrap().lines().count(), 1);
+        assert_eq!(first.query("A?").unwrap(), "ok");
+        assert_eq!(second.query("B?").unwrap(), "ok");
+        let sent = std::fs::read_to_string(&wire).unwrap();
+        assert!(sent.lines().any(|line| line.starts_with("QUERY 12 10000")));
+        assert!(sent.lines().any(|line| line.starts_with("QUERY 13 10000")));
+
+        let mut other_pool = GpibPool::default();
+        assert!(
+            other_pool
+                .connect_with_paths(14, Some(helper.clone()), None)
+                .is_err()
+        );
+        drop(first);
+        assert_eq!(second.query("C?").unwrap(), "ok");
+        assert!(!exited.exists());
+        drop(second);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !exited.exists() {
+            assert!(Instant::now() < deadline, "pooled helper did not exit");
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn cancelled_native_view_blocks_other_addresses_until_reply_is_retired() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-cancel.sh");
+        let marker = dir.path().join("started");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\n: > '{}'\nsleep 0.1\nprintf 'KIV\\tOK\\t6f6c64\\n'\nIFS= read -r line\nprintf 'KIV\\tOK\\t6672657368\\n'\nwhile IFS= read -r line; do :; done\n",
+                marker.display(),
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, Some(helper.clone()), None)
+            .unwrap();
+        let mut second = pool.connect_with_paths(13, Some(helper), None).unwrap();
+        let token = Arc::new(AtomicBool::new(false));
+        let cancel = token.clone();
+        let stopper = thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !marker.exists() {
+                assert!(Instant::now() < deadline);
+                thread::sleep(Duration::from_millis(2));
+            }
+            cancel.store(true, Ordering::Release);
+        });
+        assert!(
+            first
+                .query_cancellable("first", &token)
+                .unwrap_err()
+                .contains("cancelled")
+        );
+        stopper.join().unwrap();
+        assert!(second.query("must wait").unwrap_err().contains("pending"));
+        first.finish_cancelled_request().unwrap();
+        assert_eq!(second.query("second").unwrap(), "fresh");
+    }
+
+    #[test]
+    fn rejects_invalid_address_and_frames() {
+        assert!(validate_address(0).is_err());
+        assert_eq!(encode_hex(&[]), "-");
+        assert_eq!(encode_hex(b"*IDN?\n"), "2a49444e3f0a");
+        assert!(parse_frame("KIV\tOK\tGG").is_err());
+        assert!(parse_frame("KIV\tOK\tＡＡ").is_err());
+        assert!(parse_frame("NOPE\tOK\t-").is_err());
+    }
+
+    #[test]
+    fn fixed_transport_error_messages_preserve_the_public_contract() {
+        for (error, message) in [
+            (TransportError::ReadCancelled, "GPIB read cancelled"),
+            (
+                TransportError::ResponsePending,
+                "GPIB cancelled reply pending; finish cancellation before further I/O",
+            ),
+            (
+                TransportError::SessionFailed,
+                "GPIB session has failed; reconnect before further I/O",
+            ),
+            (
+                TransportError::CommandTooLong,
+                "GPIB command exceeds 4096-byte limit",
+            ),
+            (
+                TransportError::ResponseTimedOut,
+                "GPIB helper response timed out",
+            ),
+            (
+                TransportError::HelperExited,
+                "GPIB helper exited unexpectedly",
+            ),
+            (
+                TransportError::HelperFrameExceededSizeLimit,
+                "GPIB helper frame exceeded size limit",
+            ),
+            (
+                TransportError::InvalidHexPayload,
+                "Invalid GPIB helper hex payload",
+            ),
+            (
+                TransportError::MalformedHelperFrame,
+                "Malformed GPIB helper frame",
+            ),
+            (
+                TransportError::MalformedHelperStatus,
+                "Malformed GPIB helper status",
+            ),
+            (
+                TransportError::MalformedHelperPayload,
+                "Malformed GPIB helper payload",
+            ),
+        ] {
+            assert_eq!(String::from(error), message);
+        }
+    }
+
+    #[test]
+    fn malformed_reply_poisons_helper() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("malformed.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf 'garbage\\n'\nsleep 5\n",
+        );
+        let mut gpib = Gpib::open(&helper, 7).unwrap();
+        assert_eq!(
+            gpib.query("READ?").unwrap_err(),
+            "Malformed GPIB helper frame"
+        );
+        assert!(gpib.is_poisoned());
+        assert_eq!(
+            gpib.query("READ?").unwrap_err(),
+            "GPIB session has failed; reconnect before further I/O"
+        );
+    }
+
+    #[test]
+    fn requests_use_strict_lowercase_helper_hex_including_exit() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("strict-hex.sh");
+        let payloads = dir.path().join("payloads.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do set -- $line; payload=$4; case \"$payload\" in *[!0123456789abcdef-]*) printf 'KIV\\tERR\\t62616420686578\\n'; exit 1 ;; esac; printf '%s\\n' \"$payload\" >> '{}'; case \"$1\" in QUERY) printf 'KIV\\tOK\\t6f6b\\n' ;; EXIT) printf 'KIV\\tOK\\t-\\n'; exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+                payloads.display()
+            ),
+        );
+        {
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            assert_eq!(gpib.query("*IDN?\n").unwrap(), "ok");
+            gpib.write("XY.\r").unwrap();
+        }
+        assert_eq!(
+            std::fs::read_to_string(payloads).unwrap(),
+            "2a49444e3f0a\n58592e0d\n-\n"
+        );
+    }
+
+    #[test]
+    fn connect_selects_exact_visa_resource_and_uses_wire_address_zero() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let visa = dir.path().join("visa.sh");
+        let input = dir.path().join("visa-input.txt");
+        let argument = dir.path().join("visa-argument.txt");
+        let source = format!(
+            "#!/bin/sh\nif [ \"$1\" = --list ]; then printf 'KIV\\tOK\\t47504942303A3A31323A3A494E535452094F6666696369616C20564953410A\\n'; exit 0; fi\nprintf '%s' \"$1\" > '{}'\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nprintf 'KIV\\tOK\\t4F4B\\n'\n",
+            argument.display(),
+            input.display()
+        );
+        executable(&visa, &source);
+        let mut gpib = Gpib::connect_with_paths(12, None, Some(visa)).unwrap();
+        assert_eq!(gpib.backend_name(), "official VISA");
+        assert_eq!(gpib.query("Q?").unwrap(), "OK");
+        assert_eq!(
+            std::fs::read_to_string(argument).unwrap(),
+            "GPIB0::12::INSTR"
+        );
+        assert!(
+            std::fs::read_to_string(input)
+                .unwrap()
+                .starts_with("QUERY 0 10000")
+        );
+    }
+
+    #[test]
+    fn visa_pool_keeps_two_resource_helpers_alive_under_one_lease() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("pooled-visa.sh");
+        let starts = dir.path().join("resources.txt");
+        let wire = dir.path().join("wire.txt");
+        let resources =
+            encode_hex(b"GPIB0::12::INSTR\tOfficial VISA\nGPIB0::13::INSTR\tOfficial VISA\n");
+        executable(
+            &helper,
+            &format!(
+                r#"#!/bin/sh
+if [ "$1" = --list ]; then printf 'KIV\tOK\t{}\n'; exit 0; fi
+printf '%s\n' "$1" >> '{}'
+lock="$0.$1.lock"
+if ! mkdir "$lock" 2>/dev/null; then printf 'KIV\tERR\t62757379\n'; exit 1; fi
+trap 'rmdir "$lock"' EXIT
+case "$1" in GPIB0::12::INSTR) reply=3132 ;; GPIB0::13::INSTR) reply=3133 ;; *) exit 1 ;; esac
+printf 'KIV\tOK\t-\n'
+while IFS= read -r line; do
+ printf '%s %s\n' "$1" "$line" >> '{}'
+ case "$line" in QUERY*) printf 'KIV\tOK\t%s\n' "$reply" ;; EXIT*) exit 0 ;; *) printf 'KIV\tOK\t-\n' ;; esac
+done
+"#,
+                resources,
+                starts.display(),
+                wire.display()
+            ),
+        );
+        let mut pool = GpibPool::default();
+        let mut first = pool
+            .connect_with_paths(12, None, Some(helper.clone()))
+            .unwrap();
+        let mut second = pool
+            .connect_with_paths(13, None, Some(helper.clone()))
+            .unwrap();
+        assert_eq!(first.query("first").unwrap(), "12");
+        assert_eq!(second.query("second").unwrap(), "13");
+        assert_eq!(first.query("still first").unwrap(), "12");
+        let started = std::fs::read_to_string(&starts).unwrap();
+        assert_eq!(
+            started.lines().collect::<Vec<_>>(),
+            ["GPIB0::12::INSTR", "GPIB0::13::INSTR"]
+        );
+        let sent = std::fs::read_to_string(&wire).unwrap();
+        assert!(sent.contains("GPIB0::12::INSTR QUERY 0 10000"));
+        assert!(sent.contains("GPIB0::13::INSTR QUERY 0 10000"));
+        let mut other_pool = GpibPool::default();
+        assert!(
+            other_pool
+                .connect_with_paths(12, None, Some(helper.clone()))
+                .is_err()
+        );
+        assert!(acquire_lease(false).is_err());
+        drop(first);
+        let mut next = other_pool
+            .connect_with_paths(12, None, Some(helper))
+            .unwrap();
+        assert_eq!(next.query("new owner").unwrap(), "12");
+        assert_eq!(second.query("still second").unwrap(), "13");
+        assert!(acquire_lease(false).is_err());
+        drop(next);
+        drop(second);
+        assert!(acquire_lease(false).is_ok());
+    }
+
+    #[test]
+    fn connect_keeps_native_address_when_visa_lists_no_gpib() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let visa = dir.path().join("visa.sh");
+        let native = dir.path().join("native.sh");
+        let input = dir.path().join("native-input.txt");
+        executable(
+            &visa,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t555342303A3A3078313233343A3A3078353637383A3A534E3A3A494E535452094F6666696369616C20564953410A\\n'",
+        );
+        executable(
+            &native,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nprintf 'KIV\\tOK\\t4F4B\\n'\n",
+                input.display()
+            ),
+        );
+        let mut gpib = Gpib::connect_with_paths(12, Some(native), Some(visa)).unwrap();
+        assert_eq!(gpib.backend_name(), "native");
+        assert_eq!(gpib.query("Q?").unwrap(), "OK");
+        assert!(
+            std::fs::read_to_string(input)
+                .unwrap()
+                .starts_with("QUERY 12 10000")
+        );
+    }
+
+    #[test]
+    fn another_visa_gpib_never_retries_through_native() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let visa = dir.path().join("visa.sh");
+        let native = dir.path().join("native.sh");
+        let marker = dir.path().join("native-started.txt");
+        executable(
+            &visa,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t47504942303A3A373A3A494E535452094F6666696369616C20564953410A\\n'",
+        );
+        executable(
+            &native,
+            &format!(
+                "#!/bin/sh\nprintf started > '{}'\nprintf 'KIV\\tOK\\t-\\n'\n",
+                marker.display()
+            ),
+        );
+        let error = match Gpib::connect_with_paths(12, Some(native), Some(visa)) {
+            Ok(_) => panic!("a mismatched VISA GPIB resource must not use native fallback"),
+            Err(error) => error,
+        };
+        assert!(error.contains("GPIB0::7::INSTR"));
+        assert!(!marker.exists());
+    }
+    #[test]
+    fn opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries() {
+        const CHILD_CASE: &str = "KOHDALAB_TRKR_HUB_TEST_CASE";
+        if let Ok(case) = std::env::var(CHILD_CASE) {
+            let helper = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_DIRECT").unwrap());
+            let marker = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_MARKER").unwrap());
+            if case != "healthy" {
+                assert!(Gpib::open(&helper, 12).is_err());
+                assert!(Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper)).is_err());
+                assert!(available_gpib_resources().is_err());
+                assert!(
+                    !marker.exists(),
+                    "a selected hub must never open native/VISA as fallback"
+                );
+                return;
+            }
+            for direct in [true, false] {
+                let mut gpib = if direct {
+                    Gpib::open(&helper, 12).unwrap()
+                } else {
+                    Gpib::connect_with_paths(12, Some(helper.clone()), Some(helper.clone()))
+                        .unwrap()
+                };
+                assert_eq!(gpib.backend_name(), "instrument hub");
+                assert_eq!(gpib.query("second").unwrap(), "fresh");
+            }
+            assert_eq!(
+                available_gpib_resources().unwrap(),
+                vec!["GPIB0::12::INSTR"]
+            );
+            let mut gpib = Gpib::open(&helper, 12).unwrap();
+            let seen = PathBuf::from(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_QUERY").unwrap());
+            let cancel = std::sync::Arc::new(AtomicBool::new(false));
+            let token = cancel.clone();
+            let stopper = thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                while !seen.exists() {
+                    assert!(Instant::now() < deadline);
+                    thread::sleep(Duration::from_millis(2));
+                }
+                token.store(true, Ordering::Release);
+            });
+            assert!(
+                gpib.query_cancellable("first", &cancel)
+                    .unwrap_err()
+                    .contains("cancelled")
+            );
+            stopper.join().unwrap();
+            assert!(gpib.query("not sent").unwrap_err().contains("pending"));
+            gpib.finish_cancelled_request().unwrap();
+            cancel.store(false, Ordering::Release);
+            assert_eq!(gpib.query_cancellable("second", &cancel).unwrap(), "fresh");
+            assert!(!gpib.is_poisoned());
+            assert!(!marker.exists());
+            let args =
+                std::fs::read_to_string(std::env::var_os("KOHDALAB_TRKR_HUB_TEST_ARGS").unwrap())
+                    .unwrap();
+            assert!(args.lines().any(|a| a == "KohdaLab TRKR"));
+            assert!(args.lines().any(|a| a == "12"));
+            assert!(
+                args.lines()
+                    .any(|a| a.ends_with("endpoint with spaces.json"))
+            );
+            return;
+        }
+        // Every environment choice is confined to a fresh test process; never
+        // mutate process-global environment while other Rust tests run.
+        for case in ["healthy", "empty_config", "missing_client", "denied_client"] {
+            let dir = tempfile::tempdir().unwrap();
+            let helper = dir.path().join("direct.sh");
+            let hub = dir.path().join("hub.sh");
+            let endpoint = dir.path().join("endpoint with spaces.json");
+            std::fs::write(&endpoint, "{}").unwrap();
+            executable(
+                &helper,
+                "#!/bin/sh\n: > \"$KOHDALAB_TRKR_HUB_TEST_MARKER\"\nprintf 'KIV\\tOK\\t-\\n'\n",
+            );
+            let listing = encode_hex(b"GPIB0::12::INSTR\nUSB0::1::INSTR\nGPIB0::12::INSTR\n");
+            executable(
+                &hub,
+                &format!(
+                    r#"#!/bin/sh
+printf '%s\n' "$@" > "$KOHDALAB_TRKR_HUB_TEST_ARGS"
+if [ "$KOHDALAB_TRKR_HUB_TEST_CASE" = denied_client ]; then
+  printf 'KIV\tERR\t64656e696564\n'; exit 1
+fi
+if [ "$1" = --list ]; then
+  printf 'KIV\tOK\t{listing}\n'; exit 0
+fi
+printf 'KIV\tOK\t-\n'
+while IFS= read -r line; do
+  case "$line" in
+    *6669727374) : > "$KOHDALAB_TRKR_HUB_TEST_QUERY"; sleep 0.2; printf 'KIV\tOK\t6f6c64\n' ;;
+    QUERY*) printf 'KIV\tOK\t6672657368\n' ;;
+    EXIT*) exit 0 ;;
+  esac
+done
+"#
+                ),
+            );
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "tests::opt_in_hub_is_authoritative_and_preserves_cancelled_reply_boundaries",
+                    "--nocapture",
+                ])
+                .env(CHILD_CASE, case)
+                .env("KOHDALAB_TRKR_HUB_TEST_DIRECT", &helper)
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_MARKER",
+                    dir.path().join("direct-called"),
+                )
+                .env(
+                    "KOHDALAB_TRKR_HUB_TEST_QUERY",
+                    dir.path().join("query-seen"),
+                )
+                .env("KOHDALAB_TRKR_HUB_TEST_ARGS", dir.path().join("args"))
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CONFIG",
+                    if case == "empty_config" {
+                        std::ffi::OsStr::new("")
+                    } else {
+                        endpoint.as_os_str()
+                    },
+                )
+                .env(
+                    "KOHDALAB_INSTRUMENT_HUB_CLIENT",
+                    if case == "missing_client" {
+                        dir.path().join("missing-client")
+                    } else {
+                        hub
+                    },
+                )
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
+
+    #[test]
+    fn usb_resource_aliases_share_a_lease_while_unrelated_resources_do_not() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("visa.sh");
+        executable(
+            &helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do case \"$line\" in EXIT*) exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+        );
+        let first = UsbVisa::connect_with_helper(
+            "usb0::4883::0x1234::PM100::0::instr",
+            Duration::from_millis(50),
+            &helper,
+        )
+        .unwrap();
+        assert_eq!(first.resource, "USB0::0x1313::0x1234::PM100::INSTR");
+        let duplicate = match UsbVisa::connect_with_helper(
+            "USB0::0x1313::4660::PM100::INSTR",
+            Duration::from_millis(50),
+            &helper,
+        ) {
+            Ok(_) => panic!("canonical USB aliases must share one lease"),
+            Err(error) => error,
+        };
+        assert!(duplicate.contains("already in use"));
+        let other = UsbVisa::connect_with_helper(
+            "USB0::0x1313::0x1234::PM101::INSTR",
+            Duration::from_millis(50),
+            &helper,
+        )
+        .unwrap();
+        drop(other);
+        drop(first);
+    }
+
+    #[test]
+    fn usb_session_coexists_with_the_gpib_adapter_lease() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let gpib_helper = dir.path().join("gpib.sh");
+        let visa_helper = dir.path().join("visa.sh");
+        executable(
+            &gpib_helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do case \"$line\" in EXIT*) exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+        );
+        executable(
+            &visa_helper,
+            "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile IFS= read -r line; do case \"$line\" in EXIT*) exit 0 ;; *) printf 'KIV\\tOK\\t-\\n' ;; esac; done\n",
+        );
+        let gpib = Gpib::open(&gpib_helper, 12).unwrap();
+        let usb = UsbVisa::connect_with_helper(
+            "USB0::0x1313::0x8078::P0001::INSTR",
+            Duration::from_millis(50),
+            &visa_helper,
+        );
+        assert!(usb.is_ok());
+        drop(usb);
+        drop(gpib);
+    }
+
+    #[test]
+    fn usb_request_uses_timeout_framing_and_poisons_on_timeout() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("visa.sh");
+        let wire = dir.path().join("wire.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nIFS= read -r line\nprintf '%s' \"$line\" > '{}'\nsleep 1\n",
+                wire.display()
+            ),
+        );
+        let mut usb = UsbVisa::connect_with_helper(
+            "USB0::0x1313::0x8078::P0001::INSTR",
+            Duration::from_millis(20),
+            &helper,
+        )
+        .unwrap();
+        assert!(usb.query("MEAS?").unwrap_err().contains("timed out"));
+        assert!(usb.is_poisoned());
+        assert!(
+            usb.query("MEAS?")
+                .unwrap_err()
+                .contains("session has failed")
+        );
+        assert!(
+            std::fs::read_to_string(wire)
+                .unwrap()
+                .starts_with("QUERY 0 20 4d4541533f")
+        );
+    }
+
+    #[test]
+    fn usb_discovery_filters_and_normalizes_without_opening_a_resource() {
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("visa-list.sh");
+        let listing = encode_hex(b"USB0::4883::32888::PM100::0::INSTR\tOfficial VISA\nGPIB0::12::INSTR\tOfficial VISA\nUSB0::0x1313::0x8078::PM100::INSTR\tOfficial VISA\n");
+        executable(
+            &helper,
+            &format!("#!/bin/sh\nprintf 'KIV\\tOK\\t{listing}\\n'\n"),
+        );
+        assert_eq!(
+            available_usb_resources_with_helper(&helper).unwrap(),
+            vec!["USB0::0x1313::0x8078::PM100::INSTR"]
+        );
+        assert!(normalize_usb_resource("GPIB0::12::INSTR").is_err());
+        assert!(normalize_usb_resource("USB0::0x10000::1::x::INSTR").is_err());
+        assert!(validate_usb_timeout(Duration::ZERO).is_err());
+    }
+}

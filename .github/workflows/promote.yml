@@ -1,0 +1,122 @@
+name: Promote release artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful Build release artifacts run ID
+        type: string
+        required: true
+      commit:
+        description: Full release commit SHA (blank uses main at dispatch)
+        type: string
+      tag:
+        description: Release tag matching the version in the target commit
+        type: string
+        required: true
+      hardware_evidence:
+        description: Optional repository-relative commissioning record
+        type: string
+      dry_run:
+        description: Verify and upload assets without creating a draft release
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  actions: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-promotion
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify release artifacts
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      commit: ${{ steps.verify.outputs.commit }}
+    steps:
+      - name: Check out the promotion workflow source and main history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify the build and stage its assets
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+          COMMIT: ${{ inputs.commit || github.sha }}
+          TAG: ${{ inputs.tag }}
+          HARDWARE_EVIDENCE: ${{ inputs.hardware_evidence }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          stage="$RUNNER_TEMP/promotion"
+          args=(verify --run "$RUN_ID" --commit "$COMMIT" --tag "$TAG" --output "$stage/assets")
+          if [[ -n "$HARDWARE_EVIDENCE" ]]; then
+            args+=(--hardware-evidence "$HARDWARE_EVIDENCE")
+          fi
+          if [[ "$DRY_RUN" == true ]]; then
+            args+=(--allow-existing-release)
+          fi
+          python3 scripts/promote_release.py "${args[@]}"
+          commit=$(jq -er '.release_commit' "$stage/assets/RELEASE-VERIFICATION.json")
+          git show "$commit:docs/release-notes.md" > "$stage/release-notes.md"
+          printf 'commit=%s\n' "$commit" >> "$GITHUB_OUTPUT"
+      - name: Upload the verified assets and release notes
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: verified-release
+          path: ${{ runner.temp }}/promotion
+          if-no-files-found: error
+          overwrite: true
+          retention-days: 14
+          compression-level: 0
+
+  draft:
+    name: Create draft release
+    if: ${{ !inputs.dry_run }}
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Download the verified assets and release notes
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: verified-release
+          path: promotion
+      - name: Create the draft without publishing it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          jq -e --arg tag "$TAG" --arg commit "$COMMIT" \
+            '.tag == $tag and .release_commit == $commit' \
+            promotion/assets/RELEASE-VERIFICATION.json
+          (cd promotion/assets && sha256sum --check --strict SHA256SUMS.txt)
+
+          # Check again with write access so existing drafts are visible.
+          if ! gh api --paginate "repos/$GH_REPO/releases?per_page=100" |
+            jq -se --arg tag "$TAG" 'all(.[][]; .tag_name != $tag)' > /dev/null; then
+            echo "Could not establish that release $TAG has no existing draft or published release" >&2
+            exit 1
+          fi
+          tag_path=$(jq -rn --arg tag "$TAG" '$tag | @uri')
+          if ! gh api "repos/$GH_REPO/git/matching-refs/tags/$tag_path" |
+            jq -e --arg ref "refs/tags/$TAG" 'all(.[]; .ref != $ref)' > /dev/null; then
+            echo "Could not establish that tag $TAG is absent" >&2
+            exit 1
+          fi
+          gh release create "$TAG" promotion/assets/* --draft --target "$COMMIT" \
+            --notes-file promotion/release-notes.md

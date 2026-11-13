@@ -1,0 +1,1279 @@
+use super::*;
+
+#[test]
+fn eframe_logic_refreshes_connected_lockin_without_drawing_ui() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.snapshot.devices[0] = true;
+    app.last_settings = std::time::Instant::now() - std::time::Duration::from_secs(6);
+    let mut frame = eframe::Frame::_new_kittest();
+    eframe::App::logic(&mut app, &context, &mut frame);
+    assert!(app.last_settings.elapsed() < std::time::Duration::from_secs(1));
+}
+
+#[test]
+fn eframe_logic_cancels_close_while_snapshot_copy_is_pending_without_drawing_ui() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    let (_send, receive) = std::sync::mpsc::channel();
+    app.snapshot_copy = Some(receive);
+    let mut frame = eframe::Frame::_new_kittest();
+    let mut input = egui::RawInput::default();
+    input.viewports.insert(
+        egui::ViewportId::ROOT,
+        egui::ViewportInfo {
+            events: vec![egui::ViewportEvent::Close],
+            ..Default::default()
+        },
+    );
+
+    let output = context.run_ui(input, |_| {
+        eframe::App::logic(&mut app, &context, &mut frame)
+    });
+
+    assert!(
+        output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose))
+    );
+}
+
+#[test]
+fn eframe_logic_releases_alignment_hold_on_focus_loss_without_drawing_ui() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.alignment_tab = true;
+    app.alignment.test_start_hold();
+    let mut frame = eframe::Frame::_new_kittest();
+    let input = egui::RawInput {
+        focused: false,
+        ..Default::default()
+    };
+
+    let _ = context.run_ui(input, |_| {
+        eframe::App::logic(&mut app, &context, &mut frame)
+    });
+
+    assert!(!app.alignment.test_holding());
+}
+
+#[test]
+fn test_apps_use_an_owned_temporary_config_directory() {
+    let app = App::with_context(&egui::Context::default(), false);
+    let root = app
+        ._config_tempdir
+        .as_ref()
+        .expect("test App owns its config directory")
+        .path();
+    assert_eq!(
+        std::path::PathBuf::from(&app.config_path),
+        root.join(".kohdalab/trkr/config/config.json")
+    );
+    assert!(!std::path::PathBuf::from(&app.config_path).exists());
+}
+
+#[test]
+fn startup_reports_an_invalid_recent_profile_without_replacing_its_record() {
+    let context = egui::Context::default();
+    let root = tempfile::tempdir().unwrap();
+    let paths = UserConfigPaths::from_kohdalab_dir(root.path().join(".kohdalab"));
+    Settings::default().save(&paths.production()).unwrap();
+    let invalid = root.path().join("invalid-profile.json");
+    std::fs::write(&invalid, b"not json").unwrap();
+    std::fs::create_dir_all(paths.recent_config().parent().unwrap()).unwrap();
+    let record = serde_json::to_vec(&json!({"path":invalid})).unwrap();
+    std::fs::write(paths.recent_config(), &record).unwrap();
+
+    let app = App::with_context_paths(&context, false, paths.clone(), true);
+    assert_eq!(app.config_path, paths.production().display().to_string());
+    assert!(app.status.contains("Last configuration was unavailable"));
+    assert_eq!(std::fs::read(paths.recent_config()).unwrap(), record);
+}
+
+#[test]
+fn demo_source_never_updates_the_recent_configuration_record() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let profile = app
+        ._config_tempdir
+        .as_ref()
+        .unwrap()
+        .path()
+        .join("demo-source.json");
+    Settings::default().save(&profile).unwrap();
+    app.config_path = profile.display().to_string();
+    app.source_demo = true;
+    app.remember_config_path();
+    assert!(!app.config_paths.recent_config().exists());
+}
+
+#[test]
+fn terminal_progress_survives_missed_samples_and_restored_axes_ignore_idle_progress() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.switch_workflow(Workflow::Srkr);
+    app.active_workflow = Workflow::Srkr;
+    let index = App::ix(Workflow::Srkr);
+    app.plans[index].fast = Axis::X;
+    app.select_plot_axes();
+    // Only one display sample reached the UI, but all 41 rows reached disk.
+    app.scan_progress[index] = (1, 41);
+    app.snapshot.running = true;
+    app.apply_snapshot(Snapshot {
+        rows: 41,
+        total: 41,
+        phase: "Complete".into(),
+        ..Default::default()
+    });
+    assert_eq!(app.scan_progress[index], (41, 41));
+    app.pm().fast = Axis::Y;
+    app.select_plot_axes();
+    app.scan_progress[index] = (3, 3);
+    app.pm().fast = Axis::X;
+    app.select_plot_axes();
+    app.apply_snapshot(Snapshot {
+        rows: 3,
+        total: 3,
+        ..Default::default()
+    });
+    assert_eq!(app.scan_progress[index], (41, 41));
+}
+#[test]
+fn axes_restore_results_progress_and_output_without_idle_state_overwriting_them() {
+    for workflow in [Workflow::Srkr, Workflow::Strkr, Workflow::Srkr2d] {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.settings = Settings::default();
+        app.source_demo = true;
+        app.plans = Workflow::ALL.map(|workflow| Plan {
+            workflow,
+            fast: if matches!(workflow, Workflow::Trkr | Workflow::Strkr) {
+                Axis::T
+            } else {
+                Axis::X
+            },
+            slow: Axis::Y,
+            fast_range: Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            slow_range: Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            interval_s: 0.,
+            ..Default::default()
+        });
+        app.switch_workflow(workflow);
+        let dir = tempfile::tempdir().unwrap();
+        let index = App::ix(workflow);
+        app.outputs[index].dir = dir.path().display().to_string();
+        let initial = app.plan().clone();
+        for run in 0..2 {
+            if run == 1 {
+                match workflow {
+                    Workflow::Srkr => app.pm().fast = Axis::Y,
+                    Workflow::Strkr => app.pm().slow = Axis::X,
+                    Workflow::Srkr2d => {
+                        app.pm().fast = Axis::Y;
+                        app.pm().slow = Axis::X;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+            app.select_plot_axes();
+            assert!(app.trace.is_empty());
+            app.outputs[index].filename = format!("retained-{run}");
+            app.start();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while app.snapshot.running {
+                assert!(Instant::now() < deadline, "simulated scan timed out");
+                app.receive();
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert_eq!(app.trace.len(), app.plan().targets().unwrap().len());
+            assert!(app.output_paths[index].as_ref().unwrap().is_file());
+            assert_eq!(app.scan_progress[index], (app.trace.len(), app.trace.len()));
+        }
+        let second = app.plan().clone();
+        let second_len = app.trace.len();
+        app.plans[index] = initial;
+        app.select_plot_axes();
+        assert!(!app.trace.is_empty());
+        let first_len = app.trace.len();
+        assert!(
+            app.output_paths[index]
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("retained-0")
+        );
+        // A worker idle snapshot still describes the last run, not this restored view.
+        app.receive();
+        assert_eq!(app.scan_progress[index], (first_len, first_len));
+        app.switch_workflow(Workflow::Trkr);
+        app.switch_workflow(workflow);
+        assert_eq!(app.trace.len(), first_len);
+        app.plans[index] = second;
+        app.select_plot_axes();
+        assert_eq!(app.trace.len(), second_len);
+        assert!(
+            app.output_paths[index]
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains("retained-1")
+        );
+    }
+}
+
+#[test]
+fn delay_step_hint_uses_actual_microstep_and_rejects_stale_identity() {
+    let settings = Settings::default();
+    let config = settings.hardware().unwrap().motion.delay.unwrap();
+    assert!(delay_step_hint(&config, None).starts_with("full "));
+    let mut actual = config.calibration_hint().unwrap();
+    actual.effective_ps_per_pulse = Some(0.001);
+    actual.effective_pos_um_per_pulse = Some(0.149896229);
+    actual.microstep_division = Some(100);
+    assert_eq!(delay_step_hint(&config, Some(&actual)), "≥ 0.001 ps");
+    let mut other = config.clone();
+    other.controller_axis = 2;
+    other.axis_count = 2;
+    assert!(delay_step_hint(&other, Some(&actual)).starts_with("full "));
+}
+
+#[test]
+fn scan_hints_and_tc_only_use_the_workflow_bound_devices() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.sync_all_plans().unwrap();
+    let baseline = app.scan_hints(
+        Axis::T,
+        app.plan(),
+        app.workflow_hardware(app.workflow).as_ref(),
+    );
+
+    let mut second_delay = app.inventory.delays[0].clone();
+    second_delay.id = "delay-2".into();
+    second_delay.name = "Delay 2".into();
+    second_delay.config.port = "COM7".into();
+    second_delay.config.travel_mm = Some(1.);
+    app.inventory.delays.push(second_delay);
+    let mut second_lockin = app.inventory.lockins[0].clone();
+    second_lockin.id = "lockin-2".into();
+    second_lockin.name = "Lock-in 2".into();
+    second_lockin.address = 13;
+    app.inventory.lockins.push(second_lockin);
+    app.inventory
+        .project_selected(&mut app.settings.raw)
+        .unwrap();
+    let mut ids = app.inventory.selected.clone();
+    ids.delay = "delay-2".into();
+    ids.lockin = "lockin-2".into();
+    app.settings
+        .set_workflow_devices(Workflow::Trkr, ids)
+        .unwrap();
+    let plan = app.settings.plan(Workflow::Trkr).unwrap();
+
+    assert_eq!(
+        app.workflow_hardware(Workflow::Trkr)
+            .unwrap()
+            .device_ids
+            .delay,
+        "delay-2"
+    );
+    assert_ne!(
+        app.scan_hints(
+            Axis::T,
+            &plan,
+            app.workflow_hardware(plan.workflow).as_ref()
+        ),
+        baseline
+    );
+    app.snapshot.lockin["Time Constant"] = json!(0.25);
+    assert_eq!(app.workflow_time_constant(Workflow::Trkr), None);
+}
+#[test]
+fn srkr_2d_exposes_one_shared_theta_on_u_for_both_axis_orders() {
+    for (fast, slow) in [(Axis::U, Axis::V), (Axis::V, Axis::U)] {
+        assert_eq!(
+            [fast, slow]
+                .into_iter()
+                .filter(|a| show_scan_theta(Workflow::Srkr2d, *a))
+                .count(),
+            1
+        );
+        assert!(show_scan_theta(Workflow::Srkr2d, Axis::U));
+        assert!(!show_scan_theta(Workflow::Srkr2d, Axis::V));
+    }
+    assert!(show_scan_theta(Workflow::Strkr, Axis::V));
+    assert!(!show_scan_theta(Workflow::Strkr, Axis::T));
+    assert_eq!(scan_unit(Axis::T), "ps");
+    assert_eq!(scan_unit(Axis::U), "µm");
+}
+#[test]
+fn snapshot_copy_keeps_pending_state_until_completion_and_reports_worker_failure() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.snapshot_copy = Some(receiver);
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_some());
+    app.begin_snapshot_copy("unused.csv".into(), "unused-copy.csv".into());
+    sender.send(Err("test write failure".into())).unwrap();
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_none());
+    assert_eq!(app.status, "Save snapshot failed: test write failure");
+
+    let (sender, receiver) = std::sync::mpsc::channel();
+    app.snapshot_copy = Some(receiver);
+    drop(sender);
+    app.poll_snapshot_copy();
+    assert!(app.snapshot_copy.is_none());
+    assert!(app.status.contains("worker closed unexpectedly"));
+}
+
+#[test]
+fn asynchronous_snapshot_copies_complete_rows_and_reports_success_only_when_finished() {
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("source.csv");
+    let destination = directory.path().join("copy.csv");
+    std::fs::write(&source, "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial").unwrap();
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.snapshot.running = true;
+    app.begin_snapshot_copy(source.clone(), destination.clone());
+    assert_eq!(app.status, "Saving snapshot…");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while app.snapshot_copy.is_some() && Instant::now() < deadline {
+        app.poll_snapshot_copy();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(app.snapshot_copy.is_none());
+    assert!(app.status.starts_with("Saved snapshot:"));
+    assert_eq!(
+        std::fs::read_to_string(destination).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\n"
+    );
+    assert!(
+        std::fs::read_to_string(source)
+            .unwrap()
+            .ends_with("partial")
+    );
+}
+
+#[test]
+fn save_now_preserves_complete_rows_and_refuses_overwrite() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    let destination = dir.path().join("snapshot.csv");
+    std::fs::write(&source, "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial").unwrap();
+    copy_complete_csv(&source, &destination, true).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\n"
+    );
+    assert!(copy_complete_csv(&source, &destination, true).is_err());
+    assert_eq!(
+        std::fs::read_to_string(source).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,0.1\npartial"
+    );
+}
+
+#[test]
+fn save_now_copies_schema_two_sidecars_with_a_consistent_active_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    let destination = dir.path().join("snapshot.csv");
+    std::fs::write(
+        &source,
+        "timestamp,X_V\n2026-10-19T00:00:00Z,1e-9\n2026-10-19T00:00:01Z,2e-9",
+    )
+    .unwrap();
+    std::fs::write(
+        source.with_extension("run.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 2,
+            "precision_policy": "no_accuracy_claim",
+            "readings_file": "source.readings.jsonl",
+            "source": "Gpib",
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        source.with_extension("readings.jsonl"),
+        concat!(
+            "{\"event\":\"context\",\"reply\":\"1.230000000000e-9\\r\\n\"}\n",
+            "{\"point_index\":1,\"status\":\"ok\",\"reply\":\"1.230000000000e-9\\r\\n\"}\n",
+            "{\"point_index\":2,\"status\":\"ok\",\"reply\":\"later\"}\n",
+            "{\"point_index\":2,\"status\":\"error\",\"error\":\"read failed\"}\n",
+            "{\"event\":\"finished\",\"rows\":1,\"status\":\"complete\"}\n",
+            "{\"point_index\":3,\"status\":\"ok\",\"reply\":\"later still\"}\n",
+            "{\"point_index\":4,\"status\":\"error\",\"error\":\"later error\"}\n"
+        ),
+    )
+    .unwrap();
+
+    copy_complete_csv(&source, &destination, true).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&destination).unwrap(),
+        "timestamp,X_V\n2026-10-19T00:00:00Z,1e-9\n"
+    );
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(destination.with_extension("run.json")).unwrap())
+            .unwrap();
+    assert_eq!(metadata["rows"], 1);
+    assert_eq!(metadata["status"], "snapshot");
+    assert_eq!(metadata["precision_policy"], "no_accuracy_claim");
+    assert_eq!(metadata["readings_file"], "snapshot.readings.jsonl");
+    let audit = std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap();
+    assert!(audit.contains("1.230000000000e-9\\r\\n"));
+    assert!(audit.contains("\"point_index\":1"));
+    assert!(audit.contains("\"point_index\":2,\"status\":\"error\""));
+    assert!(!audit.contains("\"event\":\"finished\""));
+    assert!(!audit.contains("\"point_index\":2,\"status\":\"ok\""));
+    assert!(!audit.contains("later still"));
+    assert!(!audit.contains("later error"));
+}
+
+#[test]
+fn save_now_all_destination_sidecars_refuse_overwrite() {
+    for collision in [
+        "snapshot.csv",
+        "snapshot.run.json",
+        "snapshot.readings.jsonl",
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.csv");
+        let destination = dir.path().join("snapshot.csv");
+        std::fs::write(&source, "timestamp\nrow\n").unwrap();
+        std::fs::write(
+            source.with_extension("run.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 2,
+                "readings_file": "source.readings.jsonl"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            source.with_extension("readings.jsonl"),
+            "{\"event\":\"context\"}\n",
+        )
+        .unwrap();
+        let collided = dir.path().join(collision);
+        std::fs::write(&collided, "existing").unwrap();
+
+        assert!(copy_complete_csv(&source, &destination, false).is_err());
+        assert_eq!(std::fs::read_to_string(&collided).unwrap(), "existing");
+        for output in [
+            destination.clone(),
+            destination.with_extension("run.json"),
+            destination.with_extension("readings.jsonl"),
+        ] {
+            if output != collided {
+                assert!(!output.exists(), "{}", output.display());
+            }
+        }
+    }
+}
+
+#[test]
+fn save_now_preserves_partial_evidence_on_activation_collision() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let first_destination = dir.path().join("first.csv");
+    let blocked_destination = dir.path().join("blocked.run.json");
+    let last_destination = dir.path().join("last.readings.jsonl");
+    std::fs::write(&blocked_destination, "existing").unwrap();
+    let mut first = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut blocked = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    let mut last = tempfile::NamedTempFile::new_in(dir.path()).unwrap();
+    first.write_all(b"first").unwrap();
+    blocked.write_all(b"blocked").unwrap();
+    last.write_all(b"last").unwrap();
+
+    assert!(
+        persist_snapshot_noclobber(vec![
+            (first_destination.clone(), first),
+            (blocked_destination.clone(), blocked),
+            (last_destination.clone(), last),
+        ])
+        .is_err()
+    );
+    assert_eq!(std::fs::read(first_destination).unwrap(), b"first");
+    assert_eq!(
+        std::fs::read_to_string(blocked_destination).unwrap(),
+        "existing"
+    );
+    assert!(!last_destination.exists());
+}
+
+#[test]
+fn save_now_allows_legacy_csv_without_sidecars_and_rejects_missing_declared_audit() {
+    let dir = tempfile::tempdir().unwrap();
+    let legacy = dir.path().join("legacy.csv");
+    let legacy_destination = dir.path().join("legacy_snapshot.csv");
+    std::fs::write(&legacy, "timestamp\nrow\n").unwrap();
+    copy_complete_csv(&legacy, &legacy_destination, false).unwrap();
+    assert!(legacy_destination.exists());
+    assert!(!legacy_destination.with_extension("run.json").exists());
+    assert!(!legacy_destination.with_extension("readings.jsonl").exists());
+
+    let source = dir.path().join("schema-two.csv");
+    let destination = dir.path().join("rejected.csv");
+    std::fs::write(&source, "timestamp\nrow\n").unwrap();
+    std::fs::write(
+        source.with_extension("run.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "schema_version": 2,
+            "readings_file": "missing.readings.jsonl"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert!(copy_complete_csv(&source, &destination, false).is_err());
+    assert!(!destination.exists());
+}
+#[test]
+fn step_uses_acquired_count_and_total_even_if_plot_history_is_shorter() {
+    assert_eq!(step_progress(9, 41), "9/41");
+    assert_eq!(step_progress(50_001, 100_000), "50001/100000");
+    assert_eq!(step_progress(0, 0), "-");
+}
+#[test]
+fn initialization_distinguishes_homing_and_agap_enable_with_controller_aliases() {
+    for cc in ["CONEXCC", "CONEX-CC", "conex_cc", "CONEX CC"] {
+        let controllers = [cc.into(), "CONEXAGAP".into()];
+        assert!(initialization_homes(0, &controllers));
+        assert!(initialization_homes(1, &controllers));
+        assert!(!initialization_homes(2, &controllers));
+    }
+}
+#[test]
+fn device_headers_show_only_connected_names_and_relevant_motion() {
+    let plan = Plan {
+        workflow: Workflow::Strkr,
+        fast: Axis::T,
+        slow: Axis::U,
+        ..Default::default()
+    };
+    assert_eq!(device_caption(false, "SR7265", Some("Reading")), "----");
+    assert_eq!(
+        device_caption(true, "SR7265", Some("Reading")),
+        "SR7265 · Reading"
+    );
+    assert_eq!(
+        device_phase(true, true, "Moving t", Device::T, &plan),
+        Some("Moving")
+    );
+    assert_eq!(device_phase(true, true, "Moving t", Device::X, &plan), None);
+    assert_eq!(
+        device_phase(true, true, "Returning x", Device::X, &plan),
+        Some("Returning")
+    );
+    assert_eq!(
+        device_phase(true, true, "Returning x", Device::T, &plan),
+        None
+    );
+
+    assert_eq!(
+        device_phase(true, true, "Moving y", Device::Y, &plan),
+        Some("Moving")
+    );
+    assert_eq!(
+        device_phase(true, true, "Initializing x", Device::X, &plan),
+        Some("Initializing")
+    );
+    assert_eq!(
+        device_phase(true, true, "Initializing x", Device::Y, &plan),
+        None
+    );
+
+    for device in [Device::X, Device::Y] {
+        assert_eq!(
+            device_phase(true, true, "Moving u · loop 1", device, &plan),
+            Some("Moving")
+        );
+        assert_eq!(
+            device_phase(true, true, "Waiting", device, &plan),
+            Some("Waiting")
+        );
+    }
+    assert_eq!(
+        device_phase(true, true, "Reading", Device::Lockin, &plan),
+        Some("Reading")
+    );
+    assert_eq!(
+        device_phase(true, false, "Moving t", Device::T, &plan),
+        None
+    );
+    assert_eq!(
+        device_phase(false, true, "Moving t", Device::T, &plan),
+        None
+    );
+}
+#[test]
+fn demo_output_name_is_marked_without_double_prefix() {
+    let normal = OutputProfile {
+        dir: "runs".into(),
+        filename: "trkr_run".into(),
+        auto_timestamp_suffix: true,
+    };
+    assert_eq!(output_filename(&normal, true), "demo_trkr_run");
+    assert_eq!(output_filename(&normal, false), "trkr_run");
+    let marked = OutputProfile {
+        filename: "Demo_TRKR".into(),
+        ..normal
+    };
+    assert_eq!(output_filename(&marked, true), "Demo_TRKR");
+}
+
+#[test]
+fn output_hydration_accepts_legacy_flat_fields_and_nested_priority() {
+    let mut raw = json!({
+        "measurements": {
+            "trkr": {
+                "output_dir": "legacy-runs",
+                "filename": "legacy-name",
+                "auto_timestamp_suffix": true,
+                "output": {
+                    "dir": "nested-runs",
+                    "output_dir": "ignored-runs",
+                    "filename": "nested-name",
+                    "auto_timestamp_suffix": false
+                }
+            }
+        }
+    });
+    let fallback = default_output(Workflow::Trkr);
+    assert_eq!(
+        hydrated_output(&raw, Workflow::Trkr, fallback.clone()),
+        OutputProfile {
+            dir: "nested-runs".into(),
+            filename: "nested-name".into(),
+            auto_timestamp_suffix: false,
+        }
+    );
+
+    raw["measurements"]["trkr"]["output"] = json!({
+        "dir": "   ",
+        "output_dir": "nested-legacy-runs",
+        "filename": "",
+    });
+    assert_eq!(
+        hydrated_output(&raw, Workflow::Trkr, fallback),
+        OutputProfile {
+            dir: "nested-legacy-runs".into(),
+            filename: "legacy-name".into(),
+            auto_timestamp_suffix: true,
+        }
+    );
+}
+
+#[test]
+fn sync_output_canonicalizes_known_legacy_output_fields() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.settings.raw["measurements"]["trkr"] = json!({
+        "output_dir": "flat-dir",
+        "filename": "flat-name",
+        "auto_timestamp_suffix": false,
+        "output": {"output_dir": "nested-alias", "metadata": {"keep": true}}
+    });
+    app.hydrate_output(Workflow::Trkr);
+    app.sync_output(Workflow::Trkr);
+    let settings = &app.settings.raw["measurements"]["trkr"];
+    assert!(settings.get("output_dir").is_none());
+    assert!(settings.get("filename").is_none());
+    assert!(settings.get("auto_timestamp_suffix").is_none());
+    assert!(settings["output"].get("output_dir").is_none());
+    assert_eq!(settings["output"]["dir"], "nested-alias");
+    assert_eq!(settings["output"]["filename"], "flat-name");
+    assert_eq!(settings["output"]["auto_timestamp_suffix"], false);
+    assert_eq!(settings["output"]["metadata"]["keep"], true);
+}
+
+#[test]
+fn ordinary_sync_does_not_create_missing_motion_devices() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.settings.raw["instruments"]["delay_stage"] = json!({});
+    app.settings.raw["instruments"]["scanner"] = json!({});
+    app.hydrate();
+    app.sync();
+    assert!(
+        app.settings.raw["instruments"]["delay_stage"]
+            .get("t")
+            .is_none()
+    );
+    assert!(
+        app.settings.raw["instruments"]["scanner"]
+            .get("x")
+            .is_none()
+    );
+    assert!(
+        app.settings.raw["instruments"]["scanner"]
+            .get("y")
+            .is_none()
+    );
+    assert_eq!(app.configured_devices(), vec![Device::Lockin]);
+}
+
+#[test]
+fn ordinary_sync_keeps_only_the_configured_y_scanner() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let y = app.settings.raw["instruments"]["scanner"]["y"].clone();
+    app.settings.raw["instruments"]["delay_stage"] = json!({});
+    app.settings.raw["instruments"]["scanner"] = json!({"y": y});
+    app.hydrate();
+    app.sync();
+    assert!(
+        app.settings.raw["instruments"]["scanner"]
+            .get("x")
+            .is_none()
+    );
+    assert!(app.settings.raw["instruments"]["scanner"]["y"].is_object());
+    assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+}
+
+#[test]
+fn editing_an_unconfigured_device_promotes_only_that_device_on_sync() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.settings.raw["instruments"]["delay_stage"] = json!({});
+    app.settings.raw["instruments"]["scanner"] = json!({});
+    app.hydrate();
+    app.scanner_port[1] = "COM5".into();
+    // All Connect builds its list before config() calls sync().
+    assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+    app.sync();
+    assert!(
+        app.settings.raw["instruments"]["scanner"]
+            .get("x")
+            .is_none()
+    );
+    assert_eq!(
+        app.settings.raw["instruments"]["scanner"]["y"]["port"],
+        "COM5"
+    );
+    assert_eq!(app.configured_devices(), vec![Device::Lockin, Device::Y]);
+}
+
+#[test]
+fn legacy_hardware_aliases_roundtrip_through_hydrate_and_sync() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let delay = app.settings.raw["instruments"]["delay_stage"]["t"]
+        .as_object_mut()
+        .unwrap();
+    delay.remove("controller");
+    delay.insert("delay_stage_controller".into(), json!("SHOT-302GS"));
+
+    let x = app.settings.raw["instruments"]["scanner"]["x"]
+        .as_object_mut()
+        .unwrap();
+    x.remove("controller");
+    x.remove("sample_um_per_unit");
+    x.insert("scanner_controller".into(), json!("CONEX-CC"));
+    x.insert("actuator".into(), json!("TRA12CC"));
+    x.insert("axis".into(), json!(1));
+    x.insert("sample_um_per_actuator_mm".into(), json!(321.));
+    x.insert("sample_um_per_actuator_deg".into(), json!(999.));
+    x.insert(
+        "software_hysteresis".into(),
+        json!({"enabled": true, "approach_distance_um": 37., "approach": "positive"}),
+    );
+    x.insert("vendor_metadata".into(), json!({"keep": true}));
+
+    app.hydrate();
+    assert_eq!(app.stage_model, "SHOT302GS");
+    assert_eq!(app.scanner_model[0], "CONEXCC");
+    assert_eq!(app.scanner_scale[0], 321.);
+    assert_eq!(app.hysteresis_distance[0], 37.);
+    assert_eq!(app.hysteresis_direction[0], "positive");
+
+    app.sync();
+    let delay = &app.settings.raw["instruments"]["delay_stage"]["t"];
+    let x = &app.settings.raw["instruments"]["scanner"]["x"];
+    assert_eq!(delay["controller"], "SHOT302GS");
+    assert_eq!(x["controller"], "CONEXCC");
+    assert_eq!(x["sample_um_per_unit"], 321.);
+    assert_eq!(x["software_hysteresis"]["distance_um"], 37.);
+    assert_eq!(x["software_hysteresis"]["direction"], "positive");
+    assert_eq!(x["vendor_metadata"]["keep"], true);
+    for alias in [
+        "scanner_controller",
+        "sample_um_per_actuator_mm",
+        "sample_um_per_actuator_deg",
+    ] {
+        assert!(x.get(alias).is_none(), "{alias}");
+    }
+    assert!(delay.get("delay_stage_controller").is_none());
+    assert!(
+        x["software_hysteresis"]
+            .get("approach_distance_um")
+            .is_none()
+    );
+    assert!(x["software_hysteresis"].get("approach").is_none());
+    assert!(app.settings.hardware().is_ok());
+}
+
+#[test]
+fn lockin_model_alias_hydrates_case_insensitively_and_syncs_canonical_model() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let lockin = app.settings.raw["instruments"]["lockin"]["main"]
+        .as_object_mut()
+        .unwrap();
+    lockin.remove("model");
+    lockin.insert("lockin_model".into(), json!("sr830"));
+    app.hydrate();
+    assert_eq!(app.model, Model::Sr830);
+    app.sync();
+    let lockin = &app.settings.raw["instruments"]["lockin"]["main"];
+    assert_eq!(lockin["model"], "SR830");
+    assert!(lockin.get("lockin_model").is_none());
+}
+
+#[test]
+fn gpib_resource_requires_canonical_portable_address() {
+    assert_eq!(App::gpib_address("GPIB0::0::INSTR"), None);
+    assert_eq!(App::gpib_address("GPIB0::1::INSTR"), Some(1));
+    assert_eq!(App::gpib_address("GPIB0::30::INSTR"), Some(30));
+    assert_eq!(App::gpib_address("GPIB0::31::INSTR"), None);
+    assert_eq!(App::gpib_address("GPIB0::01::INSTR"), None);
+    assert_eq!(App::gpib_address("GPIB1::12::INSTR"), None);
+}
+
+#[test]
+fn shared_coordinates_follow_selected_profile_without_changing_scan_settings() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    let mut plans = app.plans.clone();
+    plans[Workflow::Trkr.index()].fast_range = Range {
+        min: -10.,
+        max: 20.,
+        step: 2.,
+    };
+    plans[Workflow::Srkr.index()].fast_range = Range {
+        min: -31.,
+        max: 27.,
+        step: 0.5,
+    };
+    plans[Workflow::Srkr.index()].zero = [12., 34., 56.];
+    plans[Workflow::Srkr.index()].theta_deg = 18.5;
+
+    app.plans = plans;
+    app.workflow = Workflow::Srkr;
+    for (axis, zero) in [12., 34., 56.].into_iter().enumerate() {
+        app.set_selected_zero(axis, zero);
+    }
+    app.sync_all_plans().unwrap();
+    let plans = app.plans;
+
+    for plan in &plans {
+        assert_eq!(plan.zero, [12., 34., 56.]);
+        assert_eq!(plan.theta_deg, 18.5);
+    }
+    assert_eq!(
+        plans[Workflow::Trkr.index()].fast_range,
+        Range {
+            min: -10.,
+            max: 20.,
+            step: 2.,
+        }
+    );
+    assert_eq!(
+        plans[Workflow::Srkr.index()].fast_range,
+        Range {
+            min: -31.,
+            max: 27.,
+            step: 0.5,
+        }
+    );
+}
+
+#[test]
+fn documentation_captures_use_synthetic_settings_without_operator_paths() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.config_path = "/operator/private/profile.json".into();
+    app.settings.raw["profile"]["description"] = json!("private experiment");
+    for output in &mut app.outputs {
+        output.dir = "/operator/private/experiment".into();
+    }
+    app.note("private path from profile load");
+    let success = Arc::new(AtomicBool::new(true));
+    let directory = tempfile::tempdir().unwrap();
+    app.enable_smoke(directory.path().join("capture"), success.clone());
+    assert_eq!(app.config_path, "~/.kohdalab/trkr/config/config.json");
+    assert_eq!(app.settings.raw, Settings::default().raw);
+    assert!(app.outputs.iter().all(|output| output.dir == "demo/runs"));
+    assert_eq!(app.log.len(), 1);
+    assert!(!app.log[0].contains("private"));
+    assert!(!success.load(Ordering::Acquire));
+    assert!(!directory.path().join("capture").exists());
+}
+
+#[test]
+fn synthetic_layout_capture_keeps_explicit_rotated_axes() {
+    for (state, fast, slow) in [
+        ("rotated", Axis::U, Axis::V),
+        ("rotated-reverse", Axis::V, Axis::U),
+    ] {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        let directory = tempfile::tempdir().unwrap();
+        app.enable_layout_capture(
+            directory.path().join("capture"),
+            Arc::new(AtomicBool::new(false)),
+            state,
+        );
+        assert_eq!(app.plans[Workflow::Srkr.index()].fast, fast);
+        assert_eq!(app.plans[Workflow::Strkr.index()].fast, fast);
+        assert_eq!(app.plans[Workflow::Strkr.index()].slow, Axis::T);
+        assert_eq!(app.plans[Workflow::Srkr2d.index()].fast, fast);
+        assert_eq!(app.plans[Workflow::Srkr2d.index()].slow, slow);
+        assert!(app.smoke.as_ref().unwrap().layout_only);
+    }
+}
+
+#[test]
+fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.workflow = Workflow::Trkr;
+    app.active_workflow = Workflow::Trkr;
+    let index = App::ix(Workflow::Trkr);
+    let start = Instant::now();
+    app.eta.start();
+    app.snapshot.running = true;
+    app.snapshot.total = 10;
+    app.scan_progress[index] = (0, 10);
+    assert_eq!(app.eta_label(start), "Estimating…");
+    app.snapshot.rows = 2;
+    app.scan_progress[index].0 = 2;
+    app.eta.observe(1, 3.0, start + Duration::from_secs(3));
+    app.eta.observe(2, 6.0, start + Duration::from_secs(6));
+    assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
+    app.snapshot.rows = 10;
+    app.snapshot.phase = "Returning x".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Returning…");
+    app.snapshot.phase = "Reading".into();
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Finishing…");
+    app.demo_viewer = true;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "Looping…");
+    app.snapshot.running = false;
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+    app.snapshot.running = true;
+    app.snapshot.total = 0; // standalone Move must not reuse the last run's ETA
+    assert_eq!(app.eta_label(start + Duration::from_secs(30)), "-");
+}
+
+#[test]
+fn private_eta_clock_does_not_change_sample_json_contract() {
+    let mut sample = Sample {
+        recording: Default::default(),
+        timing: Default::default(),
+        captured_at: None,
+        elapsed: 3.0,
+        target: Plan::default().targets().unwrap()[0],
+        signal: trkr_core::Signal::default(),
+        position: trkr_motion::Position::default(),
+    };
+    let original = serde_json::to_value(&sample).unwrap();
+    sample.captured_at = Some(Instant::now());
+    assert_eq!(serde_json::to_value(&sample).unwrap(), original);
+    let restored: Sample = serde_json::from_value(original).unwrap();
+    assert!(restored.captured_at.is_none());
+}
+
+#[test]
+fn save_now_omits_terminal_event_from_later_source_completion() {
+    assert!(!audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":20, "status":"complete"}),
+        10,
+        false,
+    ));
+    assert!(audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":10, "status":"complete"}),
+        10,
+        false,
+    ));
+    assert!(!audit_record_is_in_snapshot(
+        &json!({"event":"finished", "rows":10, "status":"complete"}),
+        10,
+        true,
+    ));
+}
+
+#[test]
+fn save_now_keeps_unsaved_raw_reading_from_a_finalized_failed_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("failed.csv");
+    let destination = dir.path().join("copy.csv");
+    std::fs::write(&source, "X_V\n1e-6\n").unwrap();
+    std::fs::write(source.with_extension("run.json"), serde_json::to_vec(&json!({"schema_version":2,"status":"error","rows":1,"readings_file":"failed.readings.jsonl"})).unwrap()).unwrap();
+    let evidence = "{\"event\":\"reading\",\"point_index\":2,\"status\":\"ok\",\"raw\":\"1.23000000000001e-6\"}\n";
+    std::fs::write(source.with_extension("readings.jsonl"), evidence).unwrap();
+    copy_complete_csv(&source, &destination, false).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(destination.with_extension("readings.jsonl")).unwrap(),
+        evidence
+    );
+}
+
+#[test]
+fn new_raw_csv_save_preserves_uuid_multiline_evidence_and_recomputes_hashes() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    engine::demo_csv(
+        Plan {
+            workflow: Workflow::Trkr,
+            fast_range: Range {
+                min: 0.,
+                max: 1.,
+                step: 1.,
+            },
+            ..Plan::default()
+        },
+        &source,
+    )
+    .unwrap();
+    let destination = dir.path().join("copy.csv");
+    copy_complete_csv(&source, &destination, false).unwrap();
+    let original: Value =
+        serde_json::from_slice(&std::fs::read(source.with_extension("run.json")).unwrap()).unwrap();
+    let copied: Value =
+        serde_json::from_slice(&std::fs::read(destination.with_extension("run.json")).unwrap())
+            .unwrap();
+    assert_eq!(original["run_id"], copied["run_id"]);
+    assert_eq!(copied["raw_csv"]["filename"], "copy.raw.csv");
+    assert!(copied.get("readings_file").is_none());
+    assert!(!destination.with_extension("readings.jsonl").exists());
+    assert_eq!(
+        copied["file_hashes"]["csv_sha256"],
+        crate::raw_csv::file_sha256(&destination).unwrap()
+    );
+    assert_eq!(
+        copied["file_hashes"]["raw_csv_sha256"],
+        crate::raw_csv::file_sha256(&destination.with_extension("raw.csv")).unwrap()
+    );
+    assert_eq!(
+        std::fs::read(source.with_extension("raw.csv")).unwrap(),
+        std::fs::read(destination.with_extension("raw.csv")).unwrap()
+    );
+}
+
+#[test]
+fn raw_csv_snapshot_preserves_quoted_multiline_and_omits_future_point() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.csv");
+    std::fs::write(&source, "run_id,point_index\nrun,1\n").unwrap();
+    std::fs::write(source.with_extension("run.json"),serde_json::to_vec(&json!({"run_id":"run","status":"running","raw_csv":{"filename":"source.raw.csv","schema":"raw_csv_v1"}})).unwrap()).unwrap();
+    let mut raw =
+        crate::raw_csv::RawWriter::create(&source.with_extension("raw.csv"), "run").unwrap();
+    raw.append(&json!({"event":"transport_exchange","point_index":1,"raw_response":"  1.23000000,\"raw\"\r\n"})).unwrap();
+    raw.append(&json!({"event":"reading","point_index":2,"raw_response":"future\r\n"}))
+        .unwrap();
+    raw.append(
+        &json!({"event":"reading","point_index":2,"status":"error","error":"future failure"}),
+    )
+    .unwrap();
+    raw.append(&json!({"event":"finished","rows":1,"status":"complete"}))
+        .unwrap();
+    let destination = dir.path().join("snapshot.csv");
+    copy_complete_csv(&source, &destination, true).unwrap();
+    let mut reader = csv::Reader::from_path(destination.with_extension("raw.csv")).unwrap();
+    let rows = reader.records().collect::<Result<Vec<_>, _>>().unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(&rows[1][2], "2");
+    assert_eq!(&rows[1][15], "error");
+    assert_eq!(&rows[0][8], "  1.23000000,\"raw\"\r\n");
+}
+
+#[test]
+fn lockin_status_shows_output_overload_unlock_and_failed_status_instead_of_live() {
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":true,"input_overload":false}})
+        ),
+        Some("OVERLOAD")
+    );
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":false,"reference_unlock":true}})
+        ),
+        Some("UNLOCK")
+    );
+    assert_eq!(
+        lockin_health_text(&serde_json::json!({"Overload":null,"Status Error":"timeout"})),
+        Some("UNKNOWN")
+    );
+    assert_eq!(
+        lockin_health_text(
+            &serde_json::json!({"Overload":{"overload":false,"reference_unlock":false}})
+        ),
+        None
+    );
+}
+
+#[test]
+fn referenced_cc_gui_initialization_can_skip_home_while_still_moving_to_zero() {
+    let mut app = App::with_context(&egui::Context::default(), false);
+    app.scanner_model[0] = "CONEXCC".into();
+    app.scanner_actuator[0] = "TRA12CC".into();
+    app.scanner_port[0] = "COM5".into();
+    app.initialize_skip_home = true;
+    assert!(matches!(
+        app.initialization_command(1).unwrap(),
+        Command::Initialize {
+            axis: 1,
+            home: false,
+            move_to_origin: true,
+            ..
+        }
+    ));
+    app.initialize_skip_home = false;
+    assert!(matches!(
+        app.initialization_command(1).unwrap(),
+        Command::Initialize {
+            axis: 1,
+            home: true,
+            move_to_origin: true,
+            ..
+        }
+    ));
+    app.initialize_skip_home = true;
+    assert!(matches!(
+        app.initialization_command(0).unwrap(),
+        Command::Initialize {
+            axis: 0,
+            home: true,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn single_pair_csv_load_selects_available_demo_display_without_derivation() {
+    for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
+        let mut app = App::with_context(&egui::Context::default(), true);
+        let plan = Plan::default();
+        let signal = trkr_core::Signal::from_pair(mode, 1e-6, 2.).unwrap();
+        let data = crate::replay_data::Dataset {
+            plan: plan.clone(),
+            samples: vec![Sample {
+                recording: Default::default(),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: 0.,
+                target: plan.targets().unwrap()[0],
+                signal,
+                position: Default::default(),
+            }],
+        };
+        let (send, receiver) = std::sync::mpsc::channel();
+        send.send(Ok(vec![(PathBuf::from("single-pair.csv"), data)]))
+            .unwrap();
+        app.demo.pending = Some(receiver);
+        app.demo_tick();
+        assert_eq!(app.mode, mode);
+        assert_eq!(
+            app.demo.datasets[App::ix(Workflow::SignalMonitor)]
+                .as_ref()
+                .unwrap()
+                .samples[0]
+                .signal
+                .acquired_pair(),
+            Some(mode)
+        );
+        assert!(app.trace.is_empty());
+    }
+}
+
+#[test]
+fn signal_unit_uses_current_status_or_settings_context_without_periodic_unknown_flicker() {
+    for model in [Model::Li5640, Model::Sr7265] {
+        let mut state = Snapshot {
+            devices: [true, false, false, false],
+            lockin: json!({"input_mode":0,"signal_unit":"V","Overload":{"overload":false},"Status Error":null}),
+            ..Default::default()
+        };
+        assert_eq!(snapshot_signal_unit(&state, model), "V");
+        state.lockin["Overload"] = json!({"input_mode":0,"signal_unit":"V"});
+        assert_eq!(snapshot_signal_unit(&state, model), "V");
+        if model == Model::Li5640 {
+            state.lockin["Overload"]["signal_unit"] = json!("unknown");
+            assert_eq!(snapshot_signal_unit(&state, model), "unknown");
+        }
+        state.lockin["Status Error"] = json!("query failed");
+        assert_eq!(snapshot_signal_unit(&state, model), "unknown");
+    }
+    let mut state = Snapshot {
+        devices: [true, false, false, false],
+        lockin: json!({"signal_unit":"A"}),
+        ..Default::default()
+    };
+    assert_eq!(snapshot_signal_unit(&state, Model::Li5640), "A");
+    state.devices[0] = false;
+    assert_eq!(snapshot_signal_unit(&state, Model::Li5640), "unknown");
+}
+
+#[test]
+fn input_mode_change_does_not_relabel_a_stale_voltage_sensitivity_as_current() {
+    let mut snapshot = Snapshot {
+        devices: [true, false, false, false],
+        lockin: json!({"input_mode":0,"Sensitivity":2e-9,"signal_unit":"V","Overload":{"input_mode":2,"signal_unit":"A"},"Status Error":null}),
+        ..Default::default()
+    };
+    assert_eq!(snapshot_signal_unit(&snapshot, Model::Li5640), "A");
+    assert_eq!(qualified_lockin_sensitivity(&snapshot, Model::Li5640), None);
+    snapshot.lockin["input_mode"] = json!(2);
+    snapshot.lockin["signal_unit"] = json!("A");
+    snapshot.lockin["Sensitivity"] = json!(5e-15);
+    assert_eq!(
+        qualified_lockin_sensitivity(&snapshot, Model::Li5640),
+        Some(5e-15)
+    );
+    snapshot.lockin["Status Error"] = json!("query failed");
+    assert_eq!(qualified_lockin_sensitivity(&snapshot, Model::Li5640), None);
+}
+
+#[test]
+fn lockin_settings_use_readback_choices_and_keep_ac_gain_distinct_from_slope() {
+    assert_eq!(App::si_text(2e-9, "V"), "2 nV");
+    assert_eq!(App::si_text(5e-15, "A"), "5 fA");
+    assert_eq!(App::si_text(100e-9, "V"), "100 nV");
+    assert_eq!(App::si_text(1.0, "V"), "1 V");
+    assert_eq!(App::si_text(30e3, "s"), "30 ks");
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.model = Model::Sr830;
+    app.device_expanded[0] = true;
+    let collapsed = app.device_height(0);
+    app.lockin_settings_expanded = true;
+    let sr830 = app.device_height(0);
+    assert!(sr830 > collapsed);
+    assert_eq!(App::time_constant_text(10e-6), "10 µs");
+    app.model = Model::Sr7265;
+    // Only the SR7265 adds an AC gain row; slope is shown for every model.
+    assert_eq!(app.device_height(0), sr830 + LOCKIN_SETTINGS_ROW);
+    app.snapshot.lockin = json!({
+        "input_mode": 0,
+        "Sensitivity": 2.0000001e-6,
+        "Slope": 12.0,
+        "AC Gain": 20.0,
+        "available": {
+            "sensitivity": [1e-6, 2e-6, 5e-6],
+            "slope": [6, 12, 18, 24],
+            "ac_gain": [0.0, 10.0, 20.0]
+        }
+    });
+    assert_eq!(app.lockin_choices("sensitivity", "Sensitivity").1, Some(1));
+    assert_eq!(app.lockin_choices("slope", "Slope").1, Some(1));
+    assert_eq!(app.lockin_choices("ac_gain", "AC Gain").1, Some(2));
+    assert_eq!(app.lockin_sensitivity_unit(), "V");
+    app.snapshot.lockin["input_mode"] = json!(2);
+    assert_eq!(app.lockin_sensitivity_unit(), "A");
+    // An unqualified (null) readback selects nothing rather than a guess.
+    app.snapshot.lockin["Sensitivity"] = Value::Null;
+    assert_eq!(app.lockin_choices("sensitivity", "Sensitivity").1, None);
+}

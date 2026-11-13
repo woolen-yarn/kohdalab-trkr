@@ -1,0 +1,499 @@
+#![forbid(unsafe_code)]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+mod alignment_config;
+mod axis_choices;
+mod compatibility;
+mod config;
+mod engine;
+mod file_dialog;
+mod font_selection;
+#[cfg(feature = "gui-interaction-tests")]
+mod gui_interaction;
+mod inventory;
+mod live;
+mod live_view;
+mod lockin;
+mod plot_history;
+mod power_meter;
+mod precision;
+mod presentation;
+#[cfg(test)]
+mod python_parity_tests;
+mod raw_csv;
+mod remote;
+mod replay_data;
+mod replay_player;
+mod run_log;
+mod ui;
+mod ui_feedback;
+use std::io::{BufRead, Read, Write};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+use std::time::Duration;
+
+fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.as_slice() {
+        #[cfg(feature = "gui-interaction-tests")]
+        [flag] if flag == "--gui-interaction-tests" => eframe::run_native(
+            "KohdaLab TRKR · GUI trial · SIMULATED",
+            eframe::NativeOptions {
+                viewport: eframe::egui::ViewportBuilder::default()
+                    .with_icon(app_icon())
+                    .with_inner_size([1566., 900.])
+                    .with_min_inner_size([1566., 700.]),
+                ..Default::default()
+            },
+            Box::new(|cc| Ok(Box::new(ui::App::new_gui_interaction(cc)?))),
+        )
+        .map_err(|e| e.to_string()),
+        [flag] if flag == "--stdio" => stdio(),
+        [flag] if flag == "--gui-api" => remote::Server::start().and_then(|server| {
+            run_gui_with_api(
+                None,
+                [precision::Columns::minimum_width(false, false), 900.],
+                false,
+                "",
+                Some(Ok(server)),
+                None,
+            )
+        }),
+        [flag, option, path] if flag == "--gui-api" && option == "--config" => {
+            run_gui_profile(path, true)
+        }
+        [option, path] if option == "--config" => run_gui_profile(path, false),
+        [flag] if flag == "--gpib-resources" => trkr_transport::available_gpib_resources()
+            .map(|resources| println!("{}", serde_json::json!({"resources":resources}))),
+        [flag] if flag == "--demo" => run_demo(None, None),
+        [flag, path] if flag == "--demo" => run_demo(Some(path.into()), None),
+        [flag, dir] if flag == "--gui-smoke" => gui_smoke(dir.into()),
+        [flag, dir, width, height] if flag == "--gui-layout-smoke" => {
+            layout_capture(dir.into(), width, height, "")
+        }
+        [flag, dir, width, height, state] if flag == "--gui-layout-smoke" => {
+            layout_capture(dir.into(), width, height, state)
+        }
+        [flag, output, data] if flag == "--demo-smoke" => {
+            let output = std::path::PathBuf::from(output);
+            if output.exists() {
+                Err("Demo smoke output already exists".into())
+            } else {
+                std::fs::create_dir_all(&output)
+                    .map_err(|e| e.to_string())
+                    .and_then(|_| run_demo(Some(data.into()), Some(output)))
+            }
+        }
+        [flag, path] if flag == "--profile-json" => profile_json(std::path::Path::new(path)),
+        _ if args.is_empty() => run_gui(None),
+        _ => cli(&args),
+    };
+    if let Err(e) = result {
+        eprintln!("{e}");
+        std::process::exit(1)
+    }
+    Ok(())
+}
+fn gui_smoke(dir: std::path::PathBuf) -> Result<(), String> {
+    if dir.exists() {
+        return Err(format!(
+            "Smoke output directory already exists: {}",
+            dir.display()
+        ));
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let ok = Arc::new(AtomicBool::new(false));
+    run_gui(Some((dir, ok.clone())))?;
+    if ok.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err("GUI smoke test did not complete successfully".into())
+    }
+}
+fn layout_capture(
+    dir: std::path::PathBuf,
+    width: &str,
+    height: &str,
+    state: &str,
+) -> Result<(), String> {
+    if ![
+        "",
+        "devices-expanded",
+        "power-meter",
+        "devices-changed",
+        "devices-scanner",
+        "right-collapsed",
+        "left-collapsed",
+        "devices-scrolled",
+        "rotated",
+        "rotated-reverse",
+        "alignment-delay",
+        "alignment-scanner",
+        "alignment-delay-options",
+        "alignment-scanner-options",
+        "measurement-settings",
+        "multiple-devices",
+        "add-device",
+        "delete-device",
+        "device-order",
+    ]
+    .contains(&state)
+    {
+        return Err("Unknown layout state".into());
+    }
+    let w: f32 = width.parse().map_err(|_| "Invalid layout width")?;
+    let h: f32 = height.parse().map_err(|_| "Invalid layout height")?;
+    if !(1143.0..=7680.0).contains(&w) || !(700.0..=4320.0).contains(&h) {
+        return Err("Layout dimensions out of range".into());
+    }
+    if dir.exists() {
+        return Err("Layout output already exists".into());
+    }
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let success = Arc::new(AtomicBool::new(false));
+    let width = w.max(precision::Columns::minimum_width(
+        state == "right-collapsed",
+        state == "left-collapsed",
+    ));
+    run_gui_at(Some((dir, success.clone())), [width, h], true, state)?;
+    if success.load(Ordering::Acquire) {
+        Ok(())
+    } else {
+        Err("Layout capture did not finish".into())
+    }
+}
+fn run_gui(smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>) -> Result<(), String> {
+    if smoke.is_some() {
+        run_gui_at(
+            smoke,
+            [precision::Columns::minimum_width(false, false), 900.],
+            false,
+            "",
+        )
+    } else {
+        run_gui_with_api(
+            None,
+            [precision::Columns::minimum_width(false, false), 900.],
+            false,
+            "",
+            Some(remote::Server::start()),
+            None,
+        )
+    }
+}
+fn run_gui_profile(path: &str, strict: bool) -> Result<(), String> {
+    let settings = config::Settings::load(std::path::Path::new(path))?;
+    let server = remote::Server::start();
+    let server = if strict { Ok(server?) } else { server };
+    run_gui_with_api(
+        None,
+        [precision::Columns::minimum_width(false, false), 900.],
+        false,
+        "",
+        Some(server),
+        Some((settings, path.into())),
+    )
+}
+fn run_gui_at(
+    smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>,
+    size: [f32; 2],
+    layout_only: bool,
+    state: &str,
+) -> Result<(), String> {
+    run_gui_with_api(smoke, size, layout_only, state, None, None)
+}
+fn run_gui_with_api(
+    smoke: Option<(std::path::PathBuf, Arc<AtomicBool>)>,
+    size: [f32; 2],
+    layout_only: bool,
+    state: &str,
+    remote: Option<Result<remote::Server, String>>,
+    profile: Option<(config::Settings, std::path::PathBuf)>,
+) -> Result<(), String> {
+    // Smoke/layout captures and an explicit profile must not inspect or migrate
+    // an operator's per-user settings before their override is applied.
+    let skip_startup_load = smoke.is_some() || profile.is_some();
+    eframe::run_native(
+        &format!("KohdaLab TRKR v{}", env!("CARGO_PKG_VERSION")),
+        eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_icon(app_icon())
+                .with_inner_size(size)
+                .with_min_inner_size([
+                    precision::Columns::minimum_width(
+                        state == "right-collapsed",
+                        state == "left-collapsed",
+                    ),
+                    700.,
+                ]),
+            ..Default::default()
+        },
+        Box::new(move |cc| {
+            let mut app = if skip_startup_load {
+                ui::App::new_without_startup_load(cc)
+            } else {
+                ui::App::new(cc, false)
+            };
+            if let Some((settings, path)) = profile {
+                app.load_startup_profile(settings, path);
+            }
+            if let Some(server) = remote {
+                app.enable_remote(server);
+            }
+            if let Some((dir, ok)) = smoke {
+                if layout_only {
+                    app.enable_layout_capture(dir, ok, state)
+                } else {
+                    app.enable_smoke(dir, ok)
+                }
+            }
+            Ok(Box::new(app))
+        }),
+    )
+    .map_err(|e| e.to_string())
+}
+fn stdio() -> Result<(), String> {
+    const MAX: usize = 1024 * 1024;
+    let (tx, rx) = mpsc::channel::<Result<engine::Command, String>>();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut input = stdin.lock();
+        loop {
+            let mut bytes = Vec::new();
+            match input
+                .by_ref()
+                .take((MAX + 1) as u64)
+                .read_until(b'\n', &mut bytes)
+            {
+                Ok(0) => break,
+                Ok(_) if bytes.len() > MAX => {
+                    let _ = tx.send(Err("JSON command exceeds 1 MiB".into()));
+                    break;
+                }
+                Ok(_) => {
+                    let parsed = String::from_utf8(bytes)
+                        .map_err(|_| "JSON command must be UTF-8".into())
+                        .and_then(|line| decode_command(line.trim()));
+                    if tx.send(parsed).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Read stdin: {e}")));
+                    break;
+                }
+            }
+        }
+    });
+    let control = engine::controller();
+    let stdout = std::io::stdout();
+    let mut out = stdout.lock();
+    let mut eof = false;
+    loop {
+        while let Ok(event) = control.events.try_recv() {
+            emit(&mut out, &event)?
+        }
+        if eof {
+            break;
+        }
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(Ok(command)) => {
+                if let Err(e) = control.send(command) {
+                    emit_rejected(&mut out, e)?
+                }
+            }
+            Ok(Err(e)) => emit_rejected(&mut out, e)?,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                control.stop();
+                eof = true
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+    }
+    while let Ok(event) = control.events.try_recv() {
+        emit(&mut out, &event)?
+    }
+    Ok(())
+}
+/// Decode one revision-1 JSON-lines command without changing the wire shape.
+fn decode_command(line: &str) -> Result<engine::Command, String> {
+    serde_json::from_str(line).map_err(|error| format!("Invalid JSON command: {error}"))
+}
+fn emit(out: &mut impl Write, event: &engine::Event) -> Result<(), String> {
+    serde_json::to_writer(&mut *out, event).map_err(|e| e.to_string())?;
+    out.write_all(b"\n").map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())
+}
+fn emit_rejected(out: &mut impl Write, error: String) -> Result<(), String> {
+    serde_json::to_writer(
+        &mut *out,
+        &serde_json::json!({"event":"rejected","data":error}),
+    )
+    .map_err(|e| e.to_string())?;
+    out.write_all(b"\n").map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())
+}
+fn profile_json(path: &std::path::Path) -> Result<(), String> {
+    let settings = config::Settings::load(path)?;
+    let mut plans = serde_json::Map::new();
+    for workflow in trkr_core::Workflow::ALL {
+        plans.insert(
+            workflow.key().into(),
+            serde_json::to_value(settings.plan(workflow)?).map_err(|e| e.to_string())?,
+        );
+    }
+    println!(
+        "{}",
+        serde_json::json!({"hardware":settings.hardware()?,"plans":plans})
+    );
+    Ok(())
+}
+fn cli(args: &[String]) -> Result<(), String> {
+    if args == ["--help"] || args == ["-h"] {
+        println!(
+            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated|alignment-delay|alignment-scanner]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
+        );
+        return Ok(());
+    }
+    if !(args.len() == 2 || args.len() == 4) || args[0] != "--demo-csv" {
+        return Err("Use --help for supported arguments".into());
+    }
+    let mut plan = trkr_core::Plan::default();
+    if args.len() == 4 {
+        if args[2] != "--workflow" {
+            return Err("Expected --workflow".into());
+        }
+        plan.workflow = trkr_core::Workflow::ALL
+            .into_iter()
+            .find(|w| w.key() == args[3])
+            .ok_or("Unknown workflow")?
+    }
+    match plan.workflow {
+        trkr_core::Workflow::Srkr => plan.fast = trkr_core::Axis::X,
+        trkr_core::Workflow::Srkr2d => {
+            plan.fast = trkr_core::Axis::X;
+            plan.slow = trkr_core::Axis::Y
+        }
+        _ => {}
+    }
+    let n = engine::demo_csv(plan, std::path::Path::new(&args[1]))?;
+    println!("Saved {n} simulated points to {}", args[1]);
+    Ok(())
+}
+
+fn run_demo(
+    path: Option<std::path::PathBuf>,
+    smoke: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    eframe::run_native(
+        "KohdaLab TRKR — DEMO MODE — NO HARDWARE",
+        eframe::NativeOptions {
+            viewport: eframe::egui::ViewportBuilder::default()
+                .with_icon(app_icon())
+                .with_inner_size([precision::Columns::minimum_width(false, false), 900.])
+                .with_min_inner_size([precision::Columns::minimum_width(false, false), 700.]),
+            ..Default::default()
+        },
+        Box::new(move |cc| {
+            let mut app = ui::App::new(cc, true);
+            app.open_demo(path);
+            if let Some(output) = smoke {
+                app.enable_demo_smoke(output);
+            }
+            Ok(Box::new(app))
+        }),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn app_icon() -> Arc<eframe::egui::IconData> {
+    Arc::new(
+        eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png"))
+            .expect("embedded TRKR icon"),
+    )
+}
+
+#[cfg(test)]
+mod compatibility_tests {
+    use super::*;
+
+    #[test]
+    fn revision_one_command_and_rejection_wire_shapes_are_stable() {
+        assert_eq!(compatibility::JSON_LINES_API_REVISION, 1);
+        assert_eq!(compatibility::PROFILE_REVISION, 1);
+        assert_eq!(compatibility::RECORDING_REVISION, 9);
+        assert!(
+            include_str!("../../../bindings/python/kohdalab_trkr.py")
+                .contains("RECORDING_COMPATIBILITY_REVISION = 8")
+        );
+        assert_eq!(
+            engine::FIELDS,
+            &[
+                "run_id",
+                "point_index",
+                "timestamp",
+                "elapsed_s",
+                "quality_flags",
+                "measurement",
+                "fast_axis",
+                "slow_axis",
+                "line_index",
+                "target_elapsed_s",
+                "target_t_cor_ps",
+                "target_x_cor_um",
+                "target_y_cor_um",
+                "target_u_cor_um",
+                "target_v_cor_um",
+                "t_ps",
+                "x_um",
+                "y_um",
+                "t_cor_ps",
+                "x_cor_um",
+                "y_cor_um",
+                "u_cor_um",
+                "v_cor_um",
+                "spatial_theta_deg",
+                "X",
+                "Y",
+                "R",
+                "Theta_deg",
+                "signal_unit",
+                "power_W",
+            ]
+        );
+        let command = decode_command(r#"{"command":"stop"}"#).unwrap();
+        assert!(matches!(command, engine::Command::Stop));
+        let config = serde_json::to_value(config::Settings::default().hardware().unwrap()).unwrap();
+        let command = decode_command(
+            &serde_json::json!({
+                "command": "move",
+                "config": config,
+                "targets": [null, 1.0, null],
+                "coordinate": "measurement",
+                "zero": [0.0, 0.0, 0.0]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            command,
+            engine::Command::Move {
+                approach: [false, true, true],
+                ..
+            }
+        ));
+        assert_eq!(
+            decode_command("not json").unwrap_err(),
+            "Invalid JSON command: expected ident at line 1 column 2"
+        );
+
+        let mut output = Vec::new();
+        emit_rejected(&mut output, "contract error".into()).unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "{\"data\":\"contract error\",\"event\":\"rejected\"}\n"
+        );
+    }
+}

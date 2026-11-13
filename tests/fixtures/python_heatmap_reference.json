@@ -1,0 +1,5 @@
+{
+  "provenance": "Frozen pyqtgraph ColorMap/makeRGBA output used by the Python GUI before Rust cutover; control colours and 256 entries unchanged.",
+  "lut_sha256": "84a3d246929fe1db0a2310a4a6b5be87321a311fb02d1309fe5219b4fb02957b",
+  "rgba_257_sha256": "a2dfc3cee4753801498b3ec161912c69cde33c2aa207a3a2255c96ab7277b946"
+}

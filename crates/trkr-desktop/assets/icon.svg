@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Optically excited spin">
+ <defs>
+  <linearGradient id="bg" x2="1" y2="1"><stop stop-color="#25334b"/><stop offset="1" stop-color="#0b1120"/></linearGradient>
+  <linearGradient id="spin" x1="0" y1="1" x2=".7" y2="0"><stop stop-color="#24cbbf"/><stop offset="1" stop-color="#b9fcff"/></linearGradient>
+  <linearGradient id="beam" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffcf8a"/><stop offset="1" stop-color="#ffa267" stop-opacity=".25"/></linearGradient>
+  <radialGradient id="spot"><stop stop-color="#ecffff" stop-opacity=".65"/><stop offset="1" stop-color="#64e9ed" stop-opacity="0"/></radialGradient>
+ </defs>
+ <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+ <rect x="18" y="18" width="476" height="476" rx="110" fill="none" stroke="#a5bedf" stroke-opacity=".18" stroke-width="3"/>
+ <!-- Optical pulse converging on a single spin. -->
+ <path d="M92 120L129 83L278 258Z" fill="url(#beam)" opacity=".55"/>
+ <path d="M111 101L267 253" fill="none" stroke="#ffc58a" stroke-width="16" stroke-linecap="round"/>
+ <path d="M160 108L136 133M190 138L166 163" stroke="#ffe3b9" stroke-width="8" stroke-linecap="round"/>
+ <circle cx="280" cy="282" r="110" fill="url(#spot)"/>
+ <!-- Precession orbit, with the rear arc subdued for depth. -->
+ <path d="M179 326C126 279 188 236 280 236C372 236 426 279 389 315" fill="none" stroke="#57939f" stroke-opacity=".55" stroke-width="12" stroke-linecap="round"/>
+ <path d="M195 321C239 350 342 351 389 315" fill="none" stroke="#4cdae0" stroke-width="15" stroke-linecap="round"/>
+ <path d="M369 316L394 300L398 331Z" fill="#65edf0"/>
+ <!-- Spin angular momentum. -->
+ <path d="M280 385V179" stroke="#071723" stroke-width="34" stroke-linecap="round"/>
+ <path d="M280 385V181" stroke="url(#spin)" stroke-width="22" stroke-linecap="round"/>
+ <path d="M280 133L237 198H323Z" fill="#a8faff" stroke="#a8faff" stroke-width="8" stroke-linejoin="round"/>
+ <circle cx="280" cy="282" r="24" fill="#c9ffff"/>
+ <circle cx="280" cy="282" r="11" fill="#ffffff"/>
+</svg>

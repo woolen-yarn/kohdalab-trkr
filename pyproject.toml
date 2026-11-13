@@ -1,0 +1,22 @@
+[project]
+name = "kohdalab-trkr-client"
+version = "1.0.0"
+description = "Thin Python notebook client for the KohdaLab TRKR Rust engine"
+requires-python = ">=3.11"
+license = "MIT"
+readme = "bindings/python/README.md"
+dependencies = []
+
+[project.optional-dependencies]
+notebook = ["jupyterlab", "ipykernel"]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "bindings/python"}
+py-modules = ["kohdalab_trkr"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

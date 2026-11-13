@@ -1,0 +1,16 @@
+[package]
+name = "trkr-transport"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version.workspace = true
+
+[dependencies]
+fs2 = "0.4"
+serde.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+libloading = "0.8"
+
+[dev-dependencies]
+tempfile = "3"

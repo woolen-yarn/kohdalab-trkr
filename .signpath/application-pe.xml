@@ -1,0 +1,15 @@
+<artifact-configuration xmlns="http://signpath.io/artifact-configuration/v1">
+  <parameters>
+    <parameter name="version" required="true" />
+  </parameters>
+  <zip-file>
+    <pe-file-set product-name="KohdaLab TRKR" product-version="${version}" company-name="Kohdalab">
+      <include path="kohdalab-trkr.exe" />
+      <include path="kohdalab-trkr-demo.exe" />
+      <include path="kohdalab-visa-helper.exe" />
+      <for-each>
+        <authenticode-sign />
+      </for-each>
+    </pe-file-set>
+  </zip-file>
+</artifact-configuration>

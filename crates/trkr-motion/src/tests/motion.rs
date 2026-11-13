@@ -1,0 +1,1301 @@
+use super::*;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex},
+};
+
+struct ScriptedBus {
+    log: Arc<Mutex<Vec<String>>>,
+    replies: Arc<Mutex<VecDeque<Result<String, String>>>>,
+    fail_write: Option<String>,
+}
+
+impl ScriptedBus {
+    fn new(log: Arc<Mutex<Vec<String>>>, replies: &[&str]) -> Self {
+        Self {
+            log,
+            replies: Arc::new(Mutex::new(
+                replies.iter().map(|reply| Ok((*reply).into())).collect(),
+            )),
+            fail_write: None,
+        }
+    }
+
+    fn failing_on(mut self, command: &str) -> Self {
+        self.fail_write = Some(command.into());
+        self
+    }
+}
+
+impl Bus for ScriptedBus {
+    fn query(&mut self, command: &str) -> Result<String, String> {
+        self.log.lock().unwrap().push(command.into());
+        self.replies
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or_else(|| Err(format!("unexpected query {command}")))
+    }
+
+    fn write(&mut self, command: &str) -> Result<(), String> {
+        self.log.lock().unwrap().push(command.into());
+        if self.fail_write.as_deref() == Some(command) {
+            Err(format!("scripted write failure for {command}"))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+fn agap(axis: &str) -> ScannerConfig {
+    ScannerConfig {
+        port: "fake".into(),
+        controller: "CONEXAGAP".into(),
+        actuator: Some("AG-M100D".into()),
+        axis: axis.into(),
+        sample_um_per_unit: 1.0,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap()
+}
+
+fn cc_with_hysteresis() -> ScannerConfig {
+    ScannerConfig {
+        port: "fake".into(),
+        controller: "CONEXCC".into(),
+        actuator: Some("TRA12CC".into()),
+        sample_um_per_unit: 1.0,
+        software_hysteresis: Hysteresis {
+            enabled: true,
+            distance_um: Some(1.0),
+            direction: Some("negative".into()),
+        },
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap()
+}
+
+#[test]
+fn connecting_two_cc_controllers_reads_each_port_at_address_one_without_motion() {
+    let x_log = Arc::new(Mutex::new(vec![]));
+    let y_log = Arc::new(Mutex::new(vec![]));
+    let config = MotionConfig {
+        x: Some(ScannerConfig {
+            port: "COM5".into(),
+            ..cc_with_hysteresis()
+        }),
+        y: Some(ScannerConfig {
+            port: "COM4".into(),
+            ..cc_with_hysteresis()
+        }),
+        ..Default::default()
+    };
+    let mut opened = Vec::new();
+    let _rig = MotionRig::open_with_bus_factory(
+        &config,
+        |port, controller, baud, timeout, write_end, read_end| {
+            assert_eq!(controller, "CONEXCC");
+            assert_eq!(baud, 921600);
+            assert_eq!(timeout, 1.0);
+            assert_eq!((write_end, read_end), ("\r\n", "\r\n"));
+            opened.push(port.to_owned());
+            match port {
+                "COM5" => Ok(Box::new(ScriptedBus::new(x_log.clone(), &["1TP1.25"]))),
+                "COM4" => Ok(Box::new(ScriptedBus::new(y_log.clone(), &["1TP2.5"]))),
+                _ => panic!("Unexpected port {port}"),
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(opened, ["COM5", "COM4"]);
+    assert_eq!(*x_log.lock().unwrap(), ["1TP"]);
+    assert_eq!(*y_log.lock().unwrap(), ["1TP"]);
+}
+
+#[test]
+fn failed_second_scanner_read_identifies_axis_port_and_controller() {
+    let config = MotionConfig {
+        x: Some(ScannerConfig {
+            port: "COM5".into(),
+            ..cc_with_hysteresis()
+        }),
+        y: Some(ScannerConfig {
+            port: "COM4".into(),
+            ..cc_with_hysteresis()
+        }),
+        ..Default::default()
+    };
+    let error = MotionRig::open_with_bus_factory(&config, |port, _, _, _, _, _| {
+        Ok(Box::new(ScriptedBus::new(
+            Arc::new(Mutex::new(vec![])),
+            if port == "COM5" { &["1TP1.25"] } else { &[] },
+        )))
+    })
+    .err()
+    .expect("missing Y reply must fail connection");
+    assert!(
+        error.contains("Scanner Y (CONEXCC on COM4, address 1)"),
+        "{error}"
+    );
+    assert!(error.contains("1TP"), "{error}");
+}
+
+#[cfg(unix)]
+#[test]
+fn serial_timeout_retains_partial_reply_and_never_reuses_the_session() {
+    // A pseudo-terminal exercises byte framing without opening lab equipment.
+    let (mut controller, mut serial) = serialport::TTYPort::pair().unwrap();
+    controller.set_timeout(Duration::from_secs(2)).unwrap();
+    serial.set_timeout(Duration::from_millis(5)).unwrap();
+    let server = std::thread::spawn(move || {
+        let mut command = [0; 5];
+        controller.read_exact(&mut command).unwrap();
+        assert_eq!(&command, b"1TP\r\n");
+        controller.write_all(b"1TP1.25\r").unwrap();
+        controller
+    });
+    let mut port = Port {
+        name: "COM4-test".into(),
+        recording: None,
+        serial: Box::new(serial),
+        _lease: File::open("/dev/null").unwrap(),
+        write_end: b"\r\n".to_vec(),
+        read_end: b"\r\n".to_vec(),
+        timeout: Duration::from_millis(200),
+        poisoned: false,
+    };
+    port.begin_recording();
+    let error = port.query("1TP").unwrap_err();
+    assert!(error.contains("COM4-test [1TP]"), "{error}");
+    assert!(error.contains("Serial timeout"), "{error}");
+    assert!(error.contains("1TP1.25"), "{error}");
+    assert!(port.poisoned);
+    let events = port.take_recording();
+    assert_eq!(events[0].reply.as_deref(), Some("1TP1.25\r"));
+    assert_eq!(events[0].error.as_deref(), Some(error.as_str()));
+    assert!(port.query("1TP").unwrap_err().contains("reconnect"));
+    drop(server.join().unwrap());
+}
+
+fn two_scanner_rig(bus: impl Bus + Send + 'static) -> MotionRig {
+    MotionRig {
+        ports: vec![Box::new(bus)],
+        delay: None,
+        scanners: [
+            Some(Scanner {
+                config: agap("U"),
+                port: 0,
+                prepared: false,
+            }),
+            Some(Scanner {
+                config: agap("V"),
+                port: 0,
+                prepared: false,
+            }),
+        ],
+    }
+}
+
+#[test]
+fn move_starts_both_scanners_before_polling() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let bus = ScriptedBus::new(
+        log.clone(),
+        &[
+            "1TS000032",
+            "1TS000032", // prepare X/Y
+            "1TS000032",
+            "1TS000032", // wait X/Y
+            "1TPU0.000",
+            "1TPV0.000", // readback X/Y
+        ],
+    );
+    let mut rig = two_scanner_rig(bus);
+
+    rig.move_to(
+        [None, Some(0.0), Some(0.0)],
+        [false; 3],
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec![
+            "1TS",
+            "1TS",
+            "1PAU0.000",
+            "1PAV0.000",
+            "1TS",
+            "1TS",
+            "1TPU",
+            "1TPV",
+        ]
+    );
+}
+
+#[test]
+fn manual_move_reports_actual_position_before_completion() {
+    struct MovingBus {
+        log: Arc<Mutex<Vec<String>>>,
+        status_reads: usize,
+        ready_delay: Duration,
+    }
+    impl Bus for MovingBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.log.lock().unwrap().push(command.into());
+            match command {
+                "1TS" => {
+                    self.status_reads += 1;
+                    if self.status_reads == 5 {
+                        thread::sleep(self.ready_delay);
+                    }
+                    Ok(if matches!(self.status_reads, 3 | 4) {
+                        "1TS000028"
+                    } else {
+                        "1TS000032"
+                    }
+                    .into())
+                }
+                "1TPU" => Ok(if self.status_reads <= 4 {
+                    "1TPU0.001"
+                } else {
+                    "1TPU0.010"
+                }
+                .into()),
+                "1TPV" => Ok(if self.status_reads <= 4 {
+                    "1TPV0.002"
+                } else {
+                    "1TPV0.020"
+                }
+                .into()),
+                _ => Err(format!("unexpected query {command}")),
+            }
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.into());
+            Ok(())
+        }
+    }
+    // Command-based replies permit the additional readback that is correct
+    // when a scheduler delay crosses the live-position update deadline.
+    for ready_delay in [Duration::ZERO, Duration::from_millis(110)] {
+        let log = Arc::new(Mutex::new(vec![]));
+        let mut rig = two_scanner_rig(MovingBus {
+            log: log.clone(),
+            status_reads: 0,
+            ready_delay,
+        });
+        let mut positions = vec![];
+        let final_position = rig
+            .move_to_with_progress(
+                [None, Some(0.010), Some(0.020)],
+                [false; 3],
+                &AtomicBool::new(false),
+                Some(&mut |position| {
+                    positions.push(position);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        assert!(!positions.is_empty());
+        assert_eq!(positions[0].physical, [None, Some(0.001), Some(0.002)]);
+        let expected_final = [None, Some(0.010), Some(0.020)];
+        for position in positions.iter().skip(1) {
+            assert_eq!(position.physical, expected_final);
+        }
+        if !ready_delay.is_zero() {
+            assert!(
+                positions.len() >= 2,
+                "delayed ready polling must publish final readback"
+            );
+        }
+        assert_eq!(final_position.physical, expected_final);
+        assert!(!log.lock().unwrap().iter().any(|cmd| cmd.starts_with("1ST")));
+    }
+}
+
+#[test]
+fn failed_live_callback_stops_motion_before_another_poll() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = two_scanner_rig(ScriptedBus::new(
+        log.clone(),
+        &[
+            "1TS000032",
+            "1TS000028",
+            "1TPU0.001",
+            "1TPV0.002",
+            "1TS000032",
+            "1TS000032",
+        ],
+    ));
+    let error = rig
+        .move_to_with_progress(
+            [None, Some(0.010), None],
+            [false; 3],
+            &AtomicBool::new(false),
+            Some(&mut |_| Err("live lock-in read failed".into())),
+        )
+        .unwrap_err();
+    assert_eq!(error, "live lock-in read failed");
+    let commands = log.lock().unwrap();
+    assert!(commands.windows(2).any(|pair| pair == ["1STU", "1STV"]));
+}
+
+#[test]
+fn cancellation_from_progress_stops_every_axis() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = two_scanner_rig(ScriptedBus::new(
+        log.clone(),
+        &[
+            "1TS000032",
+            "1TS000028",
+            "1TPU0.001",
+            "1TPV0.002",
+            "1TS000032",
+            "1TS000032",
+        ],
+    ));
+    let cancel = AtomicBool::new(false);
+    let result = rig.move_to_with_progress(
+        [None, Some(0.010), None],
+        [false; 3],
+        &cancel,
+        Some(&mut |_| {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        }),
+    );
+    assert!(result.unwrap_err().contains("cancelled"));
+    let commands = log.lock().unwrap();
+    assert!(commands.windows(2).any(|pair| pair == ["1STU", "1STV"]));
+}
+
+#[test]
+fn initialize_delay_without_home_refreshes_calibration_without_motion() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(log.clone(), &["4", "100"]))],
+        delay: Some(Delay {
+            config: DelayConfig {
+                port: "fake".into(),
+                stage: Some("SGSP46-500".into()),
+                ..Default::default()
+            }
+            .normalized()
+            .unwrap(),
+            port: 0,
+            micro: 1,
+        }),
+        scanners: [None, None],
+    };
+    let position = rig.initialize(0, false, &AtomicBool::new(false)).unwrap();
+    assert_eq!(position.delay_stage_pulse, Some(100));
+    assert_eq!(
+        rig.delay_calibration().unwrap().unwrap().microstep_division,
+        Some(4)
+    );
+    assert_eq!(*log.lock().unwrap(), vec!["?:S1", "Q:"]);
+}
+
+#[test]
+fn initialize_agap_enables_closed_loop_without_home_command() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = two_scanner_rig(ScriptedBus::new(
+        log.clone(),
+        &["1TS00003C", "1TS000032", "1TPU0.0", "1TPV0.0"],
+    ));
+    rig.initialize(1, false, &AtomicBool::new(false)).unwrap();
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["1TS", "1MM1", "1TS", "1TPU", "1TPV"]
+    );
+}
+
+#[test]
+fn initialize_cc_homes_and_reports_intermediate_position() {
+    // Progress polling is time-driven: a slow runner may read position again
+    // on the ready iteration. Model device state rather than a fixed reply queue.
+    struct HomingBus {
+        log: Arc<Mutex<Vec<String>>>,
+        status_polls: usize,
+        delayed_ready: bool,
+    }
+    impl Bus for HomingBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.log.lock().unwrap().push(command.into());
+            match command {
+                "1TS" => {
+                    self.status_polls += 1;
+                    if self.status_polls == 1 {
+                        Ok("1TS00000E".into())
+                    } else if self.status_polls == 2 {
+                        Ok("1TS00001E".into())
+                    } else {
+                        if self.delayed_ready {
+                            std::thread::sleep(Duration::from_millis(110));
+                        }
+                        Ok("1TS000032".into())
+                    }
+                }
+                "1TP" if self.status_polls == 2 => Ok("1TP1.0".into()),
+                "1TP" if self.status_polls >= 3 => Ok("1TP0.0".into()),
+                _ => Err(format!("unexpected query {command}")),
+            }
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.into());
+            if command == "1OR" {
+                Ok(())
+            } else {
+                Err(format!("unexpected write {command}"))
+            }
+        }
+    }
+    for delayed_ready in [false, true] {
+        let log = Arc::new(Mutex::new(vec![]));
+        let mut rig = MotionRig {
+            ports: vec![Box::new(HomingBus {
+                log: log.clone(),
+                status_polls: 0,
+                delayed_ready,
+            })],
+            delay: None,
+            scanners: [
+                Some(Scanner {
+                    config: cc_with_hysteresis(),
+                    port: 0,
+                    prepared: true,
+                }),
+                None,
+            ],
+        };
+        let mut positions = vec![];
+        let final_position = rig
+            .initialize_with_progress(
+                1,
+                true,
+                &AtomicBool::new(false),
+                Some(&mut |p| {
+                    positions.push(p);
+                    Ok(())
+                }),
+            )
+            .unwrap();
+        let commands = log.lock().unwrap();
+        assert_eq!(commands[0], "1TS");
+        assert_eq!(commands[1], "1OR");
+        assert_eq!(commands.iter().filter(|c| c.as_str() == "1TS").count(), 3);
+        assert!(
+            commands
+                .iter()
+                .all(|c| matches!(c.as_str(), "1OR" | "1TS" | "1TP"))
+        );
+        assert_eq!(positions[0].x_scanner_mm, Some(1.0));
+        assert_eq!(final_position.x_scanner_mm, Some(0.0));
+        if delayed_ready {
+            assert!(!positions.is_empty());
+        }
+        assert!(!rig.scanners[0].as_ref().unwrap().prepared);
+    }
+}
+
+fn return_rig(log: Arc<Mutex<Vec<String>>>, replies: &[&str]) -> MotionRig {
+    let mut shared_compensation = cc_with_hysteresis();
+    shared_compensation.software_hysteresis.distance_um = Some(100.);
+    let config = ScannerConfig {
+        sample_um_per_unit: 100.,
+        ensure_closed_loop_on_move: Some(false),
+        ..shared_compensation
+    }
+    .normalized()
+    .unwrap();
+    MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(log, replies))],
+        delay: None,
+        scanners: [
+            Some(Scanner {
+                config,
+                port: 0,
+                prepared: false,
+            }),
+            None,
+        ],
+    }
+}
+#[test]
+fn full_initialization_homes_then_moves_to_calibrated_instrument_zero() {
+    #[derive(Clone, Copy)]
+    enum State {
+        Unreferenced,
+        Homing,
+        Ready,
+        Moving(f64),
+    }
+    struct InitializingBus {
+        log: Arc<Mutex<Vec<String>>>,
+        state: State,
+        position: f64,
+        busy_reported: bool,
+        ready_delay: Duration,
+    }
+    impl Bus for InitializingBus {
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            self.log.lock().unwrap().push(command.into());
+            match command {
+                "1TP" => Ok(format!("1TP{}", self.position)),
+                "1TS" => match self.state {
+                    State::Unreferenced => Ok("1TS00000E".into()),
+                    State::Ready => Ok("1TS000032".into()),
+                    State::Homing | State::Moving(_) if !self.busy_reported => {
+                        self.busy_reported = true;
+                        Ok(if matches!(self.state, State::Homing) {
+                            "1TS00001E"
+                        } else {
+                            "1TS000028"
+                        }
+                        .into())
+                    }
+                    State::Homing | State::Moving(_) => {
+                        std::thread::sleep(self.ready_delay);
+                        self.position = match self.state {
+                            State::Moving(target) => target,
+                            _ => 0.,
+                        };
+                        self.state = State::Ready;
+                        Ok("1TS000032".into())
+                    }
+                },
+                _ => Err(format!("Unexpected query: {command}")),
+            }
+        }
+        fn write(&mut self, command: &str) -> Result<(), String> {
+            self.log.lock().unwrap().push(command.into());
+            if command == "1OR" && matches!(self.state, State::Unreferenced) {
+                self.state = State::Homing;
+            } else if let Some(target) = command.strip_prefix("1PA") {
+                if !matches!(self.state, State::Ready) {
+                    return Err("Move requested before ready".into());
+                }
+                self.state = State::Moving(target.parse::<f64>().map_err(|e| e.to_string())?);
+            } else {
+                return Err(format!("Unexpected write: {command}"));
+            }
+            self.busy_reported = false;
+            Ok(())
+        }
+    }
+    for ready_delay in [Duration::ZERO, Duration::from_millis(150)] {
+        let log = Arc::new(Mutex::new(vec![]));
+        let mut rig = return_rig(log.clone(), &[]);
+        // Position polling depends on elapsed time. Model command-specific replies
+        // so a delayed READY response can safely trigger an extra live readback.
+        rig.ports[0] = Box::new(InitializingBus {
+            log: log.clone(),
+            state: State::Unreferenced,
+            position: 0.,
+            busy_reported: false,
+            ready_delay,
+        });
+        let position = rig
+            .initialize_with_origin_progress(1, true, true, &AtomicBool::new(false), None)
+            .unwrap();
+        assert_eq!(position.physical[1], Some(0.));
+        let commands = log.lock().unwrap();
+        assert_eq!(commands[0], "1TS");
+        assert_eq!(commands[1], "1OR");
+        let positioning: Vec<_> = commands
+            .iter()
+            .filter(|c| c.starts_with("1PA"))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(positioning, ["1PA5.0000", "1PA6.0000"]);
+        assert!(!commands.iter().any(|c| c == "1PA0.0000"));
+        if !ready_delay.is_zero() {
+            assert!(commands.iter().filter(|c| c.as_str() == "1TP").count() >= 9);
+        }
+    }
+}
+#[test]
+fn initialization_checks_zero_approach_limits_before_homing() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log.clone(), &[]);
+    rig.scanners[0]
+        .as_mut()
+        .unwrap()
+        .config
+        .software_hysteresis
+        .distance_um = Some(2000.);
+    assert!(
+        rig.initialize_with_origin_progress(1, true, true, &AtomicBool::new(false), None)
+            .is_err()
+    );
+    assert!(log.lock().unwrap().is_empty());
+}
+#[test]
+fn stop_on_the_ready_callback_cancels_low_level_initialization_too() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &["1TS00000E", "1TS00001E", "1TP0.0", "1TS000032"],
+    );
+    let cancel = AtomicBool::new(false);
+    let result = rig.initialize_with_progress(
+        1,
+        true,
+        &cancel,
+        Some(&mut |_| {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        }),
+    );
+    assert!(result.unwrap_err().contains("cancelled"));
+    assert!(log.lock().unwrap().contains(&"1ST".into()));
+}
+#[test]
+fn cancelled_home_does_not_start_the_following_origin_move() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &["1TS00000E", "1TS00001E", "1TP0.0", "1TS000032"],
+    );
+    let cancel = AtomicBool::new(false);
+    let result = rig.initialize_with_origin_progress(
+        1,
+        true,
+        true,
+        &cancel,
+        Some(&mut |_| {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        }),
+    );
+    assert!(result.unwrap_err().contains("cancelled"));
+    let commands = log.lock().unwrap();
+    assert!(commands.iter().all(|c| !c.starts_with("1PA")));
+    assert!(commands.contains(&"1ST".into()));
+}
+
+#[test]
+fn active_scanner_refuses_home_without_sending_or_and_stops() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log.clone(), &["1TS00001E", "1TS000032"]);
+
+    let error = rig
+        .initialize(1, true, &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(error.contains("cannot start HOME while axis is active"));
+    let commands = log.lock().unwrap();
+    assert!(!commands.contains(&"1OR".into()));
+    assert!(commands.contains(&"1ST".into()));
+}
+
+#[test]
+fn referenced_ready_scanner_refuses_home_without_sending_or_and_stops() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log.clone(), &["1TS000032", "1TS000032"]);
+
+    let error = rig
+        .initialize(1, true, &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(error.contains("already referenced"));
+    assert!(error.contains("initialize without HOME"));
+    let commands = log.lock().unwrap();
+    assert!(!commands.contains(&"1OR".into()));
+    assert!(commands.contains(&"1ST".into()));
+}
+
+#[test]
+fn active_delay_refuses_home_without_sending_h_and_stops() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let stage = DelayConfig {
+        port: "fake".into(),
+        stage: Some("SGSP46-500".into()),
+        direction: 1,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let mut rig = MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(
+            log.clone(),
+            &["4", "B", "OK", "R"],
+        ))],
+        delay: Some(Delay {
+            config: stage,
+            port: 0,
+            micro: 1,
+        }),
+        scanners: [None, None],
+    };
+
+    let error = rig
+        .initialize(0, true, &AtomicBool::new(false))
+        .unwrap_err();
+    assert!(error.contains("already moving or homing"));
+    let commands = log.lock().unwrap();
+    assert!(!commands.iter().any(|command| command.starts_with("H:")));
+    assert!(commands.contains(&"L:1".into()));
+}
+#[test]
+fn spatial_return_goes_100_um_below_target_before_reaching_zero() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &["1TS000032", "1TS000032", "1TP5.0", "1TS000032", "1TP6.0"],
+    );
+    rig.validate_return([None, Some(0.), None]).unwrap();
+    let position = rig
+        .return_to_with_progress([None, Some(0.), None], &AtomicBool::new(false), None)
+        .unwrap();
+    assert_eq!(position.physical[1], Some(0.));
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec!["1TS", "1PA5.0000", "1TS", "1TP", "1PA6.0000", "1TS", "1TP"]
+    );
+    // Scan starts and completion returns use the same compensation distance.
+    assert_eq!(
+        rig.scanners[0]
+            .as_ref()
+            .unwrap()
+            .config
+            .approach(0.)
+            .unwrap(),
+        Some(-100.)
+    );
+}
+
+#[test]
+fn compensation_readback_mismatch_never_starts_the_final_leg() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &[
+            "1TS000032", // prepare
+            "1TS000032", // approach reports READY
+            "1TP4.0000", // but the approach command to 5.0 was ignored
+            "1TS000032", // STOP verification
+        ],
+    );
+
+    let error = rig
+        .return_to_with_progress([None, Some(0.), None], &AtomicBool::new(false), None)
+        .unwrap_err();
+    assert!(error.contains("Scanner readback does not match target"));
+    assert!(error.contains("X scanner requested sample -100 µm"));
+    assert!(error.contains("commanded 5 mm"));
+    assert!(error.contains("read back 4 mm (-200 µm)"));
+    assert!(error.contains("difference 1 mm, allowed 0.0002 mm"));
+    let commands = log.lock().unwrap();
+    assert!(commands.contains(&"1PA5.0000".into()));
+    assert!(!commands.contains(&"1PA6.0000".into()));
+}
+
+#[test]
+fn validation_and_execution_share_the_same_compensation_plan() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let rig = return_rig(log.clone(), &[]);
+    let target = [None, Some(20.), None];
+    let plan = rig.plan_move(target, [false, true, false]).unwrap();
+
+    assert_eq!(plan.target, target);
+    assert_eq!(plan.approach, [None, Some(-80.), None]);
+    rig.validate_moves(&[(target, [false, true, false])])
+        .unwrap();
+    assert!(log.lock().unwrap().is_empty());
+}
+#[test]
+fn return_rejects_out_of_range_approach_before_any_motion() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let rig = return_rig(log.clone(), &[]);
+    assert!(rig.validate_return([None, Some(-550.), None]).is_err());
+    assert!(log.lock().unwrap().is_empty());
+}
+#[test]
+fn stop_during_return_approach_does_not_continue_to_zero() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &["1TS000032", "1TS000032", "1TP5.0", "1TS000032"],
+    );
+    let cancel = AtomicBool::new(false);
+    let result = rig.return_to_with_progress(
+        [None, Some(0.), None],
+        &cancel,
+        Some(&mut |_| {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        }),
+    );
+    assert!(result.unwrap_err().contains("cancelled"));
+    let commands = log.lock().unwrap();
+    assert!(commands.iter().any(|c| c == "1PA5.0000"));
+    assert!(!commands.iter().any(|c| c == "1PA6.0000"));
+    assert!(commands.contains(&"1ST".into()));
+}
+#[test]
+fn successive_scan_lines_repeat_compensation_without_an_origin_move() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(
+        log.clone(),
+        &[
+            "1TS000032",
+            "1TS000032",
+            "1TP5.2",
+            "1TS000032",
+            "1TP6.2",
+            "1TS000032",
+            "1TS000032",
+            "1TP6.4",
+            "1TS000032",
+            "1TS000032",
+            "1TP5.2",
+            "1TS000032",
+            "1TP6.2",
+        ],
+    );
+    let cancel = AtomicBool::new(false);
+    rig.move_to([None, Some(20.), None], [false, true, false], &cancel)
+        .unwrap();
+    rig.move_to([None, Some(40.), None], [false; 3], &cancel)
+        .unwrap();
+    rig.move_to([None, Some(20.), None], [false, true, false], &cancel)
+        .unwrap();
+    let commands = log.lock().unwrap();
+    let positions: Vec<_> = commands
+        .iter()
+        .filter(|command| command.starts_with("1PA"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        positions,
+        [
+            "1PA5.2000",
+            "1PA6.2000",
+            "1PA6.4000",
+            "1PA5.2000",
+            "1PA6.2000"
+        ]
+    );
+}
+#[test]
+fn shared_distance_is_configurable_validated_and_has_no_effect_on_agap() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log, &[]);
+    let config = &mut rig.scanners[0].as_mut().unwrap().config;
+    config.software_hysteresis.distance_um = None;
+    assert_eq!(config.approach(0.).unwrap(), Some(-100.));
+    config.software_hysteresis.distance_um = Some(25.);
+    assert_eq!(config.approach(0.).unwrap(), Some(-25.));
+    config.software_hysteresis.direction = Some("positive".into());
+    assert_eq!(config.approach(0.).unwrap(), Some(25.));
+    config.software_hysteresis.distance_um = Some(-1.);
+    assert!(config.clone().normalized().is_err());
+    let mut config = agap("U");
+    config.software_hysteresis.enabled = true;
+    assert_eq!(config.approach(0.).unwrap(), None);
+}
+#[test]
+fn interface_scan_return_still_uses_saved_measurement_origin() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let rig = return_rig(log, &[]);
+    let returning = rig
+        .to_physical([None, Some(0.), None], "measurement", [0., 38.237, 420.487])
+        .unwrap();
+    assert_eq!(returning, [None, Some(38.237), None]);
+    assert_ne!(
+        returning,
+        rig.to_physical([None, Some(0.), None], "interface", [0., 38.237, 420.487])
+            .unwrap()
+    );
+}
+#[test]
+fn failed_second_scanner_start_stops_all_scanners() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let bus = ScriptedBus::new(
+        log.clone(),
+        &["1TS000032", "1TS000032", "1TS000032", "1TS000032"],
+    )
+    .failing_on("1PAV0.000");
+    let mut rig = two_scanner_rig(bus);
+
+    assert!(
+        rig.move_to(
+            [None, Some(0.0), Some(0.0)],
+            [false; 3],
+            &AtomicBool::new(false),
+        )
+        .is_err()
+    );
+    assert_eq!(
+        *log.lock().unwrap(),
+        vec![
+            "1TS",
+            "1TS",
+            "1PAU0.000",
+            "1PAV0.000",
+            "1STU",
+            "1STV",
+            "1TS",
+            "1TS"
+        ]
+    );
+}
+
+#[test]
+fn cancelled_move_sends_stop_without_starting_motion() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = two_scanner_rig(ScriptedBus::new(log.clone(), &["1TS000032", "1TS000032"]));
+
+    assert!(
+        rig.move_to(
+            [None, Some(0.0), Some(0.0)],
+            [false; 3],
+            &AtomicBool::new(true),
+        )
+        .is_err()
+    );
+    assert_eq!(*log.lock().unwrap(), vec!["1STU", "1STV", "1TS", "1TS"]);
+}
+
+#[test]
+fn delay_readback_mismatch_stops_motion() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let stage = DelayConfig {
+        port: "fake".into(),
+        stage: Some("SGSP46-500".into()),
+        direction: 1,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let mut rig = MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(
+            log.clone(),
+            &["OK", "OK", "12500", "R", "12501", "OK", "R"],
+        ))],
+        delay: Some(Delay {
+            config: stage,
+            port: 0,
+            micro: 1,
+        }),
+        scanners: [None, None],
+    };
+
+    assert!(
+        rig.move_to([Some(0.0), None, None], [false; 3], &AtomicBool::new(false))
+            .unwrap_err()
+            .contains("readback")
+    );
+    let commands = log.lock().unwrap();
+    assert!(commands.iter().any(|command| command == "A:1+P12500"));
+    assert!(commands.windows(1).any(|command| command == ["L:1"]));
+}
+
+#[test]
+fn out_of_bounds_hysteresis_approach_performs_no_io() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(log.clone(), &[]))],
+        delay: None,
+        scanners: [
+            Some(Scanner {
+                config: cc_with_hysteresis(),
+                port: 0,
+                prepared: false,
+            }),
+            None,
+        ],
+    };
+
+    assert!(
+        rig.move_to(
+            [None, Some(-6.0), None],
+            [false, true, false],
+            &AtomicBool::new(false),
+        )
+        .is_err()
+    );
+    assert!(log.lock().unwrap().is_empty());
+}
+
+#[test]
+fn runtime_coordinates_convert_measurement_interface_and_instrument_values() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let stage = DelayConfig {
+        port: "delay".into(),
+        stage: Some("SGSP46-500".into()),
+        direction: 1,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let x = ScannerConfig {
+        port: "x".into(),
+        controller: "CONEXCC".into(),
+        actuator: Some("TRA12CC".into()),
+        sample_um_per_unit: 1.0,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let rig = MotionRig {
+        ports: vec![
+            Box::new(ScriptedBus::new(log.clone(), &[])),
+            Box::new(ScriptedBus::new(log, &[])),
+        ],
+        delay: Some(Delay {
+            config: stage.clone(),
+            port: 0,
+            micro: 1,
+        }),
+        scanners: [
+            Some(Scanner {
+                config: x,
+                port: 1,
+                prepared: false,
+            }),
+            None,
+        ],
+    };
+
+    assert_eq!(
+        rig.to_physical(
+            [Some(1.0), Some(2.0), None],
+            "measurement",
+            [10.0, 20.0, 30.0],
+        )
+        .unwrap(),
+        [Some(11.0), Some(22.0), None]
+    );
+    let interface = rig
+        .to_physical([Some(250.0), Some(7.0), None], "interface", [0.0; 3])
+        .unwrap();
+    assert!((interface[0].unwrap() - stage.ps_from_mm(250.0, 1).unwrap()).abs() < 1e-12);
+    assert_eq!(interface[1], Some(1.0));
+    let instrument = rig
+        .to_physical([Some(12_500.0), Some(7.0), None], "instrument", [0.0; 3])
+        .unwrap();
+    assert!((instrument[0].unwrap() - stage.ps_from_mm(250.0, 1).unwrap()).abs() < 1e-12);
+    assert_eq!(instrument[1], Some(1.0));
+    assert!(
+        rig.to_physical([Some(0.5), None, None], "instrument", [0.; 3])
+            .is_err()
+    );
+}
+#[test]
+fn delay_waits_for_target_readback_before_ready_completion() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let config = DelayConfig {
+        port: "fake".into(),
+        stage: Some("SGSP46-500".into()),
+        direction: 1,
+        ..Default::default()
+    }
+    .normalized()
+    .unwrap();
+    let mut rig = MotionRig {
+        ports: vec![Box::new(ScriptedBus::new(
+            log.clone(),
+            &["OK", "OK", "12000", "12500", "R", "12500"],
+        ))],
+        delay: Some(Delay {
+            config,
+            port: 0,
+            micro: 1,
+        }),
+        scanners: [None, None],
+    };
+    let position = rig
+        .move_to([Some(0.), None, None], [false; 3], &AtomicBool::new(false))
+        .unwrap();
+    assert_eq!(position.delay_stage_pulse, Some(12500));
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["A:1+P12500", "G:", "Q:", "Q:", "!:", "Q:"]
+    );
+}
+
+#[test]
+fn delay_calibration_keeps_microstep_unknown_until_connected() {
+    let config = DelayConfig {
+        port: "COM6".into(),
+        stage: Some("SGSP46-500".into()),
+        pos_um_per_pulse: Some(0.5),
+        ..Default::default()
+    };
+    let hint = config.calibration_hint().unwrap();
+    assert_eq!(hint.microstep_division, None);
+    assert_eq!(hint.configured_pos_um_per_pulse, Some(0.5));
+    assert!(hint.effective_ps_per_pulse.unwrap() > 0.);
+    assert_eq!(hint.configuration, Some(config.normalized().unwrap()));
+
+    let rig = MotionRig {
+        ports: vec![],
+        delay: Some(Delay {
+            config: config.normalized().unwrap(),
+            port: 0,
+            micro: 8,
+        }),
+        scanners: [None, None],
+    };
+    let actual = rig.delay_calibration().unwrap().unwrap();
+    assert_eq!(actual.microstep_division, Some(8));
+    assert_eq!(actual.configuration, Some(config.normalized().unwrap()));
+    assert_eq!(actual.effective_pos_um_per_pulse, Some(0.5));
+    assert_eq!(
+        actual.full_step_ps.unwrap(),
+        actual.effective_ps_per_pulse.unwrap() * 8.
+    );
+}
+
+#[test]
+fn recorded_position_preserves_axis_order_without_recording_idle_polls() {
+    struct RecordingBus {
+        capture: Option<Vec<MotionExchange>>,
+    }
+    impl Bus for RecordingBus {
+        fn begin_recording(&mut self) {
+            self.capture = Some(Vec::new());
+        }
+        fn take_recording(&mut self) -> Vec<MotionExchange> {
+            self.capture.take().unwrap_or_default()
+        }
+        fn query(&mut self, command: &str) -> Result<String, String> {
+            let response = if command.ends_with('U') {
+                "1TPU0.020000\r\n"
+            } else {
+                "1TPV0.030000\r\n"
+            };
+            if let Some(events) = &mut self.capture {
+                events.push(MotionExchange {
+                    command: format!("{command}\r\n"),
+                    reply: Some(response.into()),
+                    error: None,
+                    port: "fake".into(),
+                    order: QUERY_ORDER.fetch_add(1, Ordering::Relaxed),
+                });
+            }
+            Ok(response.trim().into())
+        }
+        fn write(&mut self, _: &str) -> Result<(), String> {
+            panic!("position read must not write motion commands")
+        }
+    }
+    let mut rig = two_scanner_rig(RecordingBus { capture: None });
+    rig.position().unwrap();
+    for _ in 0..2 {
+        let (position, events) = rig.position_recorded();
+        let position = position.unwrap();
+        assert_eq!(position.x_scanner_deg, Some(0.02));
+        assert_eq!(position.y_scanner_deg, Some(0.03));
+        assert_eq!(events.len(), 2);
+        assert!(events[0].command.contains('U'));
+        assert!(events[1].command.contains('V'));
+        assert_eq!(events[0].reply.as_deref(), Some("1TPU0.020000\r\n"));
+        rig.position().unwrap();
+    }
+}
+
+#[test]
+fn scanner_arrival_tolerance_boundary_ignores_only_arithmetic_roundoff() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log, &[]);
+    for scale in [698.1317007977318, 493.653659795374, -493.653659795374] {
+        let mut config = agap("U");
+        config.sample_um_per_unit = scale;
+        // Keep this numerical-boundary regression at the encoder-resolution
+        // tolerance; AGAP's normal default is its 0.01 deg repeatability.
+        config.position_tolerance = Some(0.001);
+        rig.scanners[0].as_mut().unwrap().config = config.clone();
+        for (target, measured) in [(0.052, 0.053), (-0.052, -0.053), (0.035, 0.034)] {
+            let requested = config.sample_um_from_raw(target);
+            let mut actual = Position {
+                physical: [None, Some(config.sample_um_from_raw(measured)), None],
+                x_scanner_deg: Some(measured),
+                ..Default::default()
+            };
+            rig.verify_targets(&actual, [None, Some(requested), None])
+                .unwrap();
+            let outside = measured + (measured - target).signum() * 1e-9;
+            actual.physical[1] = Some(config.sample_um_from_raw(outside));
+            actual.x_scanner_deg = Some(outside);
+            assert!(
+                rig.verify_targets(&actual, [None, Some(requested), None])
+                    .is_err()
+            );
+        }
+    }
+    let config = cc_with_hysteresis();
+    assert!(config.origin().abs() > 0.);
+    rig.scanners[0].as_mut().unwrap().config = config.clone();
+    let requested = config.sample_um_from_raw(0.052);
+    let mut actual = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.0522)), None],
+        x_scanner_mm: Some(0.0522),
+        ..Default::default()
+    };
+    rig.verify_targets(&actual, [None, Some(requested), None])
+        .unwrap();
+    actual.physical[1] = Some(config.sample_um_from_raw(0.052200001));
+    actual.x_scanner_mm = Some(0.052200001);
+    assert!(
+        rig.verify_targets(&actual, [None, Some(requested), None])
+            .is_err()
+    );
+}
+
+#[test]
+fn agap_arrival_tolerance_uses_repeatability_and_explicit_overrides() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let mut rig = return_rig(log, &[]);
+    let requested = 0.;
+
+    let config = agap("U");
+    assert_eq!(config.position_tolerance, Some(0.01));
+    rig.scanners[0].as_mut().unwrap().config = config.clone();
+    let within_repeatability = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.009)), None],
+        x_scanner_deg: Some(0.009),
+        ..Default::default()
+    };
+    rig.verify_targets(&within_repeatability, [None, Some(requested), None])
+        .unwrap();
+    let outside_repeatability = Position {
+        physical: [None, Some(config.sample_um_from_raw(0.010_001)), None],
+        x_scanner_deg: Some(0.010_001),
+        ..Default::default()
+    };
+    assert!(
+        rig.verify_targets(&outside_repeatability, [None, Some(requested), None])
+            .is_err()
+    );
+
+    let mut tighter = config.clone();
+    tighter.position_tolerance = Some(0.002);
+    let tighter = tighter.normalized().unwrap();
+    rig.scanners[0].as_mut().unwrap().config = tighter.clone();
+    let outside_tighter = Position {
+        physical: [None, Some(tighter.sample_um_from_raw(0.003)), None],
+        x_scanner_deg: Some(0.003),
+        ..Default::default()
+    };
+    assert!(
+        rig.verify_targets(&outside_tighter, [None, Some(requested), None])
+            .is_err()
+    );
+
+    let mut looser = config;
+    looser.position_tolerance = Some(0.02);
+    let looser = looser.normalized().unwrap();
+    rig.scanners[0].as_mut().unwrap().config = looser.clone();
+    let within_looser = Position {
+        physical: [None, Some(looser.sample_um_from_raw(0.015)), None],
+        x_scanner_deg: Some(0.015),
+        ..Default::default()
+    };
+    rig.verify_targets(&within_looser, [None, Some(requested), None])
+        .unwrap();
+}

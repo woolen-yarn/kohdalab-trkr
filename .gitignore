@@ -1,0 +1,53 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+
+.venv/
+venv/
+env/
+
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+.ipynb_checkpoints/
+
+*.log
+
+# Local measurement outputs. Keep curated examples tracked explicitly if needed.
+thermorack_log.csv
+trkr_test.csv
+
+# Experimental replay data. Never commit these files to the public
+# woolen-yarn repository. The private Kohdalab demo repository is prepared
+# separately when the recordings need to be bundled.
+demo_csv/*.csv
+
+# Legacy project-local configs are migrated to ~/.kohdalab/config and ignored.
+# Keep this rule so arbitrary pre-migration profiles cannot be committed by mistake.
+/config/*.json
+
+# Rust preview builds and local acquisition output.
+/target/
+/dist/
+/runs/
+
+# Native release products and local validation history.
+/build/
+/dist/
+/validation/local/
+*.dmg
+
+# Shared root workspace outputs. Legacy ignored folders remain private.
+/target/
+/runs/
+
+# Private outputs from older checkouts must never become public.
+/next/target/
+/next/dist/
+/next/runs/

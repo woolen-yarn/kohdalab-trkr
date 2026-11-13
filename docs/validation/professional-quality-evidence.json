@@ -1,0 +1,206 @@
+{
+  "base_commit": "9bf80cf4fd146395f1a7276b138da1071ef46f78",
+  "source_diff_sha256": "769ac1e52c5b400cbae7ae3e5c13fc1ad794da65043e12831f112f1dba4791c4",
+  "binary_sha256": "344707185757c98ac25d2ef895d8de7d6d55b252d3ffd3982b6f80f7fa3da175",
+  "platform": "macOS arm64",
+  "rust_toolchain": "1.99.1",
+  "tests": {
+    "rust_workspace_passed": 461,
+    "actual_app_interaction_passed": 5,
+    "python_packaging_passed": 65,
+    "native_notebook_integration_passed": 3,
+    "common_python_api_passed": 14,
+    "independent_oss_probe_passed": 20,
+    "independent_oss_probe_ignored": 1,
+    "iv_passed": 304,
+    "iv_ignored": 3,
+    "camera_passed": 196,
+    "camera_ignored": 1
+  },
+  "clippy": "workspace all-targets, oss-gui-trial, warnings denied: passed",
+  "native_layout": {
+    "screens": 90,
+    "recorded_geometry_equal_to_previous_revision": 90,
+    "capture_cases": [
+      {
+        "case": "default",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6399057500530034,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "devices-expanded",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6781477089971304,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "devices-scanner",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6816649578977376,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "power-meter",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6157756249886006,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "rotated",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6025704999919981,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "rotated-reverse",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.5969804581254721,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "alignment-delay",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.584215542068705,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "alignment-scanner",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6733822079841048,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "alignment-delay-options",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.7253289581276476,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "alignment-scanner-options",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.647587375016883,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "measurement-settings",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6517745419405401,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "multiple-devices",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6314828749746084,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "add-device",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6662749168463051,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "delete-device",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6493830420076847,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "device-order",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.6319457080680877,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "left-collapsed",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.5679658751469105,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "right-collapsed",
+        "width": 1280,
+        "height": 800,
+        "seconds": 0.5998050831258297,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      },
+      {
+        "case": "minimum",
+        "width": 1143,
+        "height": 700,
+        "seconds": 0.599343332927674,
+        "exit": 0,
+        "pass_": true,
+        "images": 5
+      }
+    ]
+  },
+  "audit": {
+    "tool": "cargo-audit 0.22.2",
+    "database": {
+      "advisory-count": 1429,
+      "last-commit": null,
+      "last-updated": null
+    },
+    "vulnerabilities": 0,
+    "unsound": 0,
+    "unmaintained": [
+      "ttf-parser",
+      "zbus_names",
+      "zvariant",
+      "zvariant_derive"
+    ]
+  },
+  "qualification": "Local software/synthetic checks only. No hardware operation, Windows artifact qualification, remote CI execution or publication in this review."
+}
