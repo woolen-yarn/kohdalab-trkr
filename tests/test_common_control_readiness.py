@@ -1,5 +1,6 @@
 """The package verifier must wait for actual GUI readiness."""
 import importlib.util
+import json
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -34,3 +35,30 @@ def test_exited_gui_fails_without_retrying_discovery(monkeypatch, tmp_path):
     with patch.object(module, "discover") as discover, pytest.raises(RuntimeError, match="exited"):
         module.wait_for_client(tmp_path, process)
     discover.assert_not_called()
+
+
+def test_packaged_profile_is_the_loadable_startup_profile(monkeypatch, tmp_path):
+    module = load_verifier(monkeypatch)
+    source = module.ROOT / "crates/trkr-desktop/assets/default.json"
+    executable = tmp_path / "kohdalab-trkr"
+    assert module.packaged_profile(executable) == source
+    (tmp_path / "config").mkdir()
+    bundled = tmp_path / "config" / "default.json"
+    bundled.write_bytes(source.read_bytes())
+    assert module.packaged_profile(executable) == bundled
+    # `--config` rejects a profile without instruments.lockin.main.
+    assert json.loads(bundled.read_text())["instruments"]["lockin"]["main"]
+    bundled.write_text("{}")
+    with pytest.raises(ValueError, match="differs"):
+        module.packaged_profile(executable)
+
+
+def test_packaged_profile_follows_macos_bundle_resources(monkeypatch, tmp_path):
+    module = load_verifier(monkeypatch)
+    source = module.ROOT / "crates/trkr-desktop/assets/default.json"
+    (tmp_path / "Contents/MacOS").mkdir(parents=True)
+    (tmp_path / "Contents/Resources/config").mkdir(parents=True)
+    bundled = tmp_path / "Contents/Resources/config/default.json"
+    bundled.write_bytes(source.read_bytes())
+    found = module.packaged_profile(tmp_path / "Contents/MacOS/kohdalab-trkr")
+    assert found.resolve() == bundled.resolve()

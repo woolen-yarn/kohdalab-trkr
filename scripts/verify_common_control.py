@@ -36,6 +36,26 @@ def wait_for_client(directory: Path, process, *, timeout: float = 10.0):
     raise TimeoutError("GUI API did not respond within startup deadline; see gui.log")
 
 
+def packaged_profile(executable: Path) -> Path:
+    """Return the shipped startup profile next to the executable.
+
+    `config/default_demo.json` is a CSV-replay profile with no instruments and
+    is rejected by `--config` ("No main lock-in configured"). `default.json`
+    is the profile `Settings::default()` embeds; loading it opens no device.
+    """
+    directory = executable.resolve().parent
+    resources = directory / ".." / "Resources"  # macOS app bundle layout
+    if directory.name == "MacOS" and resources.is_dir():
+        directory = resources
+    source = ROOT / "crates/trkr-desktop/assets/default.json"
+    bundled = directory / "config" / "default.json"
+    if not bundled.is_file():
+        return source
+    if bundled.read_bytes() != source.read_bytes():
+        raise ValueError(f"Packaged profile differs from the source asset: {bundled}")
+    return bundled
+
+
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("executable", type=Path)
@@ -46,13 +66,12 @@ def main() -> None:
         env = dict(os.environ, HOME=home, USERPROFILE=home, RUST_BACKTRACE="1")
         # Never let a headless run escape Xvfb onto a developer's Wayland session.
         env.pop("WAYLAND_DISPLAY", None)
-        # Start explicitly from a private copy of the bundled synthetic profile:
+        # Start explicitly from a private copy of the packaged startup profile:
         # no per-user settings are inspected and the payload is never written.
-        bundled = a.executable.resolve().parent / "config" / "default_demo.json"
-        if not bundled.is_file():
-            bundled = ROOT / "crates/trkr-desktop/assets/default_demo.json"
-        profile_path = Path(home) / "default_demo.json"
+        bundled = packaged_profile(a.executable)
+        profile_path = Path(home) / "default.json"
         profile_path.write_bytes(bundled.read_bytes())
+        profile_bytes = profile_path.read_bytes()
         log_path = a.output / "gui.log"
         log = log_path.open("w")
         process = subprocess.Popen(
@@ -64,13 +83,16 @@ def main() -> None:
         try:
             directory = Path(home) / ".kohdalab" / "trkr" / "run"
             client = wait_for_client(directory, process)
-            profile = json.loads(
-                (ROOT / "crates/trkr-desktop/assets/default.json").read_text()
-            )
+            startup = client.config()
+            if startup["config_path"] != str(profile_path):
+                raise ValueError("GUI did not start from the packaged profile copy")
+            profile = json.loads(profile_bytes)
             profile["measurements"]["signal_monitor"]["interval_s"] = 0.0
             client.describe()
             client.acquire()
             client.invoke("configure", profile=profile, source="demo")
+            if client.config()["source"] != "demo":
+                raise ValueError("GUI API did not switch to the simulated source")
             plan = client.invoke("plan")["plan"]
             plan["n_points"] = 3
             plan["interval_s"] = 0.0
@@ -95,6 +117,8 @@ def main() -> None:
             assert terminal_stop["requested"] is False
             assert terminal_stop["job_id"] == receipt["job_id"]
             released = client.release()
+            if profile_path.read_bytes() != profile_bytes:
+                raise ValueError("GUI API modified the startup profile")
             (a.output / "evidence.json").write_text(
                 json.dumps(
                     {
