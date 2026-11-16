@@ -171,7 +171,9 @@ impl App {
     }
 
     pub(super) fn device_highlighted(&self, kind: &str, id: &str) -> bool {
-        if self.alignment_tab && !self.measurement_pending {
+        // Alignment hosts the Signal Monitor: its lock-in follows the monitor
+        // binding below; stages and scanners follow the alignment panels.
+        if self.alignment_tab && !self.measurement_pending && kind != "lockin" {
             return self.alignment.highlights(kind, id);
         }
         let workflow = if self.measurement_pending {

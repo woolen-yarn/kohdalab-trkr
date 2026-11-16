@@ -70,12 +70,15 @@ impl Session {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn finalize_acquisition(
         &mut self,
         mut result: Result<(), String>,
         mut csv: Option<Recording>,
         output: Option<&Path>,
         source: Source,
+        // False for a Signal Monitor: it never records a T/X/Y position.
+        position_recorded: bool,
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
@@ -104,15 +107,14 @@ impl Session {
             "complete"
         };
         if let Some(recording) = &mut csv {
-            if let Err(error) =
-                recording.set_final_position(&self.state.position, &self.state.phase)
-            {
+            let position = position_recorded.then_some(&self.state.position);
+            if let Err(error) = recording.set_final_position(position, &self.state.phase) {
                 append_recording_error(&mut result, "save final position", error);
             }
             let terminal = serde_json::json!({
                 "event": "finished",
                 "status": terminal_status,
-                "last_observed_position":self.state.position, "last_phase":self.state.phase,
+                "last_observed_position":position, "last_phase":self.state.phase,
                 "rows": self.state.rows,
                 "simulation": matches!(source, Source::Demo),
                 "error": result.as_ref().err(),

@@ -7,6 +7,17 @@ pub trait Bus {
     fn shared_clone(&self) -> Option<Box<dyn Bus + Send>> {
         None
     }
+    /// Stable identity of the underlying transport, if it can be shared.
+    /// Two views with the same identity reach the same serial session.
+    fn connection_id(&self) -> Option<usize> {
+        None
+    }
+    /// Claim the underlying transport for one executor. While the returned
+    /// view (or any `shared_clone` of it) is alive, every other view of the
+    /// same connection is refused, including STOP. Claims never nest.
+    fn exclusive_clone(&self) -> Result<Box<dyn Bus + Send>, String> {
+        Err("Motion connection cannot be exclusively owned".into())
+    }
     fn begin_recording(&mut self) {}
     fn take_recording(&mut self) -> Vec<crate::MotionExchange> {
         Vec::new()
@@ -26,6 +37,12 @@ pub trait Bus {
 impl<T: Bus + ?Sized> Bus for Box<T> {
     fn shared_clone(&self) -> Option<Box<dyn Bus + Send>> {
         (**self).shared_clone()
+    }
+    fn connection_id(&self) -> Option<usize> {
+        (**self).connection_id()
+    }
+    fn exclusive_clone(&self) -> Result<Box<dyn Bus + Send>, String> {
+        (**self).exclusive_clone()
     }
     fn begin_recording(&mut self) {
         (**self).begin_recording();
@@ -228,6 +245,66 @@ impl ScannerProtocol {
         }
     }
 
+    fn number(&self, bus: &mut impl Bus, mnemonic: &str, query: bool) -> Result<f64, String> {
+        let prefix = self.command(&format!("{mnemonic}{}", self.axis()?));
+        let command = if query {
+            format!("{prefix}?")
+        } else {
+            prefix.clone()
+        };
+        let reply = bus.query(&command)?;
+        reply
+            .strip_prefix(&prefix)
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+            .ok_or_else(|| format!("Unexpected scanner {command} response: {reply:?}"))
+    }
+
+    pub fn target_position(&self, bus: &mut impl Bus) -> Result<f64, String> {
+        match self.model {
+            ScannerModel::ConexAgap => self.number(bus, "TH", false),
+            ScannerModel::ConexCc => self.number(bus, "PA", true),
+        }
+    }
+
+    pub fn software_limits(&self, bus: &mut impl Bus) -> Result<[f64; 2], String> {
+        let low = self.number(bus, "SL", true)?;
+        let high = self.number(bus, "SR", true)?;
+        if low >= high {
+            return Err("Controller reported invalid software limits".into());
+        }
+        Ok([low, high])
+    }
+
+    pub(crate) fn start_native(
+        &self,
+        bus: &mut impl Bus,
+        relative: bool,
+        value: &str,
+    ) -> Result<(), String> {
+        let mnemonic = if relative { "PR" } else { "PA" };
+        bus.write(&self.command(&format!("{mnemonic}{}{value}", self.axis()?)))
+    }
+
+    pub(crate) fn check_command_error(&self, bus: &mut impl Bus) -> Result<(), String> {
+        let command = self.command("TE");
+        let reply = bus.query(&command)?;
+        match reply.strip_prefix(&command).map(str::trim) {
+            Some("@") => Ok(()),
+            Some(code) if code.len() == 1 => {
+                Err(format!("Scanner controller command error: {code}"))
+            }
+            _ => Err(format!("Unexpected scanner TE response: {reply:?}")),
+        }
+    }
+
+    pub(crate) fn controller_move_ready(&self, state: &str) -> bool {
+        match self.model {
+            ScannerModel::ConexAgap => agap_ready(state),
+            ScannerModel::ConexCc => matches!(state, "32" | "33" | "34"),
+        }
+    }
+
     pub fn state(&self, bus: &mut impl Bus) -> Result<String, String> {
         let response = bus.query(&self.command("TS"))?;
         let prefix = self.command("TS");
@@ -426,7 +503,7 @@ fn require_axis(axis: u8) -> Result<(), String> {
         Ok(())
     }
 }
-fn ack(response: String, command: &str) -> Result<(), String> {
+pub(crate) fn ack(response: String, command: &str) -> Result<(), String> {
     if response.is_empty()
         || response.to_ascii_uppercase().contains("NG")
         || response.to_ascii_uppercase().contains("ERR")

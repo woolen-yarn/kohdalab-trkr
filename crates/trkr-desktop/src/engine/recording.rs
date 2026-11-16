@@ -214,7 +214,8 @@ impl Recording {
 
     pub(super) fn set_final_position(
         &mut self,
-        position: &trkr_motion::Position,
+        // `None`: the workflow (Signal Monitor) never records a position.
+        position: Option<&trkr_motion::Position>,
         phase: &str,
     ) -> Result<(), String> {
         let result = (|| {
@@ -224,8 +225,11 @@ impl Recording {
             .map_err(|e| e.to_string())?;
             metadata["last_observed_position"] = serde_json::json!(position);
             metadata["last_phase"] = serde_json::json!(phase);
-            metadata["position_qualification"] =
-                serde_json::json!("last_reported_position_no_extra_final_query");
+            metadata["position_qualification"] = serde_json::json!(if position.is_some() {
+                "last_reported_position_no_extra_final_query"
+            } else {
+                "not_recorded_signal_monitor"
+            });
             replace_json_atomically(&self.metadata_path, &metadata)
         })();
         self.mark_save(result)

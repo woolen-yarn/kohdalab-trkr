@@ -7,6 +7,15 @@ use std::time::Instant;
 pub(crate) struct AcquisitionTiming {
     pub position: Option<ReadWindow>,
     pub signal: Option<ReadWindow>,
+    #[serde(skip)]
+    pub(crate) progress: Option<ProgressTiming>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ProgressTiming {
+    pub started_at: Instant,
+    pub completed_at: Instant,
+    pub points_per_line: Option<usize>,
 }
 
 #[derive(Clone, Debug, Serialize)]

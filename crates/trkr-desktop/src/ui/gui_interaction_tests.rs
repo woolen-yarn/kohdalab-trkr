@@ -1,5 +1,24 @@
 use super::*;
 impl App {
+    pub fn new_alignment_jog_trial(
+        cc: &eframe::CreationContext<'_>,
+    ) -> Result<Self, std::io::Error> {
+        let mut app = Self::new_gui_interaction(cc)?;
+        app.enable_alignment_jog_trial();
+        let directory = app
+            .gui_interaction
+            .sandbox
+            .as_ref()
+            .unwrap()
+            .path()
+            .join("results");
+        for output in &mut app.outputs {
+            output.dir = directory.display().to_string();
+        }
+        app.sync_all_outputs();
+        Ok(app)
+    }
+
     pub fn new_gui_interaction(cc: &eframe::CreationContext<'_>) -> Result<Self, std::io::Error> {
         let temp = tempfile::tempdir()?;
         let paths = UserConfigPaths::from_kohdalab_dir(temp.path().join(".kohdalab"));

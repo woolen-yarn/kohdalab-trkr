@@ -1,4 +1,5 @@
 mod alignment;
+mod alignment_workspace;
 mod demo;
 #[cfg(feature = "dev-diagnostics")]
 mod dev_diagnostics;
@@ -103,7 +104,18 @@ struct Smoke {
     rtheta_frames: u8,
     failure: Option<String>,
     layout_only: bool,
+    /// Alignment captures keep the combined Alignment page on screen for
+    /// every per-workflow screenshot instead of visiting measurement tabs.
+    keep_alignment: bool,
 }
+/// Measurement tabs. Signal Monitor is shown inside Alignment instead.
+const MEASUREMENT_TABS: [Workflow; 4] = [
+    Workflow::Trkr,
+    Workflow::Srkr,
+    Workflow::Strkr,
+    Workflow::Srkr2d,
+];
+const MEASUREMENT_TAB_WIDTHS: [f32; 4] = [51., 51., 57., 68.];
 fn show_scan_theta(workflow: Workflow, axis: Axis) -> bool {
     if workflow == Workflow::Srkr2d {
         axis == Axis::U
@@ -148,10 +160,19 @@ pub struct App {
     inventory: crate::inventory::Inventory,
     alignment: alignment::AlignmentUi,
     alignment_tab: bool,
+    alignment_workspace: alignment_workspace::Workspace,
     stage_round_trips: u32,
     stage_axis: u8,
     scanner_direction: [i32; 2],
     remote: Option<remote::Bridge>,
+    /// Outcomes of Signal Monitor parallel moves already reported.
+    parallel_finished: u64,
+    /// GUI-only Signal Monitor length: read until Stop instead of Points.
+    /// Never persisted and never reachable from Python/remote, so every
+    /// other entry keeps the finite monitor.
+    monitor_until_stop: bool,
+    /// The latest started run was a Continuous monitor (progress/ETA).
+    monitor_run_until_stop: bool,
     measurement_pending: bool,
     demo_viewer: bool,
     demo: demo::Replay,
@@ -297,10 +318,14 @@ impl App {
             inventory: Default::default(),
             alignment: Default::default(),
             alignment_tab: false,
+            alignment_workspace: Default::default(),
             stage_round_trips: 1,
             stage_axis: 1,
             scanner_direction: [0; 2],
             remote: None,
+            parallel_finished: 0,
+            monitor_until_stop: false,
+            monitor_run_until_stop: false,
             measurement_pending: false,
             demo_viewer,
             demo: demo::Replay::default(),
@@ -476,6 +501,7 @@ impl App {
             rtheta_frames: 0,
             failure: None,
             layout_only: false,
+            keep_alignment: false,
         });
     }
     pub fn enable_layout_capture(
@@ -525,6 +551,31 @@ impl App {
             if state.ends_with("-options") {
                 self.enable_alignment_options_preview();
             }
+            if state.ends_with("-monitor")
+                || matches!(
+                    state,
+                    "alignment-motion-only" | "alignment-recording-settings"
+                )
+            {
+                self.enable_alignment_monitor_preview();
+            }
+            if state == "alignment-motion-only" {
+                self.alignment_workspace.motion_only = true;
+            }
+            if state == "alignment-power-monitor" {
+                self.enable_power_meter_preview();
+                self.alignment_workspace.monitor = alignment_workspace::MonitorTab::Power;
+            }
+            if state == "alignment-recording-settings" {
+                self.alignment_workspace.settings =
+                    Some(alignment_workspace::SettingsTab::Recording);
+            }
+            // The preview re-hydrates the profile; Alignment now shows the
+            // Signal Monitor Output, so keep public captures path-neutral.
+            for output in &mut self.outputs {
+                output.dir = "demo/runs".into();
+            }
+            self.sync_all_outputs();
         }
         if matches!(
             state,
@@ -575,6 +626,7 @@ impl App {
         }
         if let Some(smoke) = &mut self.smoke {
             smoke.layout_only = true;
+            smoke.keep_alignment = state.starts_with("alignment-");
             smoke.stage = SmokeStage::CaptureWorkflow {
                 index: 0,
                 frames: 0,
@@ -1183,11 +1235,25 @@ impl App {
                 address: config.address,
             }
         };
-        let command = Command::Run {
-            source,
-            config,
-            plan: plan.clone(),
-            output: out.clone(),
+        // Continuous is a local GUI choice for Signal Monitor only; remote
+        // and Python requests always run the finite plan.
+        let until_stop = remote_id.is_none()
+            && plan.workflow == Workflow::SignalMonitor
+            && self.monitor_until_stop;
+        let command = if until_stop {
+            Command::MonitorUntilStop {
+                source,
+                config,
+                plan: plan.clone(),
+                output: out.clone(),
+            }
+        } else {
+            Command::Run {
+                source,
+                config,
+                plan: plan.clone(),
+                output: out.clone(),
+            }
         };
         if let Some(id) = remote_id {
             self.controller.send_remote(id, command)?;
@@ -1217,6 +1283,7 @@ impl App {
         self.snapshot.running = true;
         self.measurement_pending = true;
         self.scan_progress[index] = (0, 0);
+        self.monitor_run_until_stop = until_stop;
         self.eta.start();
         self.notify(crate::ui_feedback::NoticeKind::Info, "Measurement started");
         Ok(())
@@ -1242,6 +1309,10 @@ impl App {
         // running.  Keep the newest completed meter readback instead of
         // briefly regressing the live card to an older snapshot.
         let mut s = s;
+        if self.alignment_jog_trial_active() {
+            s.registered_devices
+                .clone_from(&self.snapshot.registered_devices);
+        }
         let incoming_power_ids: HashSet<_> = s
             .power_meters
             .iter()
@@ -1346,13 +1417,17 @@ impl App {
                 Event::Sample(s) => {
                     self.snapshot.signal = Some(s.signal);
                     self.snapshot.position = s.position.clone();
-                    self.snapshot.rows = self.snapshot.rows.saturating_add(1);
+                    self.snapshot.rows = if s.recording.point_index == 0 {
+                        self.snapshot.rows.saturating_add(1)
+                    } else {
+                        self.snapshot.rows.max(s.recording.point_index)
+                    };
                     self.scan_progress[Self::ix(self.active_workflow)].0 = self.snapshot.rows;
-                    self.eta.observe(
-                        self.snapshot.rows,
-                        s.elapsed,
-                        s.captured_at.unwrap_or_else(Instant::now),
-                    );
+                    if let (Some(timing), Some(captured)) = (s.timing.progress, s.captured_at)
+                        && timing.completed_at >= captured
+                    {
+                        self.eta.observe(s.recording.point_index, timing);
+                    }
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
                         if self.trace.last().is_some_and(|last| {
                             last.recording.signal_unit != s.recording.signal_unit
@@ -1566,11 +1641,15 @@ impl App {
                     // never the temporary absolute CSV destination.
                     self.log.clear();
                     self.note("DEMO — synthetic data · no hardware");
-                    self.switch_workflow(workflow);
+                    if smoke.keep_alignment {
+                        self.open_alignment();
+                    } else {
+                        self.switch_workflow(workflow);
+                    }
                     if smoke.layout_only && self.measurement_settings.is_some() {
                         self.open_measurement_settings();
                     }
-                    if !smoke.layout_only && workflow != Workflow::Trkr {
+                    if !smoke.layout_only && !smoke.keep_alignment && workflow != Workflow::Trkr {
                         let mut plan = self.plan().clone();
                         plan.fast_range = Range {
                             min: -2.,
@@ -2346,7 +2425,37 @@ impl App {
         self.poll_port_refresh();
         let unit = if i == 0 { "ps" } else { "um" };
         let axis = ["t", "x", "y"][i];
-        let physical = self.snapshot.position.physical[i];
+        // During a hardware Signal Monitor the axis belongs to the parallel
+        // executor: show its readback and route Move to it.
+        let parallel = self.controller.parallel_motion();
+        let handed_off = parallel_owns(
+            parallel.as_ref(),
+            self.snapshot.running,
+            self.source_demo,
+            i,
+        );
+        let parallel_ready = handed_off && parallel_move_ready(parallel.as_ref(), i);
+        let movable = motion_move_enabled(
+            self.snapshot.devices[i + 1],
+            self.source_demo,
+            self.snapshot.running,
+            parallel_ready,
+        );
+        let position = if handed_off {
+            parallel.as_ref().map(|status| &status.position)
+        } else {
+            Some(&self.snapshot.position)
+        };
+        let physical = position.and_then(|position| position.physical[i]);
+        let native_readback = position.and_then(|position| {
+            let (deg, mm) = match i {
+                1 => (position.x_scanner_deg, position.x_scanner_mm),
+                2 => (position.y_scanner_deg, position.y_scanner_mm),
+                _ => return None,
+            };
+            deg.map(|value| format!("Controller TP: {value}°"))
+                .or_else(|| mm.map(|value| format!("Controller TP: {value} mm")))
+        });
         let zero = self.selected_zero()[i];
         let corrected = physical.map(|current| current - zero);
         let mut zero_edit = zero;
@@ -2730,12 +2839,19 @@ impl App {
                     precision::rect(11., y, 70., 26.),
                     label,
                 );
-                form.value(
-                    &format!("{axis}_row_{row}_value"),
-                    precision::rect(86., y, input_x - 92., 26.),
-                    current,
-                    TEXT,
-                );
+                let readout = precision::rect(86., y, input_x - 92., 26.);
+                form.value(&format!("{axis}_row_{row}_value"), readout, current, TEXT);
+                if row != 1
+                    && let Some(native) = &native_readback
+                {
+                    form.ui
+                        .interact(
+                            readout.translate(rect.min.to_vec2()),
+                            egui::Id::new(("motion-native", i, row)),
+                            egui::Sense::hover(),
+                        )
+                        .on_hover_text(native);
+                }
                 match row {
                     0 => form.number(
                         &format!("move_{axis}_spin"),
@@ -2743,7 +2859,7 @@ impl App {
                         &mut self.manual[i],
                         1.,
                         3,
-                        self.snapshot.devices[i + 1] && !self.snapshot.running,
+                        self.snapshot.devices[i + 1] && (!self.snapshot.running || parallel_ready),
                     ),
                     1 => form.number(
                         &format!("{axis}_zero_spin"),
@@ -2759,14 +2875,14 @@ impl App {
                         &mut self.corrected_manual[i],
                         1.,
                         3,
-                        self.snapshot.devices[i + 1] && !self.snapshot.running,
+                        self.snapshot.devices[i + 1] && (!self.snapshot.running || parallel_ready),
                     ),
                 }
                 let text = if row == 1 { "Use Current" } else { "Move" };
                 let enabled = if row == 1 {
                     physical.is_some() && !self.snapshot.running
                 } else {
-                    self.snapshot.devices[i + 1] && !self.source_demo && !self.snapshot.running
+                    movable
                 };
                 let clicked = form.button(
                     &match row {
@@ -2943,6 +3059,22 @@ impl App {
     }
     fn move_axis(&mut self, axis: usize, target: f64) {
         let targets = std::array::from_fn(|i| if i == axis { Some(target) } else { None });
+        if self.snapshot.running {
+            // Only an axis handed off by a running hardware Signal Monitor can
+            // move during a run; the executor refuses every other request.
+            if self.source_demo {
+                self.note("Demo runs never move hardware");
+                return;
+            }
+            match self
+                .controller
+                .move_parallel(targets, engine::spatial_approach())
+            {
+                Ok(()) => self.note("Moving during Signal Monitor…"),
+                Err(error) => self.note(error),
+            }
+            return;
+        }
         let zero = [0.; 3];
         match self.config().and_then(|config| {
             self.controller.send(Command::Move {
@@ -2955,6 +3087,22 @@ impl App {
         }) {
             Ok(_) => self.note("Moving…"),
             Err(error) => self.note(error),
+        }
+    }
+    /// Report each finished Signal Monitor parallel move exactly once.
+    fn poll_parallel_motion(&mut self) {
+        let Some(status) = self.controller.parallel_motion() else {
+            self.parallel_finished = 0;
+            return;
+        };
+        if status.finished <= self.parallel_finished {
+            return;
+        }
+        self.parallel_finished = status.finished;
+        match (&status.last_error, &status.fault) {
+            (Some(error), _) => self.note(format!("Move during Signal Monitor failed: {error}")),
+            (None, Some(fault)) => self.note(format!("Moves stopped for this monitor: {fault}")),
+            (None, None) => self.note("Move during Signal Monitor complete"),
         }
     }
     fn select_plot_axes(&mut self) {
@@ -2985,7 +3133,19 @@ impl App {
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         self.map_cache = [None, None];
     }
+    /// Select the Alignment page: the Signal Monitor plan and plots on top,
+    /// delay stage and scanner controls below. This is a view change only.
+    pub(super) fn open_alignment(&mut self) {
+        self.switch_workflow(Workflow::SignalMonitor);
+    }
     fn switch_workflow(&mut self, workflow: Workflow) {
+        // Signal Monitor has no measurement tab of its own; it lives on the
+        // Alignment page. Selecting any measurement tab leaves Alignment.
+        let alignment = workflow == Workflow::SignalMonitor;
+        if self.alignment_tab && !alignment {
+            self.alignment_cancel_hold();
+        }
+        self.alignment_tab = alignment;
         if workflow == self.workflow {
             return;
         }
@@ -3110,21 +3270,22 @@ impl App {
         }
         let mut plan = self.plan().clone();
         let running = self.snapshot.running;
+        // The workflow is the source of truth: Signal Monitor is the
+        // Alignment page, every other workflow is a measurement tab.
         let mut selected = self.workflow;
-        let tab_widths = [102., 51., 51., 57., 68.];
         let mut x = area.min.x;
-        for (i, workflow) in Workflow::ALL.into_iter().enumerate() {
-            let r = rect(x, area.min.y, tab_widths[i], 24.);
+        for (i, workflow) in MEASUREMENT_TABS.into_iter().enumerate() {
+            let r = rect(x, area.min.y, MEASUREMENT_TAB_WIDTHS[i], 24.);
             precision::record(&mut self.geometry, &format!("tab_{}", workflow.key()), r);
             if ui
                 .scope(|ui| {
-                    if self.demo_viewer && (running || workflow == Workflow::SignalMonitor) {
+                    if self.demo_viewer && running {
                         ui.disable();
                     }
                     ui.put(
                         r,
                         egui::Button::new(workflow.name())
-                            .selected(!self.alignment_tab && workflow == selected)
+                            .selected(workflow == selected)
                             .min_size(r.size())
                             .corner_radius(6),
                     )
@@ -3133,27 +3294,42 @@ impl App {
                 .inner
             {
                 selected = workflow;
-                self.alignment_tab = false;
-                self.alignment_cancel_hold();
             }
-            x += tab_widths[i];
+            x += MEASUREMENT_TAB_WIDTHS[i];
         }
         let alignment_rect = rect(x + 3., area.min.y, 82., 24.);
+        precision::record(&mut self.geometry, "tab_alignment", alignment_rect);
+        // Signal Monitor has no tab of its own; its tab key names the page
+        // that hosts it so per-workflow geometry checks still find it.
+        precision::record(
+            &mut self.geometry,
+            &format!("tab_{}", Workflow::SignalMonitor.key()),
+            alignment_rect,
+        );
         if ui
-            .put(
-                alignment_rect,
-                egui::Button::new("Alignment").selected(self.alignment_tab),
-            )
-            .clicked()
+            .scope(|ui| {
+                if self.demo_viewer && running {
+                    ui.disable();
+                }
+                ui.put(
+                    alignment_rect,
+                    egui::Button::new("Alignment").selected(selected == Workflow::SignalMonitor),
+                )
+                .clicked()
+            })
+            .inner
         {
-            self.alignment_tab = true;
-        }
-        if self.alignment_tab {
-            return;
+            selected = Workflow::SignalMonitor;
         }
         self.switch_workflow(selected);
         if self.workflow != plan.workflow {
             plan = self.plan().clone();
+        }
+        if self.alignment_tab {
+            let tabs = egui::Rect::from_min_size(area.min, Vec2::new(area.width(), 24.));
+            precision::record(&mut self.geometry, "center_top_widget", tabs);
+            precision::record(&mut self.geometry, "measurement_tabs", tabs);
+            return;
         }
         precision::record(&mut self.geometry, "measurement_tabs", area);
         let page = rect(
@@ -3186,32 +3362,7 @@ impl App {
         {
             let mut form = Form::new(ui, &mut self.geometry, page.min);
             form.enabled = !running && !self.demo_viewer;
-            if plan.workflow == Workflow::SignalMonitor {
-                form.label(
-                    "signal_interval_label",
-                    rect(9., 9., 58., 26.),
-                    "Interval (s)",
-                );
-                form.number(
-                    "signal_interval_spin",
-                    rect(73., 9., 120., 26.),
-                    &mut plan.interval_s,
-                    1.,
-                    2,
-                    true,
-                );
-                form.label("signal_points_label", rect(9., 41., 58., 26.), "Points");
-                let mut points = plan.n_points as f64;
-                form.number(
-                    "signal_points_spin",
-                    rect(73., 41., 120., 26.),
-                    &mut points,
-                    1.,
-                    0,
-                    true,
-                );
-                plan.n_points = points.clamp(1., trkr_core::MAX_TOTAL_POINTS as f64) as usize;
-            } else if !plan.workflow.is_2d() {
+            if !plan.workflow.is_2d() {
                 let prefix = plan.workflow.key();
                 let label = 66.;
                 let field = 9. + label + 6.;
@@ -3347,12 +3498,6 @@ impl App {
                 }
             }
             form.enabled = !running && !self.demo_viewer;
-            settings_clicked = form.button(
-                "measurement_settings_button",
-                rect(9., 169., 96., 24.),
-                "Settings…",
-                !self.controller.has_pending() && self.pending_device_selection.is_none(),
-            );
             form.group(
                 "output_group",
                 rect(side_x, 12., side, 96.),
@@ -3436,6 +3581,12 @@ impl App {
                         && self.dialog.is_none()
                         && self.snapshot_copy.is_none()
                 },
+            );
+            settings_clicked = form.button(
+                "measurement_settings_button",
+                rect(9., 169., 96., 24.),
+                "Settings…",
+                !self.controller.has_pending() && self.pending_device_selection.is_none(),
             );
             precision::record(
                 form.geometry,
@@ -3947,17 +4098,30 @@ impl App {
             .as_ref()
             .unwrap_or(&self.plans[index])
     }
+    /// A Continuous monitor shown on its own page: no total, no ETA.
+    fn showing_until_stop_run(&self) -> bool {
+        self.monitor_run_until_stop
+            && self.workflow == Workflow::SignalMonitor
+            && self.active_workflow == self.workflow
+    }
     fn eta_label(&self, now: Instant) -> String {
+        if self.showing_until_stop_run() {
+            return if self.snapshot.running {
+                "Continuous".into()
+            } else {
+                "-".into()
+            };
+        }
         if !self.snapshot.running
             || self.active_workflow != self.workflow
             || self.snapshot.total == 0
         {
             return "-".into();
         }
-        let total = self.scan_progress[Self::ix(self.workflow)].1;
-        if total == 0 {
-            return "Estimating…".into();
+        if self.snapshot.phase.starts_with("Stopping") {
+            return "Stopping…".into();
         }
+        let total = self.snapshot.total;
         if self.snapshot.rows >= total {
             return if self.demo_viewer {
                 "Looping…"
@@ -3968,23 +4132,34 @@ impl App {
             }
             .into();
         }
-        self.eta
-            .remaining(total, now)
+        let plan = self.active_plan();
+        let interval = (plan.workflow == Workflow::SignalMonitor).then_some(plan.interval_s);
+        let remaining = if self.demo_viewer {
+            self.demo_eta(now, total)
+        } else {
+            self.eta.remaining(total, interval, now)
+        };
+        remaining
             .map(|seconds| format!("~{:.0} s", seconds.ceil()))
             .unwrap_or_else(|| "Estimating…".into())
     }
     fn plot_toolbar(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
         let eta = self.eta_label(Instant::now());
-        let mut f = precision::Form::new(ui, &mut self.geometry, area.min);
-        f.label("plot_label", precision::rect(0., 0., 28., 20.), "Plot");
-        f.label("step_label", precision::rect(48., 0., 28., 20.), "Step");
         let (completed, total) = self.scan_progress[Self::ix(self.workflow)];
-        let value = step_progress(completed, total);
-        let width = if total == 0 {
+        let value = if self.showing_until_stop_run() && total == 0 {
+            // Rows read so far; a Continuous monitor has no planned total.
+            format!("{completed} rows")
+        } else {
+            step_progress(completed, total)
+        };
+        let width = if value == "-" {
             5.
         } else {
             (value.chars().count() as f32 * 7.).max(5.)
         };
+        let mut f = precision::Form::new(ui, &mut self.geometry, area.min);
+        f.label("plot_label", precision::rect(0., 0., 28., 20.), "Plot");
+        f.label("step_label", precision::rect(48., 0., 28., 20.), "Step");
         f.label(
             "point_label",
             precision::rect(86., 0., width.max(44.), 20.),
@@ -4028,7 +4203,7 @@ impl App {
                 .translate(area.min.to_vec2()),
             egui::Id::new("eta-help"),
             egui::Sense::hover(),
-        ).on_hover_text("Approximate time to finish acquiring points, based on the observed run pace, including motion, compensation, reads and CSV writes. Startup and line changes can shift the estimate. Return-to-zero is not timed; it is shown separately. Replay estimates refer to the current loop, not the CSV's original timestamps.");
+        ).on_hover_text("Estimated time to finish acquiring points. Uses completed rows and tracks line changes separately. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),
@@ -4204,6 +4379,7 @@ impl App {
         #[cfg(feature = "dev-diagnostics")]
         puffin::profile_scope!("TRKR GUI update");
         self.receive();
+        self.poll_parallel_motion();
         self.poll_power_meter_resources();
         self.poll_remote();
         self.poll_dialog();
@@ -4412,13 +4588,11 @@ impl eframe::App for App {
                 }
                 self.measure(ui, columns.measurement);
                 if self.alignment_tab {
-                    self.alignment_view(
-                        ui,
-                        egui::Rect::from_min_max(
-                            columns.measurement.min + Vec2::new(0., 30.),
-                            columns.plots.max,
-                        ),
+                    let area = egui::Rect::from_min_max(
+                        columns.measurement.min + Vec2::new(0., 30.),
+                        columns.plots.max,
                     );
+                    self.alignment_workspace_view(ui, columns.measurement, area);
                     return;
                 }
                 self.plot_toolbar(ui, columns.toolbar);
@@ -4433,6 +4607,7 @@ impl eframe::App for App {
                 );
                 self.plots(ui, columns.plots);
             });
+        self.alignment_monitor_settings_dialog(&ctx);
         self.measurement_settings_dialog(&ctx);
         self.device_inventory_dialog(&ctx);
         self.finish_start_shortcut(&ctx, start_shortcut, shortcut_was_blocked);
@@ -4532,6 +4707,32 @@ fn snapshot_signal_unit(snapshot: &Snapshot, model: Model) -> &'static str {
 
 fn initialization_homes(axis: usize, controllers: &[String; 2]) -> bool {
     axis == 0 || devices::scanner_initialization_homes(&controllers[axis - 1])
+}
+/// The axis is owned by the parallel executor of a running hardware Signal
+/// Monitor. Demo never hands off or moves hardware.
+fn parallel_owns(
+    status: Option<&engine::ParallelMotionStatus>,
+    running: bool,
+    source_demo: bool,
+    axis: usize,
+) -> bool {
+    running && !source_demo && status.is_some_and(|status| status.axes[axis])
+}
+/// The executor would accept a new move of this axis right now.
+fn parallel_move_ready(status: Option<&engine::ParallelMotionStatus>, axis: usize) -> bool {
+    status.is_some_and(|status| {
+        status.axes[axis] && status.accepting && !status.moving && status.fault.is_none()
+    })
+}
+/// Motion-card Move buttons: idle hardware, or an axis whose parallel
+/// executor is ready during a hardware Signal Monitor. Never in Demo.
+fn motion_move_enabled(
+    connected: bool,
+    source_demo: bool,
+    running: bool,
+    parallel_ready: bool,
+) -> bool {
+    connected && !source_demo && (!running || parallel_ready)
 }
 fn device_phase(
     connected: bool,

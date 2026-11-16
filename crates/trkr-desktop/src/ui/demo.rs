@@ -191,6 +191,15 @@ impl App {
         self.snapshot.phase = "Stopped".into();
         self.note("Replay stopped");
     }
+    pub(super) fn demo_eta(&self, now: Instant, total: usize) -> Option<f64> {
+        let clock = self.demo.clock?;
+        self.demo.player.remaining(
+            now.saturating_duration_since(clock),
+            self.plan().interval_s,
+            total,
+        )
+    }
+
     pub(super) fn demo_tick(&mut self) {
         if !self.demo_viewer {
             return;
@@ -313,13 +322,6 @@ impl App {
             self.snapshot.rows += 1;
         }
         self.scan_progress[i] = (self.snapshot.rows, self.snapshot.total);
-        if self.snapshot.rows > 0 {
-            self.eta.observe(
-                self.snapshot.rows,
-                clock.elapsed().as_secs_f64(),
-                Instant::now(),
-            );
-        }
     }
 }
 

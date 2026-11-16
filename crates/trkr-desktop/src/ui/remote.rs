@@ -749,6 +749,11 @@ impl Bridge {
                             }
                             AlignmentAction::End { axis, .. }
                             | AlignmentAction::Initialize { axis, .. } => *axis,
+                            // GUI-only; `skip_deserializing` keeps it out of
+                            // JSON, so the remote API cannot reach this arm.
+                            AlignmentAction::MoveTo { .. } => {
+                                return Err("Unsupported alignment motion".into());
+                            }
                         };
                         let expected = match kind {
                             engine::MotionKind::Delay => 0,

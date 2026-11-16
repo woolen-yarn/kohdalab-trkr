@@ -56,6 +56,15 @@ pub enum AlignmentAction {
         home: bool,
         move_to_origin: bool,
     },
+    /// GUI-only absolute move of one or more axes of this device, in the
+    /// card's displayed unit (`Physical` ps/µm or `Native`). `Corrected` is
+    /// resolved by the GUI from the same offset it displays. Never accepted
+    /// from JSON, so the remote API keeps its existing action set.
+    #[serde(skip_deserializing)]
+    MoveTo {
+        targets: [Option<f64>; 3],
+        unit: AlignmentUnit,
+    },
 }
 impl AlignmentAction {
     fn axis(&self) -> usize {
@@ -64,8 +73,52 @@ impl AlignmentAction {
             | Self::Jog { axis, .. }
             | Self::End { axis, .. }
             | Self::Initialize { axis, .. } => axis,
+            Self::MoveTo { targets, .. } => targets.iter().position(Option::is_some).unwrap_or(3),
         }
     }
+    /// Every axis this action moves.
+    fn axes(&self) -> [bool; 3] {
+        match *self {
+            Self::MoveTo { targets, .. } => targets.map(|target| target.is_some()),
+            _ => std::array::from_fn(|axis| axis == self.axis()),
+        }
+    }
+}
+
+/// Absolute targets in the rig's physical coordinates. Native values are
+/// checked against the configured travel and projected exactly through the
+/// connected rig; physical values are passed through unchanged.
+fn absolute_target(
+    rig: &MotionRig,
+    config: &MotionConfig,
+    micro: u32,
+    targets: [Option<f64>; 3],
+    unit: AlignmentUnit,
+) -> Result<[Option<f64>; 3], String> {
+    let mut result = [None; 3];
+    for (axis, target) in targets.into_iter().enumerate() {
+        let Some(value) = target else { continue };
+        if !value.is_finite() {
+            return Err("Move target must be finite".into());
+        }
+        result[axis] = match unit {
+            AlignmentUnit::Physical => Some(value),
+            AlignmentUnit::Native => {
+                let (minimum, maximum) = bounds(config, axis, micro)?;
+                if !(minimum.min(maximum)..=minimum.max(maximum)).contains(&value) {
+                    return Err(
+                        "Move target is outside the configured travel; no move was sent".into(),
+                    );
+                }
+                physical_target(rig, axis, value)?[axis]
+            }
+            AlignmentUnit::Corrected => {
+                return Err("Corrected targets must be resolved before sending".into());
+            }
+        };
+    }
+    rig.validate_targets(&[result])?;
+    Ok(result)
 }
 
 fn jog_increment(requested: f64, span: f64, resolution: f64) -> Result<f64, String> {
@@ -74,6 +127,24 @@ fn jog_increment(requested: f64, span: f64, resolution: f64) -> Result<f64, Stri
     }
     Ok(requested.signum() * requested.abs().min((span / 1000.).max(resolution)))
 }
+fn native_increment(
+    rig: &MotionRig,
+    axis: usize,
+    raw: f64,
+    amount: f64,
+    unit: AlignmentUnit,
+) -> Result<f64, String> {
+    if !amount.is_finite() || amount == 0. {
+        return Err("Motion increment must be finite and nonzero".into());
+    }
+    if unit == AlignmentUnit::Native {
+        return Ok(amount);
+    }
+    let p0 = physical_target(rig, axis, raw)?[axis].ok_or("No coordinate scale")?;
+    let p1 = physical_target(rig, axis, raw + 1.)?[axis].ok_or("No coordinate scale")?;
+    Ok(amount / (p1 - p0))
+}
+
 fn native_position(position: &Position, axis: usize) -> Option<f64> {
     match axis {
         0 => position.delay_stage_mm,
@@ -139,10 +210,16 @@ impl Session {
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
         let axis = action.axis();
-        if !matches!(
-            (kind, axis),
-            (MotionKind::Delay, 0) | (MotionKind::Scanner, 1..=2)
-        ) {
+        let axes = action.axes();
+        if !axes.iter().any(|used| *used)
+            || axes.iter().enumerate().any(|(axis, used)| {
+                *used
+                    && !matches!(
+                        (kind, axis),
+                        (MotionKind::Delay, 0) | (MotionKind::Scanner, 1..=2)
+                    )
+            })
+        {
             return Err("Axis does not belong to this device".into());
         }
         let key = (kind, id.clone());
@@ -152,7 +229,11 @@ impl Session {
             .remove(&key)
             .ok_or("Connect the alignment device first")?;
         let result: Result<(), String> = (|| {
-            if !entry.state.connected[axis] {
+            if axes
+                .iter()
+                .zip(entry.state.connected)
+                .any(|(used, connected)| *used && !connected)
+            {
                 return Err("Connect this axis first".into());
             }
             let micro = entry
@@ -181,6 +262,12 @@ impl Session {
                     .unwrap_or(0.0001)
             };
             let jog = matches!(action, AlignmentAction::Jog { .. });
+            let scanner = match axis {
+                1 => effective.x.as_ref(),
+                2 => effective.y.as_ref(),
+                _ => None,
+            };
+            let use_native_step = scanner.is_some_and(|config| !config.software_hysteresis.enabled);
             let hold = self.hold.clone();
             let source = self
                 .gpib
@@ -238,6 +325,17 @@ impl Session {
                         cancel,
                         Some(&mut progress),
                     )?;
+                } else if let AlignmentAction::Step { amount, unit, .. } = action
+                    && use_native_step
+                {
+                    let raw = native_position(&position, axis).ok_or("No current position")?;
+                    let delta = native_increment(&entry.rig, axis, raw, amount, unit)?;
+                    position = entry.rig.step_scanner_relative(
+                        axis,
+                        delta,
+                        cancel,
+                        Some(&mut progress),
+                    )?;
                 } else {
                     let target = match action {
                         AlignmentAction::End { positive, .. } => physical_target(
@@ -247,21 +345,9 @@ impl Session {
                         )?,
                         AlignmentAction::Step { amount, unit, .. }
                         | AlignmentAction::Jog { amount, unit, .. } => {
-                            if !amount.is_finite() || amount == 0. {
-                                return Err("Motion increment must be finite and nonzero".into());
-                            }
                             let raw =
                                 native_position(&position, axis).ok_or("No current position")?;
-                            let requested = if unit == AlignmentUnit::Native {
-                                amount
-                            } else {
-                                // Derive a relative scale without assuming a particular direction or optical path.
-                                let p0 = physical_target(&entry.rig, axis, raw)?[axis]
-                                    .ok_or("No coordinate scale")?;
-                                let p1 = physical_target(&entry.rig, axis, raw + 1.)?[axis]
-                                    .ok_or("No coordinate scale")?;
-                                amount / (p1 - p0)
-                            };
+                            let requested = native_increment(&entry.rig, axis, raw, amount, unit)?;
                             let delta = if jog {
                                 // Bound each outstanding move. A missing GUI lease cannot enqueue further travel.
                                 jog_increment(requested, maximum - minimum, native_resolution)?
@@ -278,10 +364,15 @@ impl Session {
                             }
                             physical_target(&entry.rig, axis, raw_target)?
                         }
+                        AlignmentAction::MoveTo { targets, unit } => {
+                            absolute_target(&entry.rig, &effective, micro, targets, unit)?
+                        }
                         AlignmentAction::Initialize { .. } => unreachable!(),
                     };
                     let mut approach = [false; 3];
-                    approach[axis] = !jog && axis != 0;
+                    for (index, used) in axes.into_iter().enumerate() {
+                        approach[index] = used && !jog && index != 0;
+                    }
                     position = entry.rig.move_to_with_progress(
                         target,
                         approach,
@@ -345,6 +436,10 @@ mod tests {
                     }
                 }
                 "1TS" => Ok("1TS000032".into()),
+                "1THU" => Ok(format!("1THU{}", self.position)),
+                "1SLU?" => Ok("1SLU-10".into()),
+                "1SRU?" => Ok("1SRU10".into()),
+                "1TE" => Ok("1TE@".into()),
                 other => Err(format!("unexpected query {other}")),
             }
         }
@@ -355,6 +450,10 @@ mod tests {
                 self.position = target
                     .parse()
                     .map_err(|_| format!("unexpected target {target}"))?;
+            } else if let Some(increment) = command.strip_prefix("1PRU") {
+                self.position += increment
+                    .parse::<f64>()
+                    .map_err(|_| format!("unexpected increment {increment}"))?;
             }
             Ok(())
         }
@@ -435,7 +534,7 @@ mod tests {
                 Ok(Box::new(AlignmentBus {
                     log: log.clone(),
                     position_reads: 0,
-                    fail_position_read: 5,
+                    fail_position_read: 6,
                     fail_stop: false,
                     position: 1.,
                 }))
@@ -476,8 +575,16 @@ mod tests {
             vec![
                 "1TPU",
                 "1TPU",
+                "1THU",
+                "1SLU?",
+                "1SRU?",
                 "1TS",
-                "1PAU2.0000",
+                "1TS",
+                "1THU",
+                "1TPU",
+                "1TE",
+                "1PRU1.0000",
+                "1TE",
                 "1TS",
                 "1TPU",
                 "1TPU",
@@ -536,12 +643,140 @@ mod tests {
             vec!["1TPU", "1TPU", "1STU", "1TS", "1TPU"]
         );
     }
+    fn move_to_session(log: &Arc<Mutex<Vec<String>>>) -> Session {
+        // Nontrivial U-axis projection: reversed, scaled and offset.
+        let mut motion = alignment_motion();
+        if let Some(x) = &mut motion.x {
+            x.origin_pos = Some(1.5);
+            x.sample_um_per_unit = 2.5;
+            x.direction = 1;
+        }
+        let rig = MotionRig::open_with_bus_factory(&motion, {
+            let log = log.clone();
+            move |_, _, _, _, _, _| {
+                Ok(Box::new(AlignmentBus {
+                    log: log.clone(),
+                    position_reads: 0,
+                    fail_position_read: 0,
+                    fail_stop: false,
+                    position: 1.,
+                }))
+            }
+        })
+        .unwrap();
+        alignment_session(rig, motion)
+    }
+
+    fn move_to(
+        session: &mut Session,
+        targets: [Option<f64>; 3],
+        unit: AlignmentUnit,
+    ) -> Result<(), String> {
+        let cancel = AtomicBool::new(false);
+        let (send, _) = std::sync::mpsc::sync_channel(64);
+        session.alignment(
+            MotionKind::Scanner,
+            "alignment-scanner".into(),
+            AlignmentAction::MoveTo { targets, unit },
+            &cancel,
+            &send,
+        )
+    }
+
+    fn absolute_writes(log: &Arc<Mutex<Vec<String>>>) -> Vec<String> {
+        log.lock()
+            .unwrap()
+            .iter()
+            .filter(|command| command.starts_with("1PA"))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn move_to_projects_physical_and_native_targets_exactly_once() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut session = move_to_session(&log);
+        // Physical −5 µm → raw 1.5 + (−5 / −2.5) = 3.5, one absolute write.
+        move_to(
+            &mut session,
+            [None, Some(-5.), None],
+            AlignmentUnit::Physical,
+        )
+        .unwrap();
+        assert_eq!(absolute_writes(&log), ["1PAU3.5000"]);
+        assert_eq!(session.state.position.physical[1], Some(-5.));
+        // Other selected axes keep their last readback.
+        assert_eq!(session.state.position.physical[2], Some(30.));
+        log.lock().unwrap().clear();
+        // Native targets are raw controller units, sent unchanged.
+        move_to(
+            &mut session,
+            [None, Some(4.25), None],
+            AlignmentUnit::Native,
+        )
+        .unwrap();
+        assert_eq!(absolute_writes(&log), ["1PAU4.2500"]);
+        assert_eq!(
+            session.state.position.physical[1],
+            Some((4.25 - 1.5) * -2.5)
+        );
+    }
+
+    #[test]
+    fn move_to_refuses_out_of_bounds_foreign_axes_and_corrected_before_io() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut session = move_to_session(&log);
+        for (targets, unit) in [
+            // Outside the −10…10 native travel.
+            ([None, Some(12.), None], AlignmentUnit::Native),
+            // Physical −40 µm → raw 17.5, outside the travel.
+            ([None, Some(-40.), None], AlignmentUnit::Physical),
+            ([None, Some(f64::NAN), None], AlignmentUnit::Physical),
+            // The delay axis does not belong to a scanner.
+            ([Some(1.), None, None], AlignmentUnit::Physical),
+            // Y is not connected on this scanner.
+            ([None, None, Some(1.)], AlignmentUnit::Physical),
+            // Corrected offsets are resolved by the GUI, never guessed here.
+            ([None, Some(1.), None], AlignmentUnit::Corrected),
+            ([None, None, None], AlignmentUnit::Physical),
+        ] {
+            assert!(
+                move_to(&mut session, targets, unit).is_err(),
+                "{targets:?} {unit:?}"
+            );
+            assert!(absolute_writes(&log).is_empty(), "{targets:?} {unit:?}");
+        }
+    }
+
+    #[test]
+    fn move_to_is_never_accepted_from_json() {
+        let error = serde_json::from_value::<AlignmentAction>(serde_json::json!({
+            "action": "move_to", "targets": [null, 1.0, null], "unit": "physical",
+        }));
+        assert!(error.is_err());
+    }
+
     #[test]
     fn jog_segments_are_bounded_and_respect_resolution() {
         assert_eq!(jog_increment(100., 12., 0.0002).unwrap(), 0.012);
         assert_eq!(jog_increment(-100., 12., 0.0002).unwrap(), -0.012);
         assert!(jog_increment(0.00001, 12., 0.0002).is_err());
         assert!(jog_increment(f64::NAN, 12., 0.0002).is_err());
+        // Native (unbounded) jog is simulation-only: without a documented
+        // device watchdog, hardware holds stay on these bounded segments.
+        use trkr_motion::native_jog::{NativeJogModel, hardware_native_jog};
+        for model in [
+            NativeJogModel::Shot302Gs {
+                axis: 1,
+                axis_count: 2,
+            },
+            NativeJogModel::ConexCc {
+                address: 1,
+                travel: [-6., 6.],
+            },
+        ] {
+            assert!(hardware_native_jog(model).is_err());
+        }
     }
     #[test]
     fn hold_requires_a_recent_live_pointer_lease() {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.2
+
+- Move Signal and Power Monitor into Alignment with optional continuous recording and a Motion Only view. / AlignmentにSignal・Power Monitorを配置し、連続記録とMotion Only表示を追加しました。
+- Keep Signal Monitor recording when an Alignment motion card stops its active move. / Alignmentの機器カードで移動を止めても、Signal Monitorの記録を継続できます。
+- Show measured point coordinates on hover, improve finite-run ETA and fix clipped Windows position readouts. / 測定点のホバー座標表示と有限測定の残り時間を改善し、Windowsで位置表示が欠ける問題を修正しました。
+
 ## 1.0.1
 
 - The common Python SDK can stop a specified job and confirm its cleanup. / 共通Python SDKで測定を指定し、停止後の処理を確認できます。

@@ -950,8 +950,16 @@ fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() 
     assert_eq!(app.eta_label(start), "Estimating…");
     app.snapshot.rows = 2;
     app.scan_progress[index].0 = 2;
-    app.eta.observe(1, 3.0, start + Duration::from_secs(3));
-    app.eta.observe(2, 6.0, start + Duration::from_secs(6));
+    for (row, seconds) in [(1, 3), (2, 6)] {
+        app.eta.observe(
+            row,
+            engine::timing::ProgressTiming {
+                started_at: start,
+                completed_at: start + Duration::from_secs(seconds),
+                points_per_line: None,
+            },
+        );
+    }
     assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
     app.snapshot.rows = 10;
     app.snapshot.phase = "Returning x".into();
@@ -979,10 +987,17 @@ fn private_eta_clock_does_not_change_sample_json_contract() {
         position: trkr_motion::Position::default(),
     };
     let original = serde_json::to_value(&sample).unwrap();
-    sample.captured_at = Some(Instant::now());
+    let now = Instant::now();
+    sample.captured_at = Some(now);
+    sample.timing.progress = Some(engine::timing::ProgressTiming {
+        started_at: now,
+        completed_at: now,
+        points_per_line: Some(4),
+    });
     assert_eq!(serde_json::to_value(&sample).unwrap(), original);
     let restored: Sample = serde_json::from_value(original).unwrap();
     assert!(restored.captured_at.is_none());
+    assert!(restored.timing.progress.is_none());
 }
 
 #[test]
@@ -1276,4 +1291,287 @@ fn lockin_settings_use_readback_choices_and_keep_ac_gain_distinct_from_slope() {
     // An unqualified (null) readback selects nothing rather than a guess.
     app.snapshot.lockin["Sensitivity"] = Value::Null;
     assert_eq!(app.lockin_choices("sensitivity", "Sensitivity").1, None);
+}
+
+#[test]
+fn motion_card_move_is_enabled_during_a_monitor_only_for_ready_handed_off_axes() {
+    let ready = engine::ParallelMotionStatus {
+        axes: [true, true, false],
+        accepting: true,
+        ..Default::default()
+    };
+    // Idle behavior is unchanged: connected hardware only, never Demo.
+    assert!(motion_move_enabled(true, false, false, false));
+    assert!(!motion_move_enabled(false, false, false, false));
+    assert!(!motion_move_enabled(true, true, false, false));
+    // A normal run (no executor) keeps every Move disabled.
+    assert!(!parallel_owns(None, true, false, 1));
+    assert!(!motion_move_enabled(
+        true,
+        false,
+        true,
+        parallel_move_ready(None, 1)
+    ));
+    // Hardware Signal Monitor: handed-off axes are movable, others are not.
+    for (axis, owned) in [(0, true), (1, true), (2, false)] {
+        assert_eq!(parallel_owns(Some(&ready), true, false, axis), owned);
+        let enabled =
+            motion_move_enabled(true, false, true, parallel_move_ready(Some(&ready), axis));
+        assert_eq!(enabled, owned, "axis {axis}");
+    }
+    // Demo never hands off or moves hardware, even if a status were present.
+    assert!(!parallel_owns(Some(&ready), true, true, 1));
+    assert!(!motion_move_enabled(true, true, true, true));
+    // One move at a time, nothing after a fault or once the run stops accepting.
+    for refused in [
+        engine::ParallelMotionStatus {
+            moving: true,
+            ..ready.clone()
+        },
+        engine::ParallelMotionStatus {
+            fault: Some("earlier failure".into()),
+            ..ready.clone()
+        },
+        engine::ParallelMotionStatus {
+            accepting: false,
+            ..ready.clone()
+        },
+    ] {
+        assert!(!parallel_move_ready(Some(&refused), 1), "{refused:?}");
+    }
+}
+
+#[test]
+fn move_during_a_run_never_reaches_the_worker_queue() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.snapshot.running = true;
+    // No hardware monitor owns any axis: the move is refused, not queued.
+    app.move_axis(1, 1.0);
+    assert!(!app.controller.has_pending());
+    assert_ne!(app.status, "Moving during Signal Monitor…");
+    app.source_demo = true;
+    app.move_axis(0, 1.0);
+    assert!(!app.controller.has_pending());
+    assert_eq!(app.status, "Demo runs never move hardware");
+}
+
+fn render_app_frame(app: &mut App, context: &egui::Context, size: egui::Vec2) {
+    let mut frame = eframe::Frame::_new_kittest();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let _ = context.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+}
+
+fn geometry_rect(app: &App, key: &str) -> egui::Rect {
+    let [x, y, w, h] = app.geometry[key];
+    precision::rect(x, y, w, h)
+}
+
+#[test]
+fn measurement_tabs_exclude_signal_monitor_and_alignment_hosts_it() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    let size = egui::Vec2::new(precision::Columns::minimum_width(false, false), 900.);
+    app.switch_workflow(Workflow::Trkr);
+    render_app_frame(&mut app, &context, size);
+    assert!(!app.alignment_tab);
+    assert!(!app.geometry.contains_key("alignment_widget"));
+    // The tab row starts with TRKR; Signal Monitor has no tab of its own.
+    let tabs = geometry_rect(&app, "measurement_tabs");
+    assert_eq!(geometry_rect(&app, "tab_trkr").min.x, tabs.min.x);
+    let mut right = tabs.min.x;
+    for workflow in MEASUREMENT_TABS {
+        let tab = geometry_rect(&app, &format!("tab_{}", workflow.key()));
+        assert_eq!(tab.min.x, right, "{workflow:?}");
+        right = tab.max.x;
+    }
+    assert!(geometry_rect(&app, "tab_alignment").min.x > right);
+    assert_eq!(
+        app.geometry["tab_alignment"],
+        app.geometry[&format!("tab_{}", Workflow::SignalMonitor.key())]
+    );
+    // Measurement pages keep their geometry contract.
+    assert!(app.geometry.contains_key("standard_plot_widget"));
+    assert!(!app.geometry.contains_key("monitor_move_group"));
+
+    // Startup and API selections of Signal Monitor land on Alignment.
+    app.workflow = Workflow::SignalMonitor;
+    render_app_frame(&mut app, &context, size);
+    assert!(app.alignment_tab);
+    app.switch_workflow(Workflow::Srkr);
+    assert!(!app.alignment_tab);
+    app.open_alignment();
+    assert!(app.alignment_tab);
+    assert_eq!(app.workflow, Workflow::SignalMonitor);
+    assert!(!app.snapshot.running);
+    assert!(!app.controller.has_pending());
+}
+
+#[test]
+fn alignment_shows_monitor_controls_plots_and_motion_panels_on_one_screen() {
+    for height in [700., 900., 1200.] {
+        let context = egui::Context::default();
+        let mut app = App::with_context(&context, false);
+        app.open_alignment();
+        let size = egui::Vec2::new(precision::Columns::minimum_width(false, false), height);
+        render_app_frame(&mut app, &context, size);
+        for key in [
+            "alignment_signal_mode",
+            "alignment_settings_button",
+            "alignment_recording_name",
+            "start_button",
+            "alignment_monitor_plots",
+            "alignment_widget",
+        ] {
+            assert!(app.geometry.contains_key(key), "{key} at {height}");
+        }
+        for key in [
+            "output_group",
+            "output_dir_edit",
+            "monitor_move_group",
+            "signal_interval_spin",
+        ] {
+            assert!(!app.geometry.contains_key(key), "{key}");
+        }
+        let plots = geometry_rect(&app, "alignment_monitor_plots");
+        let panels = geometry_rect(&app, "alignment_widget");
+        let center = geometry_rect(&app, "center_panel");
+        assert!(plots.height() >= 130., "{height}");
+        assert!(panels.min.y >= plots.max.y + 8.);
+        assert!(panels.max.y <= center.max.y && panels.height() >= 320.);
+        // Idle, unconnected Alignment never queues device work.
+        assert!(!app.snapshot.running);
+        assert!(!app.controller.has_pending());
+    }
+}
+
+#[test]
+fn alignment_starts_signal_monitor_but_never_a_scan() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.source_demo = true;
+    app.open_alignment();
+    let monitor = app.plan().clone();
+    assert_eq!(monitor.workflow, Workflow::SignalMonitor);
+    assert!(app.start_availability(&monitor).allows(&monitor));
+    let scan = app.plans[App::ix(Workflow::Trkr)].clone();
+    assert!(!app.start_availability(&scan).allows(&scan));
+    app.switch_workflow(Workflow::Trkr);
+    assert!(app.start_availability(&scan).allows(&scan));
+}
+
+#[test]
+fn until_stop_is_a_local_gui_choice_with_points_as_default() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.open_alignment();
+    // Points stays the default; finite monitors keep their total and ETA.
+    assert!(!app.monitor_until_stop);
+    app.scan_progress[App::ix(Workflow::SignalMonitor)] = (4, 10);
+    assert!(!app.showing_until_stop_run());
+    // An Continuous run shows rows only and never estimates an end.
+    app.monitor_run_until_stop = true;
+    app.active_workflow = Workflow::SignalMonitor;
+    app.snapshot.running = true;
+    assert!(app.showing_until_stop_run());
+    assert_eq!(app.eta_label(Instant::now()), "Continuous");
+    app.snapshot.running = false;
+    assert_eq!(app.eta_label(Instant::now()), "-");
+    // Other workflows never show the Continuous progress.
+    app.switch_workflow(Workflow::Trkr);
+    assert!(!app.showing_until_stop_run());
+    // Selecting Continuous is not persisted into the plan or profile.
+    app.monitor_until_stop = true;
+    app.sync_all_plans().unwrap();
+    let plan = app.plans[App::ix(Workflow::SignalMonitor)].clone();
+    assert_eq!(plan, app.settings.plan(Workflow::SignalMonitor).unwrap());
+    assert!(!app.settings.raw.to_string().contains("until_stop"));
+}
+
+#[test]
+fn until_stop_demo_monitor_runs_past_points_and_stops_cleanly() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    app.source_demo = true;
+    app.open_alignment();
+    app.monitor_until_stop = true;
+    app.pm().n_points = 2;
+    app.pm().interval_s = 0.;
+    let dir = tempfile::tempdir().unwrap();
+    let index = App::ix(Workflow::SignalMonitor);
+    app.outputs[index].dir = dir.path().display().to_string();
+    app.outputs[index].filename = "until-stop".into();
+    app.start();
+    assert!(app.monitor_run_until_stop, "{}", app.status);
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while app.snapshot.rows < 6 && Instant::now() < deadline {
+        app.receive();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // More rows than Points: the monitor did not stop at n_points.
+    assert!(app.snapshot.rows >= 6, "rows {}", app.snapshot.rows);
+    assert_eq!(app.snapshot.total, 0);
+    assert!(app.trace.len() <= MAX_TRACE);
+    app.controller.stop();
+    while (app.snapshot.running || app.measurement_pending) && Instant::now() < deadline {
+        app.receive();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!app.snapshot.running && !app.measurement_pending);
+    assert_eq!(app.snapshot.phase, "Stopped");
+    // Every read row was recorded as it was read, beyond the Points value.
+    let csv = std::fs::read_to_string(app.output_paths[index].as_ref().unwrap()).unwrap();
+    assert!(csv.lines().count() > 1 + 6, "{} lines", csv.lines().count());
+    // The next monitor is finite again only when Points is chosen.
+    app.monitor_until_stop = false;
+    app.outputs[index].filename = "finite".into();
+    app.start();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while (app.snapshot.running || app.measurement_pending) && Instant::now() < deadline {
+        app.receive();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!app.monitor_run_until_stop);
+    assert_eq!(app.trace.len(), 2);
+}
+
+#[test]
+fn alignment_monitor_capture_is_simulated_and_keeps_alignment_for_every_shot() {
+    let context = egui::Context::default();
+    let mut app = App::with_context(&context, false);
+    let directory = tempfile::tempdir().unwrap();
+    app.enable_layout_capture(
+        directory.path().join("capture"),
+        Arc::new(AtomicBool::new(false)),
+        "alignment-monitor",
+    );
+    assert!(app.alignment_tab);
+    assert!(app.source_demo && !app.demo_viewer);
+    assert_eq!(app.workflow, Workflow::SignalMonitor);
+    assert!(!app.trace.is_empty());
+    // The visible monitor Output must not reveal an operator results path.
+    assert!(app.outputs.iter().all(|output| output.dir == "demo/runs"));
+    let smoke = app.smoke.as_ref().unwrap();
+    assert!(smoke.layout_only && smoke.keep_alignment);
+    let size = egui::Vec2::new(precision::Columns::minimum_width(false, false), 900.);
+    for _ in 0..3 {
+        render_app_frame(&mut app, &context, size);
+    }
+    assert!(app.alignment_tab);
+    assert!(app.geometry.contains_key("alignment_widget"));
+    assert!(app.geometry.contains_key("alignment_recording_name"));
+    assert!(!app.snapshot.running);
+    assert!(!app.controller.has_pending());
+
+    // Other captures still visit each measurement tab.
+    let mut app = App::with_context(&context, false);
+    app.enable_layout_capture(
+        directory.path().join("capture-default"),
+        Arc::new(AtomicBool::new(false)),
+        "",
+    );
+    assert!(!app.smoke.as_ref().unwrap().keep_alignment);
 }
