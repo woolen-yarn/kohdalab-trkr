@@ -1499,6 +1499,38 @@ fn switching_tabs_keeps_the_same_content_edges_and_side_panels() {
 }
 
 #[test]
+fn long_signal_monitor_trace_keeps_start_and_latest_samples() {
+    let sample = |i| Sample {
+        elapsed: f64::from(i),
+        recording: Default::default(),
+        timing: Default::default(),
+        captured_at: None,
+        target: trkr_core::Target {
+            fast: f64::from(i),
+            slow: None,
+            corrected: [0.; 3],
+            physical: [0.; 3],
+            line: 0,
+        },
+        signal: trkr_core::Signal::default(),
+        position: Default::default(),
+    };
+    let mut trace = Vec::new();
+    for i in 0..=100 {
+        trace.push(sample(i));
+        trim_plot_trace(&mut trace, Workflow::SignalMonitor, 10);
+        assert!(trace.len() <= 10);
+        assert_eq!(trace.first().unwrap().elapsed, 0.);
+        assert_eq!(trace.last().unwrap().elapsed, f64::from(i));
+        assert!(
+            trace
+                .windows(2)
+                .all(|pair| pair[0].elapsed < pair[1].elapsed)
+        );
+    }
+}
+
+#[test]
 fn alignment_starts_signal_monitor_but_never_a_scan() {
     let context = egui::Context::default();
     let mut app = App::with_context(&context, false);

@@ -1442,9 +1442,7 @@ impl App {
                         &mut self.saved_traces[Self::ix(self.active_workflow)]
                     };
                     trace.push(s);
-                    if trace.len() > MAX_TRACE {
-                        trace.drain(..MAX_TRACE / 2);
-                    }
+                    trim_plot_trace(trace, self.active_workflow, MAX_TRACE);
                 }
                 Event::Live(reading) => {
                     self.snapshot.signal = Some(reading.signal);
@@ -4617,6 +4615,25 @@ impl eframe::App for App {
         self.notifications.show(&ctx);
     }
 }
+fn trim_plot_trace(trace: &mut Vec<Sample>, workflow: Workflow, limit: usize) {
+    let count = trace.len();
+    if count <= limit {
+        return;
+    }
+    if workflow == Workflow::SignalMonitor {
+        // Keep the start and most recent sample while bounding the display
+        // memory. Recording writes all samples independently of this trace.
+        let mut index = 0_usize;
+        trace.retain(|_| {
+            let keep = index.is_multiple_of(2) || index == count - 1;
+            index += 1;
+            keep
+        });
+    } else {
+        trace.drain(..limit / 2);
+    }
+}
+
 fn lockin_health_text(settings: &Value) -> Option<&'static str> {
     if settings
         .get("Status Error")

@@ -257,13 +257,8 @@ impl App {
             && !self.demo_viewer
             && self.snapshot.devices[0]
             && self.live.origin() == Some(ReadingOrigin::Hardware);
-        let use_live = hardware_live && !self.signal_recording();
+        let use_live = hardware_live && !self.signal_recording() && latest.is_none();
         let fresh = use_live && self.live.recent();
-        let newest = if use_live {
-            self.live.newest(fresh)
-        } else {
-            latest.map_or(0., |sample| sample.elapsed)
-        };
         let base_unit = if use_live {
             self.display_signal_unit()
         } else {
@@ -314,12 +309,11 @@ impl App {
             .map(|signal| format!("{:.4} {unit}", mode.values(signal)[index] * factor))
             .unwrap_or_else(|| format!("— {unit}"));
         let points = if use_live {
-            self.live.points_at(mode, index, scale, newest)
+            self.live
+                .points_at(mode, index, scale, self.live.newest(fresh))
         } else {
             self.trace
                 .iter()
-                .rev()
-                .take_while(|s| newest - s.elapsed <= 30.)
                 .filter_map(|s| {
                     let value = mode.values(s.signal)[index] * factor;
                     ((angle
@@ -327,11 +321,8 @@ impl App {
                             s.recording.signal_unit == last.recording.signal_unit
                         }))
                         && value.is_finite())
-                    .then_some([s.elapsed - newest, value])
+                    .then_some([s.elapsed, value])
                 })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
                 .collect()
         };
         let color = if index == 0 {
@@ -355,9 +346,13 @@ impl App {
         draw_monitor_trend(
             ui,
             chart,
-            egui::Id::new(("alignment-signal", name)),
+            egui::Id::new(("alignment-signal", name, use_live, self.plot_epoch)),
             (name, unit, points, color),
-            true,
+            if use_live {
+                TimeAxis::Recent
+            } else {
+                TimeAxis::Elapsed
+            },
         );
     }
 
@@ -508,12 +503,18 @@ impl App {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(super) enum TimeAxis {
+    Recent,
+    Elapsed,
+}
+
 pub(super) fn draw_monitor_trend(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     id: egui::Id,
     (name, unit, points, color): (&str, &str, Vec<[f64; 2]>, Color32),
-    show_time: bool,
+    time_axis: TimeAxis,
 ) {
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -521,21 +522,26 @@ pub(super) fn draw_monitor_trend(
             .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
+            let (start, label) = match time_axis {
+                TimeAxis::Recent => (-30., "Time relative to latest (s)"),
+                TimeAxis::Elapsed => (0., "Elapsed (s)"),
+            };
             Plot::new(id)
+                .id(id)
                 .width(rect.width())
                 .height(rect.height() - 2.)
                 .show_background(false)
-                .show_axes([show_time, true])
+                .show_axes([true, true])
                 .show_grid([true, true])
                 .allow_zoom(false)
                 .allow_scroll(false)
                 .allow_drag(false)
-                .include_x(-30.)
+                .include_x(start)
                 .include_x(0.)
                 .x_axis_formatter(|tick, _| format!("{} s", tick.value))
                 .y_axis_min_width(62.)
                 .label_formatter(|name, point| {
-                    crate::presentation::point_label(name, "Time (s)", point.x, point.y)
+                    crate::presentation::point_label(name, label, point.x, point.y)
                 })
                 .show(ui, |plot| {
                     plot.line(
@@ -546,6 +552,33 @@ pub(super) fn draw_monitor_trend(
                 });
         },
     );
+}
+
+#[cfg(test)]
+#[test]
+fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
+    let ctx = egui::Context::default();
+    let mut app = App::with_context(&ctx, false);
+    app.enable_alignment_monitor_preview();
+    for sample in &mut app.trace {
+        sample.elapsed *= 3.;
+    }
+    let end = app.trace.last().unwrap().elapsed;
+    assert!(end > 60.);
+    let _ = ctx.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                Vec2::new(800., 300.),
+            )),
+            ..Default::default()
+        },
+        |ui| app.alignment_signal_plot(ui, ui.max_rect()),
+    );
+    let id = egui::Id::new(("alignment-signal", "X", false, app.plot_epoch));
+    let bounds = egui_plot::PlotMemory::load(&ctx, id).unwrap();
+    assert!(bounds.bounds().min()[0] <= 0.);
+    assert!(bounds.bounds().max()[0] >= end);
 }
 
 #[cfg(all(test, feature = "gui-interaction-tests"))]

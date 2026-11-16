@@ -570,7 +570,7 @@ impl App {
                 points,
                 crate::live_view::TEAL,
             ),
-            true,
+            super::alignment_workspace::TimeAxis::Recent,
         );
     }
 
