@@ -36,15 +36,15 @@ impl Estimate {
             .points_per_line
             .map_or(0, |width| (total - 1) / width - (last.row - 1) / width);
         let ordinary = remaining - starts;
-        // Avoid presenting a fast-axis-only estimate when unmeasured line
-        // changes are still ahead. Single-point lines need no ordinary pace.
+        // Before the first observed line transition, use the ordinary
+        // pace as a preliminary estimate for turns as well.
         let within = if ordinary > 0 {
             last.within_line_seconds?
         } else {
             0.
         };
         let line = if starts > 0 {
-            last.line_start_seconds?
+            last.line_start_seconds.or(last.within_line_seconds)?
         } else {
             0.
         };
@@ -96,7 +96,7 @@ mod tests {
         let mut eta = Estimate::default();
         clock.complete(1, at(20));
         eta.observe(clock.complete(2, at(22)));
-        assert_eq!(eta.remaining(8, at(22)), None);
+        assert_eq!(eta.remaining(8, at(22)), Some(12.));
         clock.complete(3, at(24));
         clock.complete(4, at(34));
         eta.observe(clock.complete(5, at(36)));

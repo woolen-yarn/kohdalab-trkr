@@ -1509,7 +1509,14 @@ fn long_signal_monitor_trace_keeps_start_and_latest_samples() {
     };
     let mut trace = Vec::new();
     for i in 0..=100 {
-        trace.push(sample(i));
+        let mut point = sample(i);
+        if i == 3 {
+            point.signal.x_v = -100.;
+        }
+        if i == 6 {
+            point.signal.y_v = 200.;
+        }
+        trace.push(point);
         trim_plot_trace(&mut trace, Workflow::SignalMonitor, 10);
         assert!(trace.len() <= 10);
         assert_eq!(trace.first().unwrap().elapsed, 0.);
@@ -1520,6 +1527,8 @@ fn long_signal_monitor_trace_keeps_start_and_latest_samples() {
                 .all(|pair| pair[0].elapsed < pair[1].elapsed)
         );
     }
+    assert!(trace.iter().any(|point| point.signal.x_v == -100.));
+    assert!(trace.iter().any(|point| point.signal.y_v == 200.));
 }
 
 #[test]

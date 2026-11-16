@@ -47,6 +47,7 @@ impl SignalChannel {
 pub(super) struct Workspace {
     pub monitor: MonitorTab,
     signal: SignalChannel,
+    pub(super) show_last_recording: bool,
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
     device_draft: Option<super::measurement_settings::Draft>,
@@ -188,8 +189,23 @@ impl App {
         self.alignment_workspace.settings = Some(tab);
     }
 
+    fn alignment_hardware_signal_available(&self) -> bool {
+        !self.source_demo
+            && !self.demo_viewer
+            && self.snapshot.devices[0]
+            && self.live.origin() == Some(ReadingOrigin::Hardware)
+    }
+
+    fn alignment_uses_live_signal(&self) -> bool {
+        self.alignment_hardware_signal_available()
+            && !self.signal_recording()
+            && (!self.alignment_workspace.show_last_recording || self.trace.is_empty())
+    }
+
     fn alignment_signal_monitor(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
         let recording = self.signal_recording();
+        let can_switch_source =
+            !recording && !self.trace.is_empty() && self.alignment_hardware_signal_available();
         let mut form = precision::Form::new(ui, &mut self.geometry, panel.min);
         form.combo(
             "alignment_signal_mode",
@@ -197,6 +213,25 @@ impl App {
             &mut self.alignment_workspace.signal,
             &SignalChannel::CHOICES,
         );
+        if can_switch_source {
+            let (label, hint) = if self.alignment_workspace.show_last_recording {
+                ("Last recording", "Switch to the live signal")
+            } else {
+                ("Live", "Switch to the last recording")
+            };
+            if form
+                .ui
+                .put(
+                    precision::rect(panel.left() + 100., panel.top(), 114., 26.),
+                    egui::Button::new(label).min_size(Vec2::new(114., 26.)),
+                )
+                .on_hover_text(hint)
+                .clicked()
+            {
+                self.alignment_workspace.show_last_recording =
+                    !self.alignment_workspace.show_last_recording;
+            }
+        }
         let settings = form.button(
             "alignment_settings_button",
             precision::rect(panel.width() - 88., 0., 88., 26.),
@@ -251,11 +286,7 @@ impl App {
     fn alignment_signal_plot(&self, ui: &mut egui::Ui, area: egui::Rect) {
         let (mode, index, name) = self.alignment_workspace.signal.display();
         let latest = self.trace.last();
-        let hardware_live = !self.source_demo
-            && !self.demo_viewer
-            && self.snapshot.devices[0]
-            && self.live.origin() == Some(ReadingOrigin::Hardware);
-        let use_live = hardware_live && !self.signal_recording() && latest.is_none();
+        let use_live = self.alignment_uses_live_signal();
         let fresh = use_live && self.live.recent();
         let base_unit = if use_live {
             self.live.unit().unwrap_or("unknown").into()
@@ -578,6 +609,26 @@ pub(super) fn draw_recent_trend(
                 });
         },
     );
+}
+
+#[cfg(test)]
+#[test]
+fn completed_recording_can_return_to_live_and_be_viewed_again() {
+    let ctx = egui::Context::default();
+    let mut app = App::with_context(&ctx, false);
+    app.enable_alignment_monitor_preview();
+    app.source_demo = false;
+    app.snapshot.devices[0] = true;
+    app.live
+        .push(trkr_core::Signal::default(), ReadingOrigin::Hardware, "V");
+    assert!(!app.trace.is_empty());
+    assert!(app.alignment_uses_live_signal());
+    app.alignment_workspace.show_last_recording = true;
+    assert!(!app.alignment_uses_live_signal());
+    app.alignment_workspace.show_last_recording = false;
+    app.snapshot.running = true;
+    app.active_workflow = Workflow::SignalMonitor;
+    assert!(!app.alignment_uses_live_signal());
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ pub struct History {
     samples: VecDeque<(f64, Signal)>,
     origin: Option<ReadingOrigin>,
     unit: String,
+    unqualified: bool,
     started: Instant,
 }
 impl Default for History {
@@ -15,6 +16,7 @@ impl Default for History {
             samples: VecDeque::new(),
             origin: None,
             unit: String::new(),
+            unqualified: false,
             started: Instant::now(),
         }
     }
@@ -24,6 +26,7 @@ impl History {
         self.samples.clear();
         self.origin = None;
         self.unit.clear();
+        self.unqualified = false;
         self.started = Instant::now();
     }
     pub fn connection_changed(&mut self, previous: bool, current: bool) {
@@ -33,6 +36,14 @@ impl History {
     }
     pub fn push(&mut self, signal: Signal, origin: ReadingOrigin, unit: &str) {
         let unit = if unit.is_empty() { "unknown" } else { unit };
+        if self.origin == Some(origin)
+            && unit == "unknown"
+            && matches!(self.unit.as_str(), "V" | "A")
+        {
+            self.unqualified = true;
+            return;
+        }
+        self.unqualified = false;
         if self.origin != Some(origin) || self.unit != unit {
             self.clear();
             self.origin = Some(origin);
@@ -68,12 +79,17 @@ impl History {
     }
 
     pub fn signal(&self) -> Option<Signal> {
-        self.samples.back().map(|(_, s)| *s)
+        if self.unqualified {
+            return None;
+        }
+        self.samples.back().map(|(_, signal)| *signal)
     }
     pub fn recent(&self) -> bool {
-        self.samples
-            .back()
-            .is_some_and(|(t, _)| self.started.elapsed().as_secs_f64() - t < 2.)
+        !self.unqualified
+            && self
+                .samples
+                .back()
+                .is_some_and(|(t, _)| self.started.elapsed().as_secs_f64() - t < 2.)
     }
     pub fn points_at(
         &self,
@@ -114,8 +130,13 @@ mod tests {
         let points = history.points_at(DisplayMode::Xy, 0, 1e12, history.newest(false));
         assert_eq!(points, [[0., 1.]]);
         history.push(signal(), ReadingOrigin::Hardware, "");
-        assert_eq!(history.unit(), Some("unknown"));
+        assert_eq!(history.unit(), Some("A"));
+        assert!(history.signal().is_none());
+        assert!(!history.recent());
         assert_eq!(history.samples.len(), 1);
+        history.push(signal(), ReadingOrigin::Hardware, "A");
+        assert_eq!(history.samples.len(), 2);
+        assert!(history.recent());
     }
 
     #[test]

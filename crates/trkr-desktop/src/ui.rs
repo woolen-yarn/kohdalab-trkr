@@ -1273,6 +1273,9 @@ impl App {
         } else {
             engine::ReadingOrigin::Hardware
         };
+        if self.workflow == Workflow::SignalMonitor {
+            self.alignment_workspace.show_last_recording = false;
+        }
         self.trace.clear();
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         let index = Self::ix(self.workflow);
@@ -1348,10 +1351,11 @@ impl App {
         }
         s.power_meters
             .retain(|status| !self.power_meter_retired.contains(&status.session_id));
+        let previous_unit = snapshot_signal_unit(&self.snapshot, self.model);
+        let incoming_unit = snapshot_signal_unit(&s, self.model);
         if !self.source_demo
             && !self.demo_viewer
-            && snapshot_signal_unit(&self.snapshot, self.model)
-                != snapshot_signal_unit(&s, self.model)
+            && matches!((previous_unit, incoming_unit), ("V", "A") | ("A", "V"))
         {
             self.live.clear();
         }
@@ -1386,8 +1390,7 @@ impl App {
             && self.snapshot.devices[0]
             && !self.source_demo
             && self.snapshot.signal_origin == Some(engine::ReadingOrigin::Hardware)
-            && (self.live.origin() != Some(engine::ReadingOrigin::Hardware)
-                || self.live.signal().is_none())
+            && self.live.origin() != Some(engine::ReadingOrigin::Hardware)
             && let Some(signal) = self.snapshot.signal
         {
             let unit = snapshot_signal_unit(&self.snapshot, self.model);
@@ -4194,7 +4197,7 @@ impl App {
                 .translate(area.min.to_vec2()),
             egui::Id::new("eta-help"),
             egui::Sense::hover(),
-        ).on_hover_text("Estimated time to finish acquiring points. Uses completed points, including their waits and reads, and measures line changes separately. Return-to-zero and finalization are shown as separate phases.");
+        ).on_hover_text("Estimated time to finish acquiring points. Uses completed points, including waits and reads. For 2D scans, the first estimate uses point pace until the first measured line change. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),
@@ -4613,14 +4616,40 @@ fn trim_plot_trace(trace: &mut Vec<Sample>, workflow: Workflow, limit: usize) {
         return;
     }
     if workflow == Workflow::SignalMonitor {
-        // Keep the start and most recent sample while bounding the display
-        // memory. Recording writes all samples independently of this trace.
-        let mut index = 0_usize;
-        trace.retain(|_| {
-            let keep = index.is_multiple_of(2) || index == count - 1;
-            index += 1;
-            keep
-        });
+        // Keep displayed extrema plus endpoints when compacting the history.
+        // CSV recording is independent of the display trace.
+        const BUCKET: usize = 24;
+        let mut keep = vec![false; count];
+        keep[0] = true;
+        keep[count - 1] = true;
+        for (bucket, samples) in trace.chunks(BUCKET).enumerate() {
+            let base = bucket * BUCKET;
+            let mut extrema: [Option<[(f64, usize); 2]>; 4] = [None; 4];
+            for (index, sample) in samples.iter().enumerate() {
+                let signal = sample.signal;
+                for (bounds, value) in
+                    extrema
+                        .iter_mut()
+                        .zip([signal.x_v, signal.y_v, signal.r_v, signal.theta_deg])
+                {
+                    if !value.is_finite() {
+                        continue;
+                    }
+                    let [low, high] = bounds.get_or_insert([(value, base + index); 2]);
+                    if value < low.0 {
+                        *low = (value, base + index);
+                    }
+                    if value > high.0 {
+                        *high = (value, base + index);
+                    }
+                }
+            }
+            for (_, index) in extrema.into_iter().flatten().flatten() {
+                keep[index] = true;
+            }
+        }
+        let mut keep = keep.into_iter();
+        trace.retain(|_| keep.next().unwrap_or(false));
     } else {
         trace.drain(..limit / 2);
     }
