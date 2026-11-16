@@ -507,13 +507,30 @@ impl App {
 
     pub(super) fn alignment_power_monitor(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         precision::record(&mut self.geometry, "alignment_power_monitor", rect);
+        let configured =
+            self.settings.raw["measurements"]["signal_monitor"]["device_ids"]["power_meter"]
+                .as_str()
+                .filter(|id| !id.is_empty())
+                .unwrap_or(&self.inventory.selected.power_meter);
+        let mut connected_meters = self
+            .snapshot
+            .power_meters
+            .iter()
+            .filter(|status| status.connected);
+        let fallback = connected_meters
+            .next()
+            .filter(|_| connected_meters.next().is_none());
         let id = self
-            .settings
-            .workflow_device_ids(Workflow::SignalMonitor)
-            .ok()
-            .map(|ids| ids.power_meter)
-            .filter(|id| !id.is_empty())
-            .unwrap_or_else(|| self.inventory.selected.power_meter.clone());
+            .alignment_workspace
+            .power_meter
+            .clone()
+            .unwrap_or_else(|| {
+                if configured.is_empty() {
+                    fallback.map(|status| status.id.clone()).unwrap_or_default()
+                } else {
+                    configured.to_owned()
+                }
+            });
         let running = self
             .alignment_workspace
             .power_trend
@@ -534,6 +551,57 @@ impl App {
         }
         if stop && let Some(trend) = &mut self.alignment_workspace.power_trend {
             trend.running = false;
+        }
+        let settings = precision::rect(rect.right() - 88., rect.top(), 88., 26.);
+        if ui
+            .put(
+                settings,
+                egui::Button::new("Settings…").min_size(settings.size()),
+            )
+            .clicked()
+        {
+            self.alignment_cancel_hold();
+            self.alignment_workspace.power_settings = true;
+        }
+        if self.alignment_workspace.power_settings {
+            let dialog =
+                egui::Modal::new(egui::Id::new("alignment-power-settings")).show(ui.ctx(), |ui| {
+                    ui.heading("Power Monitor Settings");
+                    let mut selected = id.clone();
+                    let current = self
+                        .inventory
+                        .power_meters
+                        .iter()
+                        .find(|meter| meter.id == id)
+                        .map_or_else(
+                            || "Select a power meter".to_owned(),
+                            |meter| meter.display_name(),
+                        );
+                    ui.horizontal(|ui| {
+                        ui.label("Device");
+                        ui.add_enabled_ui(!running, |ui| {
+                            egui::ComboBox::from_id_salt("alignment-power-device")
+                                .selected_text(current)
+                                .show_ui(ui, |ui| {
+                                    for meter in &self.inventory.power_meters {
+                                        ui.selectable_value(
+                                            &mut selected,
+                                            meter.id.clone(),
+                                            meter.display_name(),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+                    if selected != id {
+                        self.alignment_workspace.power_meter = Some(selected);
+                        self.alignment_workspace.power_trend = None;
+                    }
+                    ui.button("Done").clicked()
+                });
+            if dialog.inner || dialog.should_close() {
+                self.alignment_workspace.power_settings = false;
+            }
         }
         let area = self.alignment_monitor_plot_area(rect);
         let trend = self.alignment_workspace.power_trend.as_ref();

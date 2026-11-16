@@ -52,6 +52,8 @@ pub(super) struct PowerTrend {
 pub(super) struct Workspace {
     pub monitor: MonitorTab,
     pub(super) power_trend: Option<PowerTrend>,
+    pub(super) power_meter: Option<String>,
+    pub(super) power_settings: bool,
     signal: SignalChannel,
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
