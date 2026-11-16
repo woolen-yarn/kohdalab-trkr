@@ -2057,12 +2057,17 @@ impl App {
             form.enabled = !self.demo_viewer;
             let w = rect.width();
             precision::record(form.geometry, "lockin_group", rect);
+            let was_expanded = self.device_expanded[0];
             form.toggle(
                 "lockin_device",
                 precision::rect(11., 27., 71., 24.),
                 &mut self.device_expanded[0],
                 "Device",
             );
+            if !was_expanded && self.device_expanded[0] {
+                self.lockin_settings_expanded = true;
+                form.ui.ctx().request_repaint();
+            }
             form.value(
                 "lockin_name",
                 precision::rect(102., 27., w - 212., 24.),
