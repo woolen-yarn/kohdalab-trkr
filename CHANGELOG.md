@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.3
+
+- Compact Signal Monitor controls and keep the content edges aligned when switching measurement tabs. / Signal Monitorの操作列を簡潔にし、測定タブ切り替え時の左右の境界を揃えました。
+- Plot Signal Monitor data from the start of recording without an ETA. Estimate scan time from completed points, measuring line transitions separately. / Signal Monitorは開始からのデータを表示し、ETAを省きました。走査のETAは完了点の実測時間を使い、行切り替えを別に計測します。
+- Select engineering units automatically for measured signal and power plots, with qualified voltage, current and angle labels. / 信号とパワーのプロット単位を自動選択し、判明している電圧・電流・角度の単位を表示します。
+
 ## 1.0.2
 
 - Move Signal and Power Monitor into Alignment with optional continuous recording and a Motion Only view. / AlignmentにSignal・Power Monitorを配置し、連続記録とMotion Only表示を追加しました。
