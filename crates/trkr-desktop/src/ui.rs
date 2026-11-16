@@ -1426,7 +1426,7 @@ impl App {
                     if let (Some(timing), Some(captured)) = (s.timing.progress, s.captured_at)
                         && timing.completed_at >= captured
                     {
-                        self.eta.observe(s.recording.point_index, timing);
+                        self.eta.observe(timing);
                     }
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
                         if self.trace.last().is_some_and(|last| {
@@ -4104,12 +4104,8 @@ impl App {
             && self.active_workflow == self.workflow
     }
     fn eta_label(&self, now: Instant) -> String {
-        if self.showing_until_stop_run() {
-            return if self.snapshot.running {
-                "Continuous".into()
-            } else {
-                "-".into()
-            };
+        if self.workflow == Workflow::SignalMonitor {
+            return "-".into();
         }
         if !self.snapshot.running
             || self.active_workflow != self.workflow
@@ -4131,12 +4127,10 @@ impl App {
             }
             .into();
         }
-        let plan = self.active_plan();
-        let interval = (plan.workflow == Workflow::SignalMonitor).then_some(plan.interval_s);
         let remaining = if self.demo_viewer {
             self.demo_eta(now, total)
         } else {
-            self.eta.remaining(total, interval, now)
+            self.eta.remaining(total, now)
         };
         remaining
             .map(|seconds| format!("~{:.0} s", seconds.ceil()))
@@ -4202,7 +4196,7 @@ impl App {
                 .translate(area.min.to_vec2()),
             egui::Id::new("eta-help"),
             egui::Sense::hover(),
-        ).on_hover_text("Estimated time to finish acquiring points. Uses completed rows and tracks line changes separately. Return-to-zero and finalization are shown as separate phases.");
+        ).on_hover_text("Estimated time to finish acquiring points. Uses completed points, including their waits and reads, and measures line changes separately. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),

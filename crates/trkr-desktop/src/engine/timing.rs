@@ -15,7 +15,68 @@ pub(crate) struct AcquisitionTiming {
 pub(crate) struct ProgressTiming {
     pub started_at: Instant,
     pub completed_at: Instant,
+    pub row: usize,
     pub points_per_line: Option<usize>,
+    pub within_line_seconds: Option<f64>,
+    pub line_start_seconds: Option<f64>,
+}
+
+pub(crate) struct ScanClock {
+    started_at: Instant,
+    previous: Option<Instant>,
+    points_per_line: Option<usize>,
+    within_line: Pace,
+    line_start: Pace,
+}
+
+#[derive(Default)]
+struct Pace {
+    elapsed: f64,
+    points: usize,
+}
+
+impl Pace {
+    fn average(&self) -> Option<f64> {
+        (self.points > 0).then(|| self.elapsed / self.points as f64)
+    }
+}
+
+impl ScanClock {
+    pub(crate) fn new(started_at: Instant, points_per_line: Option<usize>) -> Self {
+        Self {
+            started_at,
+            previous: None,
+            points_per_line: points_per_line.filter(|&width| width > 0),
+            within_line: Pace::default(),
+            line_start: Pace::default(),
+        }
+    }
+
+    pub(crate) fn complete(&mut self, row: usize, completed_at: Instant) -> ProgressTiming {
+        // The first point includes an arbitrary initial move, so its pace
+        // is unrepresentative. Every later completion is counted on the worker.
+        if let Some(previous) = self.previous {
+            let line_start = self
+                .points_per_line
+                .is_some_and(|width| (row - 1).is_multiple_of(width));
+            let pace = if line_start {
+                &mut self.line_start
+            } else {
+                &mut self.within_line
+            };
+            pace.elapsed += completed_at.duration_since(previous).as_secs_f64();
+            pace.points += 1;
+        }
+        self.previous = Some(completed_at);
+        ProgressTiming {
+            started_at: self.started_at,
+            completed_at,
+            row,
+            points_per_line: self.points_per_line,
+            within_line_seconds: self.within_line.average(),
+            line_start_seconds: self.line_start.average(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

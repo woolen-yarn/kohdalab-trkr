@@ -59,6 +59,9 @@ impl App {
     }
 
     fn alignment_recording_status(&self) -> String {
+        if self.snapshot.phase.starts_with("Stopping") {
+            return "Stopping…".into();
+        }
         if self.showing_until_stop_run() {
             return format!("{} rows · Continuous", self.snapshot.rows);
         }
@@ -66,12 +69,7 @@ impl App {
         if total == 0 {
             return "Recording".into();
         }
-        let eta = self.eta_label(Instant::now());
-        if eta.starts_with('~') {
-            format!("{}/{} · ETA {eta}", self.snapshot.rows.min(total), total)
-        } else {
-            eta
-        }
+        format!("{}/{} · Recording", self.snapshot.rows.min(total), total)
     }
 
     pub(super) fn alignment_workspace_view(
@@ -651,7 +649,7 @@ mod tests {
     }
 
     #[test]
-    fn finite_recording_displays_eta_after_the_first_committed_row() {
+    fn finite_recording_shows_points_without_an_eta() {
         let mut h = Harness::builder()
             .with_size(egui::vec2(1566., 700.))
             .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
@@ -660,17 +658,18 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             h.run_steps(1);
-            if h.state().snapshot.running
-                && h.state().alignment_recording_status().contains("ETA ~")
-            {
+            if h.state().snapshot.running && h.state().snapshot.rows > 0 {
                 break;
             }
             assert!(
                 Instant::now() < deadline,
-                "finite monitor did not show an ETA"
+                "finite monitor did not acquire a point"
             );
             std::thread::sleep(Duration::from_millis(10));
         }
+        let status = h.state().alignment_recording_status();
+        assert!(status.contains('/') && status.ends_with("Recording"));
+        assert!(!status.contains("ETA"));
         h.query_all_by_label("Stop")
             .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
             .unwrap()

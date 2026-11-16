@@ -950,15 +950,10 @@ fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() 
     assert_eq!(app.eta_label(start), "Estimating…");
     app.snapshot.rows = 2;
     app.scan_progress[index].0 = 2;
+    let mut clock = engine::timing::ScanClock::new(start, None);
     for (row, seconds) in [(1, 3), (2, 6)] {
-        app.eta.observe(
-            row,
-            engine::timing::ProgressTiming {
-                started_at: start,
-                completed_at: start + Duration::from_secs(seconds),
-                points_per_line: None,
-            },
-        );
+        app.eta
+            .observe(clock.complete(row, start + Duration::from_secs(seconds)));
     }
     assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
     app.snapshot.rows = 10;
@@ -989,11 +984,8 @@ fn private_eta_clock_does_not_change_sample_json_contract() {
     let original = serde_json::to_value(&sample).unwrap();
     let now = Instant::now();
     sample.captured_at = Some(now);
-    sample.timing.progress = Some(engine::timing::ProgressTiming {
-        started_at: now,
-        completed_at: now,
-        points_per_line: Some(4),
-    });
+    let mut clock = engine::timing::ScanClock::new(now, Some(4));
+    sample.timing.progress = Some(clock.complete(1, now));
     assert_eq!(serde_json::to_value(&sample).unwrap(), original);
     let restored: Sample = serde_json::from_value(original).unwrap();
     assert!(restored.captured_at.is_none());
@@ -1559,7 +1551,7 @@ fn until_stop_is_a_local_gui_choice_with_points_as_default() {
     app.active_workflow = Workflow::SignalMonitor;
     app.snapshot.running = true;
     assert!(app.showing_until_stop_run());
-    assert_eq!(app.eta_label(Instant::now()), "Continuous");
+    assert_eq!(app.eta_label(Instant::now()), "-");
     app.snapshot.running = false;
     assert_eq!(app.eta_label(Instant::now()), "-");
     // Other workflows never show the Continuous progress.

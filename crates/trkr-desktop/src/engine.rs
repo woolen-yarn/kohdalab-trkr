@@ -1826,6 +1826,7 @@ impl Session {
             .workflow
             .is_2d()
             .then(|| targets.iter().take_while(|target| target.line == 0).count());
+        let mut scan_clock = (!monitor).then(|| timing::ScanClock::new(start, points_per_line));
         let acquisition_started = context_result.is_ok();
         let mut result = context_result.and_then(|()| {
             (|| {
@@ -2081,11 +2082,9 @@ impl Session {
                         if let Some(status_event) = status_event { csv.append_audit(&status_event)?; }
                         csv.write_sample(plan, &sample, start, index + 1, &mut self.state.rows)?;
                     } else { self.state.rows += 1; }
-                    sample.timing.progress = Some(timing::ProgressTiming {
-                        started_at: start,
-                        completed_at: Instant::now(),
-                        points_per_line,
-                    });
+                    sample.timing.progress = scan_clock
+                        .as_mut()
+                        .map(|clock| clock.complete(index + 1, Instant::now()));
                     self.live.signal_unit=sample.recording.signal_unit.clone();
                     self.live.publish_if_due(
                         signal,
