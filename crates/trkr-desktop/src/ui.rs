@@ -1417,13 +1417,17 @@ impl App {
                 Event::Sample(s) => {
                     self.snapshot.signal = Some(s.signal);
                     self.snapshot.position = s.position.clone();
-                    self.snapshot.rows = self.snapshot.rows.saturating_add(1);
+                    self.snapshot.rows = if s.recording.point_index == 0 {
+                        self.snapshot.rows.saturating_add(1)
+                    } else {
+                        self.snapshot.rows.max(s.recording.point_index)
+                    };
                     self.scan_progress[Self::ix(self.active_workflow)].0 = self.snapshot.rows;
-                    self.eta.observe(
-                        self.snapshot.rows,
-                        s.elapsed,
-                        s.captured_at.unwrap_or_else(Instant::now),
-                    );
+                    if let (Some(timing), Some(captured)) = (s.timing.progress, s.captured_at)
+                        && timing.completed_at >= captured
+                    {
+                        self.eta.observe(s.recording.point_index, timing);
+                    }
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
                         if self.trace.last().is_some_and(|last| {
                             last.recording.signal_unit != s.recording.signal_unit
@@ -4094,7 +4098,7 @@ impl App {
             .as_ref()
             .unwrap_or(&self.plans[index])
     }
-    /// An Continuous monitor shown on its own page: no total, no ETA.
+    /// A Continuous monitor shown on its own page: no total, no ETA.
     fn showing_until_stop_run(&self) -> bool {
         self.monitor_run_until_stop
             && self.workflow == Workflow::SignalMonitor
@@ -4114,10 +4118,10 @@ impl App {
         {
             return "-".into();
         }
-        let total = self.scan_progress[Self::ix(self.workflow)].1;
-        if total == 0 {
-            return "Estimating…".into();
+        if self.snapshot.phase.starts_with("Stopping") {
+            return "Stopping…".into();
         }
+        let total = self.snapshot.total;
         if self.snapshot.rows >= total {
             return if self.demo_viewer {
                 "Looping…"
@@ -4128,8 +4132,14 @@ impl App {
             }
             .into();
         }
-        self.eta
-            .remaining(total, now)
+        let plan = self.active_plan();
+        let interval = (plan.workflow == Workflow::SignalMonitor).then_some(plan.interval_s);
+        let remaining = if self.demo_viewer {
+            self.demo_eta(now, total)
+        } else {
+            self.eta.remaining(total, interval, now)
+        };
+        remaining
             .map(|seconds| format!("~{:.0} s", seconds.ceil()))
             .unwrap_or_else(|| "Estimating…".into())
     }
@@ -4193,7 +4203,7 @@ impl App {
                 .translate(area.min.to_vec2()),
             egui::Id::new("eta-help"),
             egui::Sense::hover(),
-        ).on_hover_text("Approximate time to finish acquiring points, based on the observed run pace, including motion, compensation, reads and CSV writes. Startup and line changes can shift the estimate. Return-to-zero is not timed; it is shown separately. Replay estimates refer to the current loop, not the CSV's original timestamps.");
+        ).on_hover_text("Estimated time to finish acquiring points. Uses completed rows and tracks line changes separately. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),

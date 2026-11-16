@@ -56,6 +56,22 @@ impl App {
             && self.active_workflow == Workflow::SignalMonitor
     }
 
+    fn alignment_recording_status(&self) -> String {
+        if self.showing_until_stop_run() {
+            return format!("{} rows · Continuous", self.snapshot.rows);
+        }
+        let total = self.snapshot.total;
+        if total == 0 {
+            return "Recording".into();
+        }
+        let eta = self.eta_label(Instant::now());
+        if eta.starts_with('~') {
+            format!("{}/{} · ETA {eta}", self.snapshot.rows.min(total), total)
+        } else {
+            eta
+        }
+    }
+
     pub(super) fn alignment_workspace_view(
         &mut self,
         ui: &mut egui::Ui,
@@ -83,10 +99,12 @@ impl App {
         let signal_visible = !self.alignment_workspace.motion_only
             && self.alignment_workspace.monitor == MonitorTab::Signal;
         if recording && !signal_visible {
+            let status = self.alignment_recording_status();
             ui.put(
                 precision::rect(toggle.left() - 244., tabs.top(), 108., 24.),
-                egui::Label::new("● Recording"),
-            );
+                egui::Label::new(&status).truncate(),
+            )
+            .on_hover_text(status);
             self.recording_stop_button(
                 ui,
                 precision::rect(toggle.left() - 132., tabs.top(), 124., 24.),
@@ -294,10 +312,13 @@ impl App {
         } else {
             (1., base_unit.clone())
         };
+        let recording_status = self
+            .signal_recording()
+            .then(|| self.alignment_recording_status());
         let source = if use_live {
             if fresh { "Live" } else { "Stale" }
-        } else if self.signal_recording() {
-            "Recording"
+        } else if let Some(status) = &recording_status {
+            status
         } else if latest.is_some() {
             if self.source_demo {
                 "Simulated"
@@ -586,6 +607,35 @@ mod tests {
             .unwrap();
         assert_eq!(recorded.parent().unwrap(), updated);
         assert!(recorded.is_file());
+    }
+
+    #[test]
+    fn finite_recording_displays_eta_after_the_first_committed_row() {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1566., 700.))
+            .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
+        h.run_steps(3);
+        h.get_by_label("Record").click();
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            h.run_steps(1);
+            if h.state().snapshot.running
+                && h.state().alignment_recording_status().contains("ETA ~")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "finite monitor did not show an ETA"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        h.get_by_label("Stop Recording").click();
+        while h.state().snapshot.running {
+            assert!(Instant::now() < deadline, "finite monitor did not stop");
+            std::thread::sleep(Duration::from_millis(10));
+            h.run_steps(1);
+        }
     }
 
     #[test]

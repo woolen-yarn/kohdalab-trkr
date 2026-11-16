@@ -1816,6 +1816,10 @@ impl Session {
             self.start_parallel_motion(handoff, start)
                 .inspect_err(|_| self.failure_code = Some("protection".into()))
         });
+        let points_per_line = plan
+            .workflow
+            .is_2d()
+            .then(|| targets.iter().take_while(|target| target.line == 0).count());
         let acquisition_started = context_result.is_ok();
         let mut result = context_result.and_then(|()| {
             (|| {
@@ -2030,7 +2034,7 @@ impl Session {
                         }
                     }
                     self.refresh_power_states();
-                    let sample = Sample {
+                    let mut sample = Sample {
                         recording: Box::new(SampleRecording {
                             run_id: csv.as_ref().map(|r| r.run_id().to_owned()).unwrap_or_default(), point_index:index+1,
                             signal_unit, quality_flags, power_w,
@@ -2071,6 +2075,11 @@ impl Session {
                         if let Some(status_event) = status_event { csv.append_audit(&status_event)?; }
                         csv.write_sample(plan, &sample, start, index + 1, &mut self.state.rows)?;
                     } else { self.state.rows += 1; }
+                    sample.timing.progress = Some(timing::ProgressTiming {
+                        started_at: start,
+                        completed_at: Instant::now(),
+                        points_per_line,
+                    });
                     self.live.signal_unit=sample.recording.signal_unit.clone();
                     self.live.publish_if_due(
                         signal,
@@ -2321,6 +2330,7 @@ pub fn demo_csv(plan: Plan, output: &Path) -> Result<usize, String> {
                     timing: Box::new(timing::AcquisitionTiming {
                         position: None,
                         signal: Some(window),
+                        ..Default::default()
                     }),
                     captured_at: None,
                     elapsed: captured.duration_since(start).as_secs_f64(),

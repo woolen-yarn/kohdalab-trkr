@@ -950,8 +950,16 @@ fn eta_uses_observed_run_time_and_distinguishes_final_return_from_acquisition() 
     assert_eq!(app.eta_label(start), "Estimating…");
     app.snapshot.rows = 2;
     app.scan_progress[index].0 = 2;
-    app.eta.observe(1, 3.0, start + Duration::from_secs(3));
-    app.eta.observe(2, 6.0, start + Duration::from_secs(6));
+    for (row, seconds) in [(1, 3), (2, 6)] {
+        app.eta.observe(
+            row,
+            engine::timing::ProgressTiming {
+                started_at: start,
+                completed_at: start + Duration::from_secs(seconds),
+                points_per_line: None,
+            },
+        );
+    }
     assert_eq!(app.eta_label(start + Duration::from_secs(8)), "~22 s");
     app.snapshot.rows = 10;
     app.snapshot.phase = "Returning x".into();
@@ -979,10 +987,17 @@ fn private_eta_clock_does_not_change_sample_json_contract() {
         position: trkr_motion::Position::default(),
     };
     let original = serde_json::to_value(&sample).unwrap();
-    sample.captured_at = Some(Instant::now());
+    let now = Instant::now();
+    sample.captured_at = Some(now);
+    sample.timing.progress = Some(engine::timing::ProgressTiming {
+        started_at: now,
+        completed_at: now,
+        points_per_line: Some(4),
+    });
     assert_eq!(serde_json::to_value(&sample).unwrap(), original);
     let restored: Sample = serde_json::from_value(original).unwrap();
     assert!(restored.captured_at.is_none());
+    assert!(restored.timing.progress.is_none());
 }
 
 #[test]

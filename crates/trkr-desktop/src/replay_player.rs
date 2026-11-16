@@ -21,6 +21,17 @@ impl Player {
             && elapsed.saturating_sub(self.next).as_secs_f64() < interval * 0.075
     }
 
+    /// Time until the last reading in the current playback cycle.
+    pub fn remaining(&self, elapsed: Duration, interval: f64, count: usize) -> Option<f64> {
+        let left = count.checked_sub(self.cursor)?;
+        if left == 0 || !interval.is_finite() || interval <= 0. {
+            return None;
+        }
+        let wait = interval.min(86400.);
+        let seconds = self.next.as_secs_f64() + wait * (left as f64 - 0.2) - elapsed.as_secs_f64();
+        (seconds > 0.).then_some(seconds)
+    }
+
     pub fn tick(&mut self, elapsed: Duration, interval: f64, count: usize) -> Batch {
         let wait = Duration::from_secs_f64(interval.clamp(0., 86400.));
         if wait.is_zero()
@@ -86,6 +97,17 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn eta_follows_current_replay_schedule_instead_of_csv_timestamps() {
+        let mut p = Player::default();
+        p.tick(Duration::from_millis(800), 1., 3);
+        let remaining = p.remaining(Duration::from_secs(1), 1., 3).unwrap();
+        assert!((remaining - 1.8).abs() < 1e-9);
+        p.tick(Duration::from_millis(2800), 1., 3);
+        assert_eq!(p.remaining(Duration::from_millis(2800), 1., 3), None);
+        p.tick(Duration::from_secs(3), 1., 3);
+        assert_eq!(p.remaining(Duration::from_secs(3), 0., 3), None);
+    }
     #[test]
     fn fast_replay_is_bounded_and_displays_last_frame_before_looping() {
         let mut p = Player::default();
