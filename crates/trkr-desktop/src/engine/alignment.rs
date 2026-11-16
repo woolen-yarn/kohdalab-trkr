@@ -534,7 +534,7 @@ mod tests {
                 Ok(Box::new(AlignmentBus {
                     log: log.clone(),
                     position_reads: 0,
-                    fail_position_read: 5,
+                    fail_position_read: 6,
                     fail_stop: false,
                     position: 1.,
                 }))
@@ -581,6 +581,7 @@ mod tests {
                 "1TS",
                 "1TS",
                 "1THU",
+                "1TPU",
                 "1TE",
                 "1PRU1.0000",
                 "1TE",

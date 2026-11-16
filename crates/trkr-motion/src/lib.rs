@@ -1497,7 +1497,18 @@ impl MotionRig {
         }
         // Preparing a disabled controller or changing CC loop mode can
         // alter the last target. Validate the target PR will actually use.
-        let native_target = target_within_limits(protocol.target_position(bus)?)?;
+        let baseline = protocol.target_position(bus)?;
+        let actual = protocol.position(bus)?;
+        let tolerance = scanner
+            .config
+            .effective_position_tolerance()?
+            .min(encoded_delta.abs());
+        if (baseline - actual).abs() > tolerance {
+            return Err(format!(
+                "Scanner position {actual} differs from the controller target {baseline}; use an absolute move to re-establish the target"
+            ));
+        }
+        let native_target = target_within_limits(baseline)?;
         protocol.check_command_error(bus)?;
         if cancel.load(Ordering::Acquire) {
             return Err("motion cancelled".into());

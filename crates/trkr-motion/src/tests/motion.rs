@@ -1310,13 +1310,14 @@ fn native_controller_relative_move_uses_controller_target_and_keeps_mode() {
         (
             agap("U"),
             vec![
-                "1TPU0.01",
+                "1TPU0.03",
                 "1THU0.03",
                 "1SLU-0.76",
                 "1SRU0.76",
                 "1TS000032",
                 "1TS000032",
                 "1THU0.03",
+                "1TPU0.03",
                 "1TE@",
                 "1TE@",
                 "1TS000033",
@@ -1330,6 +1331,7 @@ fn native_controller_relative_move_uses_controller_target_and_keeps_mode() {
                 "1TS",
                 "1TS",
                 "1THU",
+                "1TPU",
                 "1TE",
                 "1PRU0.010",
                 "1TE",
@@ -1340,13 +1342,14 @@ fn native_controller_relative_move_uses_controller_target_and_keeps_mode() {
         (
             cc,
             vec![
-                "1TP5.98",
+                "1TP6",
                 "1PA6",
                 "1SL0",
                 "1SR12",
                 "1TS000032",
                 "1TS000032",
                 "1PA6",
+                "1TP6",
                 "1TE@",
                 "1TE@",
                 "1TS000033",
@@ -1360,6 +1363,7 @@ fn native_controller_relative_move_uses_controller_target_and_keeps_mode() {
                 "1TS",
                 "1TS",
                 "1PA?",
+                "1TP",
                 "1TE",
                 "1PR0.0100",
                 "1TE",
@@ -1381,6 +1385,43 @@ fn native_controller_relative_move_uses_controller_target_and_keeps_mode() {
             .unwrap();
         assert_eq!(*log.lock().unwrap(), expected);
     }
+}
+
+#[test]
+fn native_relative_move_refuses_stale_target_after_prepare() {
+    let log = Arc::new(Mutex::new(vec![]));
+    let config = MotionConfig {
+        x: Some(ScannerConfig {
+            ensure_closed_loop_on_move: Some(false),
+            ..cc_with_hysteresis()
+        }),
+        ..Default::default()
+    };
+    let replies = [
+        "1TP2",
+        "1PA10",
+        "1SL0",
+        "1SR12",
+        "1TS000033",
+        "1TS000033",
+        "1PA10",
+        "1TP2",
+    ];
+    let mut rig = MotionRig::open_with_bus_factory(&config, |_, _, _, _, _, _| {
+        Ok(Box::new(ScriptedBus::new(log.clone(), &replies)))
+    })
+    .unwrap();
+    let error = rig
+        .step_scanner_relative(1, 0.01, &AtomicBool::new(false), None)
+        .unwrap_err();
+    assert!(
+        error.contains("differs from the controller target"),
+        "{error}"
+    );
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["1TP", "1PA?", "1SL?", "1SR?", "1TS", "1TS", "1PA?", "1TP"]
+    );
 }
 
 #[test]
@@ -1420,6 +1461,7 @@ fn native_relative_move_checks_controller_rejection_before_reporting_success() {
             "1TS000032",
             "1TS000032",
             "1THV0",
+            "1TPV0",
             "1TE@",
             reply,
             "1TS000033",
