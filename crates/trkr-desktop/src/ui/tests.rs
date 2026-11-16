@@ -1421,7 +1421,6 @@ fn alignment_shows_monitor_controls_plots_and_motion_panels_on_one_screen() {
         for key in [
             "alignment_signal_mode",
             "alignment_settings_button",
-            "alignment_recording_name",
             "start_button",
             "alignment_monitor_plots",
             "alignment_widget",
@@ -1445,6 +1444,57 @@ fn alignment_shows_monitor_controls_plots_and_motion_panels_on_one_screen() {
         // Idle, unconnected Alignment never queues device work.
         assert!(!app.snapshot.running);
         assert!(!app.controller.has_pending());
+    }
+}
+
+#[test]
+fn switching_tabs_keeps_the_same_content_edges_and_side_panels() {
+    for left_collapsed in [false, true] {
+        for right_collapsed in [false, true] {
+            let minimum = precision::Columns::minimum_width(right_collapsed, left_collapsed);
+            for (width, height) in [(minimum, 700.), (minimum + 340., 900.)] {
+                let context = egui::Context::default();
+                let mut app = App::with_context(&context, false);
+                app.switch_workflow(Workflow::Trkr);
+                app.left_collapsed = left_collapsed;
+                app.right_collapsed = right_collapsed;
+                let size = egui::Vec2::new(width, height);
+                render_app_frame(&mut app, &context, size);
+                let rails = |app: &App| {
+                    ["left_panel", "center_panel", "right_panel"].map(|key| geometry_rect(app, key))
+                };
+                let baseline = rails(&app);
+                let first = geometry_rect(&app, "measurement_page");
+                for workflow in Workflow::ALL.into_iter().chain([Workflow::Trkr]) {
+                    app.switch_workflow(workflow);
+                    render_app_frame(&mut app, &context, size);
+                    assert_eq!(rails(&app), baseline, "{workflow:?} at {size:?}");
+                    let top = if workflow == Workflow::SignalMonitor {
+                        let monitor = geometry_rect(&app, "alignment_monitor_panel");
+                        let motion = geometry_rect(&app, "alignment_widget");
+                        assert_eq!(
+                            [motion.left(), motion.right()],
+                            [first.left(), first.right()]
+                        );
+                        monitor
+                    } else {
+                        let plot = match workflow {
+                            Workflow::Srkr => "srkr_plot_widget",
+                            Workflow::Strkr | Workflow::Srkr2d => "scan2d_plot_widget",
+                            _ => "standard_plot_widget",
+                        };
+                        let plot = geometry_rect(&app, plot);
+                        assert_eq!([plot.left(), plot.right()], [first.left(), first.right()]);
+                        geometry_rect(&app, "measurement_page")
+                    };
+                    assert_eq!(
+                        [top.left(), top.right(), top.top()],
+                        [first.left(), first.right(), first.top()],
+                        "{workflow:?} at {size:?}"
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -1562,7 +1612,7 @@ fn alignment_monitor_capture_is_simulated_and_keeps_alignment_for_every_shot() {
     }
     assert!(app.alignment_tab);
     assert!(app.geometry.contains_key("alignment_widget"));
-    assert!(app.geometry.contains_key("alignment_recording_name"));
+    assert!(app.geometry.contains_key("start_button"));
     assert!(!app.snapshot.running);
     assert!(!app.controller.has_pending());
 

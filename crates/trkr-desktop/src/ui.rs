@@ -115,6 +115,7 @@ const MEASUREMENT_TABS: [Workflow; 4] = [
     Workflow::Strkr,
     Workflow::Srkr2d,
 ];
+const MEASUREMENT_PAGE_TOP: f32 = 30.;
 const MEASUREMENT_TAB_WIDTHS: [f32; 4] = [51., 51., 57., 68.];
 fn show_scan_theta(workflow: Workflow, axis: Axis) -> bool {
     if workflow == Workflow::Srkr2d {
@@ -567,8 +568,7 @@ impl App {
                 self.alignment_workspace.monitor = alignment_workspace::MonitorTab::Power;
             }
             if state == "alignment-recording-settings" {
-                self.alignment_workspace.settings =
-                    Some(alignment_workspace::SettingsTab::Recording);
+                self.alignment_workspace.settings = Some(alignment_workspace::SettingsTab::Output);
             }
             // The preview re-hydrates the profile; Alignment now shows the
             // Signal Monitor Output, so keep public captures path-neutral.
@@ -3333,11 +3333,12 @@ impl App {
         }
         precision::record(&mut self.geometry, "measurement_tabs", area);
         let page = rect(
-            area.min.x + 2.,
-            area.min.y + 26.,
-            area.width() - 6.,
-            area.height() - 30.,
+            area.min.x,
+            area.min.y + MEASUREMENT_PAGE_TOP,
+            area.width(),
+            area.height() - MEASUREMENT_PAGE_TOP - 4.,
         );
+        precision::record(&mut self.geometry, "measurement_page", page);
         ui.painter().rect(
             page,
             10.,
@@ -4589,7 +4590,7 @@ impl eframe::App for App {
                 self.measure(ui, columns.measurement);
                 if self.alignment_tab {
                     let area = egui::Rect::from_min_max(
-                        columns.measurement.min + Vec2::new(0., 30.),
+                        columns.measurement.min + Vec2::new(0., MEASUREMENT_PAGE_TOP),
                         columns.plots.max,
                     );
                     self.alignment_workspace_view(ui, columns.measurement, area);

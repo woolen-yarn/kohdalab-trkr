@@ -12,7 +12,8 @@ pub(super) enum MonitorTab {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SettingsTab {
     Acquisition,
-    Recording,
+    Output,
+    Device,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -48,6 +49,7 @@ pub(super) struct Workspace {
     signal: SignalChannel,
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
+    device_draft: Option<super::measurement_settings::Draft>,
 }
 
 impl App {
@@ -107,6 +109,7 @@ impl App {
             .on_hover_text(status);
             self.recording_stop_button(
                 ui,
+                "Stop Recording",
                 precision::rect(toggle.left() - 132., tabs.top(), 124., 24.),
             );
         }
@@ -114,13 +117,17 @@ impl App {
             self.alignment_view(ui, content);
             return;
         }
-        let monitor_height = (content.height() * 0.40).clamp(212., 350.);
+        let monitor_height = match self.alignment_workspace.monitor {
+            MonitorTab::Signal => (content.height() * 0.34).clamp(212., 300.),
+            MonitorTab::Power => (content.height() * 0.40).clamp(212., 350.),
+        };
         let monitor = precision::rect(
             content.left(),
             content.top(),
             content.width(),
             monitor_height,
         );
+        precision::record(&mut self.geometry, "alignment_monitor_panel", monitor);
         let motion = egui::Rect::from_min_max(
             egui::pos2(content.left(), monitor.bottom() + 8.),
             content.max,
@@ -162,12 +169,12 @@ impl App {
         self.alignment_view(ui, motion);
     }
 
-    fn recording_stop_button(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+    fn recording_stop_button(&mut self, ui: &mut egui::Ui, label: &str, rect: egui::Rect) {
         precision::record(&mut self.geometry, "stop_button", rect);
         if ui
             .put(
                 rect,
-                egui::Button::new("Stop Recording")
+                egui::Button::new(label)
                     .fill(Color32::from_rgb(173, 69, 76))
                     .min_size(rect.size()),
             )
@@ -198,31 +205,9 @@ impl App {
             "Settings…",
             !self.demo_viewer,
         );
-        let action = precision::rect(panel.right() - 222., panel.top(), 126., 26.);
-        let filename = self.alignment_recording_name(recording);
-        let filename_rect =
-            precision::rect(panel.left() + 102., panel.top(), panel.width() - 334., 26.);
-        precision::record(
-            &mut self.geometry,
-            "alignment_recording_name",
-            filename_rect,
-        );
-        let file = ui
-            .add_enabled_ui(!self.demo_viewer && !recording, |ui| {
-                ui.put(filename_rect, egui::Button::new(&filename).truncate())
-            })
-            .inner;
-        let file = if recording {
-            file.on_disabled_hover_text(
-                self.output_paths[Self::ix(Workflow::SignalMonitor)]
-                    .as_ref()
-                    .map_or_else(|| filename.clone(), |path| path.display().to_string()),
-            )
-        } else {
-            file.on_hover_text("Change the recording folder or file name")
-        };
+        let action = precision::rect(panel.right() - 186., panel.top(), 90., 26.);
         if recording {
-            self.recording_stop_button(ui, action);
+            self.recording_stop_button(ui, "Stop", action);
         } else {
             precision::record(&mut self.geometry, "start_button", action);
             let available =
@@ -231,7 +216,7 @@ impl App {
                 .add_enabled_ui(available, |ui| {
                     ui.put(
                         action,
-                        egui::Button::new("Record")
+                        egui::Button::new("Start")
                             .fill(Color32::from_rgb(48, 107, 214))
                             .min_size(action.size()),
                     )
@@ -244,9 +229,7 @@ impl App {
                 self.start();
             }
         }
-        if file.clicked() {
-            self.show_monitor_settings(SettingsTab::Recording);
-        } else if settings {
+        if settings {
             self.show_monitor_settings(SettingsTab::Acquisition);
         }
         let plots = egui::Rect::from_min_max(panel.min + Vec2::new(0., 32.), panel.max);
@@ -255,17 +238,8 @@ impl App {
         self.alignment_signal_plot(ui, plots);
     }
 
-    fn alignment_recording_name(&self, recording: bool) -> String {
+    fn alignment_recording_name(&self) -> String {
         let index = Self::ix(Workflow::SignalMonitor);
-        if recording {
-            return self.output_paths[index]
-                .as_ref()
-                .and_then(|path| path.file_name())
-                .map_or_else(
-                    || "Recording".into(),
-                    |name| name.to_string_lossy().into_owned(),
-                );
-        }
         let profile = &self.outputs[index];
         let base = output_filename(profile, self.source_demo);
         let suffix = if profile.auto_timestamp_suffix {
@@ -395,16 +369,28 @@ impl App {
         let recording = self.snapshot.running || self.measurement_pending || self.python_locked();
         let mut browse = false;
         let mut save = false;
-        let mut devices = false;
+        let mut device_draft = self.alignment_workspace.device_draft.take();
+        if tab == SettingsTab::Device && device_draft.is_none() {
+            match self.measurement_device_draft() {
+                Ok(draft) => device_draft = Some(draft),
+                Err(error) => {
+                    self.note(error);
+                    self.alignment_workspace.settings = Some(SettingsTab::Acquisition);
+                    return;
+                }
+            }
+        }
+        let mut apply_device = false;
         let mut close = false;
         let mut next = tab;
         let dialog =
             egui::Modal::new(egui::Id::new("alignment-monitor-settings")).show(ctx, |ui| {
-                ui.set_width(460.);
+                ui.set_width(390.);
                 ui.heading("Signal Monitor Settings");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut next, SettingsTab::Acquisition, "Acquisition");
-                    ui.selectable_value(&mut next, SettingsTab::Recording, "Recording");
+                    ui.selectable_value(&mut next, SettingsTab::Output, "Output");
+                    ui.selectable_value(&mut next, SettingsTab::Device, "Device");
                 });
                 ui.add_space(10.);
                 match next {
@@ -422,22 +408,21 @@ impl App {
                                             .max_decimals(3),
                                     );
                                     ui.end_row();
-                                    ui.label("Length");
+                                    ui.label("Point");
                                     ui.horizontal(|ui| {
                                         ui.add_enabled(
                                             !self.monitor_until_stop,
                                             egui::DragValue::new(&mut plan.n_points)
                                                 .range(1..=trkr_core::MAX_TOTAL_POINTS)
-                                                .suffix(" points"),
+                                                .min_decimals(0),
                                         );
                                         ui.checkbox(&mut self.monitor_until_stop, "Continuous");
                                     });
                                     ui.end_row();
                                 });
-                            devices = ui.button("Measurement Devices…").clicked();
                         });
                     }
-                    SettingsTab::Recording => {
+                    SettingsTab::Output => {
                         let profile = &mut self.outputs[index];
                         ui.add_enabled_ui(!recording && self.dialog.is_none(), |ui| {
                             egui::Grid::new("alignment-recording-settings")
@@ -469,9 +454,7 @@ impl App {
                                 });
                         });
                         ui.add_space(6.);
-                        ui.label(
-                            egui::RichText::new(self.alignment_recording_name(false)).monospace(),
-                        );
+                        ui.label(egui::RichText::new(self.alignment_recording_name()).monospace());
                         save = ui
                             .add_enabled(
                                 self.output_paths[index].is_some()
@@ -480,6 +463,19 @@ impl App {
                                 egui::Button::new("Save Snapshot…"),
                             )
                             .clicked();
+                    }
+                    SettingsTab::Device => {
+                        if let Some(draft) = &mut device_draft {
+                            let locked = recording || self.controller.has_pending();
+                            ui.add_enabled_ui(!locked, |ui| {
+                                self.measurement_device_fields(ui, draft);
+                                ui.add_space(6.);
+                                apply_device = ui.button("Apply").clicked();
+                            });
+                            if let Some(error) = &draft.error {
+                                ui.colored_label(Color32::LIGHT_RED, error);
+                            }
+                        }
                     }
                 }
                 ui.add_space(10.);
@@ -499,10 +495,15 @@ impl App {
                     .to_string(),
             );
         }
-        self.alignment_workspace.settings =
-            (!(close || devices || dialog.should_close())).then_some(next);
-        if devices {
-            self.open_measurement_settings();
+        if apply_device && let Some(draft) = &mut device_draft {
+            match self.apply_measurement_settings(draft) {
+                Ok(()) => device_draft = None,
+                Err(error) => draft.error = Some(error),
+            }
+        }
+        self.alignment_workspace.settings = (!(close || dialog.should_close())).then_some(next);
+        if self.alignment_workspace.settings.is_some() {
+            self.alignment_workspace.device_draft = device_draft;
         }
     }
 }
@@ -553,17 +554,18 @@ mod tests {
     use egui_kittest::{Harness, kittest::Queryable};
 
     #[test]
-    fn planned_filename_opens_recording_settings_and_changes_next_output() {
+    fn settings_output_changes_the_next_recording_folder() {
         let mut h = Harness::builder()
             .with_size(egui::vec2(1566., 700.))
             .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
         h.run_steps(3);
-        let original = h.state().alignment_recording_name(false);
-        h.get_by_label(&original).click();
+        h.get_by_label("Settings…").click();
+        h.run_steps(3);
+        h.get_by_label("Output").click();
         h.run_steps(3);
         assert_eq!(
             h.state().alignment_workspace.settings,
-            Some(SettingsTab::Recording)
+            Some(SettingsTab::Output)
         );
         let folder = h.state().outputs[App::ix(Workflow::SignalMonitor)]
             .dir
@@ -593,9 +595,8 @@ mod tests {
             h.state().settings.raw["measurements"]["signal_monitor"]["output"]["dir"],
             updated.display().to_string()
         );
-        h.get_by_label(&original);
         h.state_mut().plans[App::ix(Workflow::SignalMonitor)].n_points = 2;
-        h.get_by_label("Record").click();
+        h.get_by_label("Start").click();
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             h.run_steps(1);
@@ -622,7 +623,7 @@ mod tests {
             .with_size(egui::vec2(1566., 700.))
             .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
         h.run_steps(3);
-        h.get_by_label("Record").click();
+        h.get_by_label("Start").click();
         let deadline = Instant::now() + Duration::from_secs(4);
         loop {
             h.run_steps(1);
@@ -637,7 +638,10 @@ mod tests {
             );
             std::thread::sleep(Duration::from_millis(10));
         }
-        h.get_by_label("Stop Recording").click();
+        h.query_all_by_label("Stop")
+            .min_by(|a, b| a.rect().top().total_cmp(&b.rect().top()))
+            .unwrap()
+            .click();
         while h.state().snapshot.running {
             assert!(Instant::now() < deadline, "finite monitor did not stop");
             std::thread::sleep(Duration::from_millis(10));

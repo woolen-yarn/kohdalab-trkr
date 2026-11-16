@@ -6,7 +6,7 @@ use crate::inventory::DeviceIds;
 pub(super) struct Draft {
     workflow: Workflow,
     ids: DeviceIds,
-    error: Option<String>,
+    pub(super) error: Option<String>,
 }
 
 pub(super) struct PendingSelection {
@@ -200,22 +200,22 @@ impl App {
     }
 
     pub(super) fn open_measurement_settings(&mut self) {
-        let result = self
-            .sync_all_plans()
-            .and_then(|_| self.settings.workflow_device_ids(self.workflow));
-        match result {
-            Ok(ids) => {
-                self.measurement_settings = Some(Draft {
-                    workflow: self.workflow,
-                    ids,
-                    error: None,
-                })
-            }
+        match self.measurement_device_draft() {
+            Ok(draft) => self.measurement_settings = Some(draft),
             Err(error) => self.note(error),
         }
     }
 
-    fn apply_measurement_settings(&mut self, draft: &Draft) -> Result<(), String> {
+    pub(super) fn measurement_device_draft(&mut self) -> Result<Draft, String> {
+        self.sync_all_plans()?;
+        Ok(Draft {
+            workflow: self.workflow,
+            ids: self.settings.workflow_device_ids(self.workflow)?,
+            error: None,
+        })
+    }
+
+    pub(super) fn apply_measurement_settings(&mut self, draft: &Draft) -> Result<(), String> {
         if self.snapshot.running || self.controller.has_pending() || self.python_locked() {
             return Err("Wait for the current operation before applying settings".into());
         }
@@ -230,6 +230,77 @@ impl App {
         } else {
             self.request_device_selection(settings, draft.workflow, None)
         }
+    }
+
+    pub(super) fn measurement_device_fields(&self, ui: &mut egui::Ui, draft: &mut Draft) {
+        egui::Grid::new("measurement_device_roles")
+            .num_columns(2)
+            .spacing([10., 8.])
+            .show(ui, |ui| {
+                binding_choice(
+                    ui,
+                    "Lock-in",
+                    &mut draft.ids.lockin,
+                    self.inventory
+                        .lockins
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.id.clone(),
+                                format!("{} · {}", e.display_name(), e.model.name()),
+                            )
+                        })
+                        .collect(),
+                );
+                if uses_device(draft.workflow, "delay") {
+                    binding_choice(
+                        ui,
+                        "Delay Stage",
+                        &mut draft.ids.delay,
+                        self.inventory
+                            .delays
+                            .iter()
+                            .map(|e| {
+                                (
+                                    e.id.clone(),
+                                    format!(
+                                        "{} · {}",
+                                        e.display_name(),
+                                        e.config.stage.as_deref().unwrap_or(&e.config.controller)
+                                    ),
+                                )
+                            })
+                            .collect(),
+                    );
+                }
+                if uses_device(draft.workflow, "scanner") {
+                    binding_choice(
+                        ui,
+                        "Scanner",
+                        &mut draft.ids.scanner,
+                        self.inventory
+                            .scanners
+                            .iter()
+                            .map(|e| (e.id.clone(), e.display_name()))
+                            .collect(),
+                    );
+                }
+                optional_binding_choice(
+                    ui,
+                    "Power meter",
+                    &mut draft.ids.power_meter,
+                    self.inventory
+                        .power_meters
+                        .iter()
+                        .map(|e| {
+                            (
+                                e.id.clone(),
+                                format!("{} · Thorlabs PM100USB/PM100D", e.display_name()),
+                            )
+                        })
+                        .collect(),
+                );
+            });
     }
 
     pub(super) fn measurement_settings_dialog(&mut self, ctx: &egui::Context) {
@@ -265,86 +336,7 @@ impl App {
                                         .color(Color32::GRAY),
                                 );
                                 ui.add_space(6.);
-                                egui::Grid::new("measurement_device_roles")
-                                    .num_columns(2)
-                                    .spacing([10., 8.])
-                                    .show(ui, |ui| {
-                                        binding_choice(
-                                            ui,
-                                            "Lock-in",
-                                            &mut draft.ids.lockin,
-                                            self.inventory
-                                                .lockins
-                                                .iter()
-                                                .map(|e| {
-                                                    (
-                                                        e.id.clone(),
-                                                        format!(
-                                                            "{} · {}",
-                                                            e.display_name(),
-                                                            e.model.name()
-                                                        ),
-                                                    )
-                                                })
-                                                .collect(),
-                                        );
-                                        if uses_device(draft.workflow, "delay") {
-                                            binding_choice(
-                                                ui,
-                                                "Delay Stage",
-                                                &mut draft.ids.delay,
-                                                self.inventory
-                                                    .delays
-                                                    .iter()
-                                                    .map(|e| {
-                                                        (
-                                                            e.id.clone(),
-                                                            format!(
-                                                                "{} · {}",
-                                                                e.display_name(),
-                                                                e.config
-                                                                    .stage
-                                                                    .as_deref()
-                                                                    .unwrap_or(
-                                                                        &e.config.controller
-                                                                    )
-                                                            ),
-                                                        )
-                                                    })
-                                                    .collect(),
-                                            );
-                                        }
-                                        if uses_device(draft.workflow, "scanner") {
-                                            binding_choice(
-                                                ui,
-                                                "Scanner",
-                                                &mut draft.ids.scanner,
-                                                self.inventory
-                                                    .scanners
-                                                    .iter()
-                                                    .map(|e| (e.id.clone(), e.display_name()))
-                                                    .collect(),
-                                            );
-                                        }
-                                        optional_binding_choice(
-                                            ui,
-                                            "Power meter",
-                                            &mut draft.ids.power_meter,
-                                            self.inventory
-                                                .power_meters
-                                                .iter()
-                                                .map(|e| {
-                                                    (
-                                                        e.id.clone(),
-                                                        format!(
-                                                            "{} · Thorlabs PM100USB/PM100D",
-                                                            e.display_name()
-                                                        ),
-                                                    )
-                                                })
-                                                .collect(),
-                                        );
-                                    });
+                                self.measurement_device_fields(ui, &mut draft);
                                 ui.add_space(6.);
                                 ui.label(
                                     egui::RichText::new(
