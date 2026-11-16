@@ -1,12 +1,11 @@
-# KohdaLab TRKR 1.0.3
+# KohdaLab TRKR 1.0.4
 
-## Alignment and measurement / アライメントと測定
+## Alignment and connections / アライメントと接続
 
-- Signal Monitor has a compact Start/Stop row, with Acquisition, Output and Device in Settings. The plot shows elapsed time from the start of recording and uses the same visual style as TRKR. / Signal MonitorのStart／Stopを一列にまとめ、SettingsにAcquisition・Output・Deviceを配置しました。グラフは記録開始からの経過時間をTRKRと同じ描画スタイルで表示します。
-- TRKR, SRKR, STRKR and SRKR 2D estimate acquisition time from completed points and account for line transitions separately. Signal Monitor shows point counts. / TRKR・SRKR・STRKR・SRKR 2Dの残り取得時間を実測の完了点から計算し、行切り替えを別に扱います。Signal Monitorは点数を表示します。
-- Signal and power plots use engineering prefixes based on the acquired values. Live history is separated when the signal unit changes. / 信号・パワーのプロットは取得値に応じてSI接頭語を選び、信号単位が変わるとライブ履歴を分けます。
-
-Legacy replay data without an identifiable signal unit is displayed in its original numeric scale with the unit marked unknown. / 単位を特定できない旧CSVは、数値を換算せず、単位不明として再生します。
+- All Connect starts a new connection attempt after Stop. / Stopを押した後もAll Connectで接続できるよう修正しました。
+- Signal Monitor and Power Monitor share the same plot height and separate Start and Stop buttons. Signal channel selection is in Settings → Acquisition. Power Monitor shows a trend after Start and holds it after Stop. / 両モニターでプロットの高さを揃え、StartとStopを分けました。SignalのチャンネルはSettings → Acquisitionで選択します。PowerのプロットはStartで更新を始め、Stopで保持します。
+- Signal Monitor saves acquired points to CSV and keeps the recording visible after Stop. / Signal MonitorはStopで取得済みの点をCSVに保存し、記録を表示したままにします。
+- Opening Device on the lock-in card also expands Settings. / 左パネルのロックインでDeviceを開くとSettingsも展開します。
 
 ## Packages / 配布形式
 

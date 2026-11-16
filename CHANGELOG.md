@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.4
+
+- Fix All Connect after stopping a recording or operation.
+- Give Signal Monitor and Power Monitor matching plots and separate Start and Stop buttons. Move signal channel selection to Settings.
+- Expand lock-in Settings when its Device panel opens.
+
 ## 1.0.3
 
 - Compact Signal Monitor controls and keep the content edges aligned when switching measurement tabs. / Signal Monitorの操作列を簡潔にし、測定タブ切り替え時の左右の境界を揃えました。
