@@ -512,6 +512,30 @@ impl App {
             );
             return;
         };
+        let live = self.alignment_workspace.power_live;
+        let toggle = precision::rect(rect.right() - 110., rect.top(), 110., 26.);
+        let connected = self
+            .power_meter_status(&id)
+            .is_some_and(|status| status.connected);
+        if ui
+            .add_enabled_ui(connected || live, |ui| {
+                ui.put(
+                    toggle,
+                    egui::Button::new(if live { "Stop Live" } else { "Show Live" }),
+                )
+            })
+            .inner
+            .clicked()
+        {
+            self.alignment_workspace.power_live = !live;
+        }
+        if !self.alignment_workspace.power_live {
+            ui.put(
+                precision::rect(rect.left(), rect.top(), 200., 26.),
+                egui::Label::new("Live off"),
+            );
+            return;
+        }
         let status = self.power_meter_status(&id);
         let reading = status.and_then(|status| status.reading.as_ref());
         let active = status.is_some_and(|status| status.connected && status.error.is_none())
@@ -539,7 +563,7 @@ impl App {
         for point in &mut points {
             point[1] /= scale;
         }
-        let heading = precision::rect(rect.left(), rect.top(), rect.width(), 30.);
+        let heading = precision::rect(rect.left(), rect.top(), rect.width() - 120., 30.);
         ui.scope_builder(egui::UiBuilder::new().max_rect(heading), |ui| {
             ui.horizontal(|ui| {
                 let value = current

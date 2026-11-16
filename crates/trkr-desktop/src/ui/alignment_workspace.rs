@@ -47,7 +47,8 @@ impl SignalChannel {
 pub(super) struct Workspace {
     pub monitor: MonitorTab,
     signal: SignalChannel,
-    pub(super) show_last_recording: bool,
+    pub(super) signal_live: bool,
+    pub(super) power_live: bool,
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
     device_draft: Option<super::measurement_settings::Draft>,
@@ -199,13 +200,12 @@ impl App {
     fn alignment_uses_live_signal(&self) -> bool {
         self.alignment_hardware_signal_available()
             && !self.signal_recording()
-            && (!self.alignment_workspace.show_last_recording || self.trace.is_empty())
+            && self.alignment_workspace.signal_live
     }
 
     fn alignment_signal_monitor(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
         let recording = self.signal_recording();
-        let can_switch_source =
-            !recording && !self.trace.is_empty() && self.alignment_hardware_signal_available();
+        let live_available = self.alignment_hardware_signal_available();
         let mut form = precision::Form::new(ui, &mut self.geometry, panel.min);
         form.combo(
             "alignment_signal_mode",
@@ -213,24 +213,19 @@ impl App {
             &mut self.alignment_workspace.signal,
             &SignalChannel::CHOICES,
         );
-        if can_switch_source {
-            let (label, hint) = if self.alignment_workspace.show_last_recording {
-                ("Last recording", "Switch to the live signal")
-            } else {
-                ("Live", "Switch to the last recording")
-            };
-            if form
-                .ui
-                .put(
-                    precision::rect(panel.left() + 100., panel.top(), 114., 26.),
-                    egui::Button::new(label).min_size(Vec2::new(114., 26.)),
+        let live = self.alignment_workspace.signal_live;
+        if form
+            .ui
+            .add_enabled_ui(!recording && (live_available || live), |ui| {
+                ui.put(
+                    precision::rect(panel.left() + 100., panel.top(), 110., 26.),
+                    egui::Button::new(if live { "Stop Live" } else { "Show Live" }),
                 )
-                .on_hover_text(hint)
-                .clicked()
-            {
-                self.alignment_workspace.show_last_recording =
-                    !self.alignment_workspace.show_last_recording;
-            }
+            })
+            .inner
+            .clicked()
+        {
+            self.alignment_workspace.signal_live = !live;
         }
         let settings = form.button(
             "alignment_settings_button",
@@ -338,7 +333,7 @@ impl App {
                 "Last recording"
             }
         } else {
-            "Waiting for signal"
+            "Live off"
         };
         let angle = mode == DisplayMode::RTheta && index == 1;
         let factor = if angle { 1. } else { scale };
@@ -613,7 +608,7 @@ pub(super) fn draw_recent_trend(
 
 #[cfg(test)]
 #[test]
-fn completed_recording_can_return_to_live_and_be_viewed_again() {
+fn live_signal_requires_an_explicit_selection_and_is_hidden_during_recording() {
     let ctx = egui::Context::default();
     let mut app = App::with_context(&ctx, false);
     app.enable_alignment_monitor_preview();
@@ -622,10 +617,9 @@ fn completed_recording_can_return_to_live_and_be_viewed_again() {
     app.live
         .push(trkr_core::Signal::default(), ReadingOrigin::Hardware, "V");
     assert!(!app.trace.is_empty());
-    assert!(app.alignment_uses_live_signal());
-    app.alignment_workspace.show_last_recording = true;
     assert!(!app.alignment_uses_live_signal());
-    app.alignment_workspace.show_last_recording = false;
+    app.alignment_workspace.signal_live = true;
+    assert!(app.alignment_uses_live_signal());
     app.snapshot.running = true;
     app.active_workflow = Workflow::SignalMonitor;
     assert!(!app.alignment_uses_live_signal());
@@ -758,6 +752,25 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
             h.run_steps(1);
         }
+    }
+
+    #[test]
+    fn power_plot_requires_show_live() {
+        let mut h = Harness::builder()
+            .with_size(egui::vec2(1566., 700.))
+            .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
+        h.state_mut().enable_power_meter_preview();
+        h.run_steps(3);
+        h.get_by_label("Power Monitor").click();
+        h.run_steps(3);
+        assert!(h.query_all_by_label("Live off").next().is_some());
+        h.get_by_label("Show Live").click();
+        h.run_steps(3);
+        assert!(h.state().alignment_workspace.power_live);
+        assert!(h.query_all_by_label("Live off").next().is_none());
+        h.get_by_label("Stop Live").click();
+        h.run_steps(3);
+        assert!(h.query_all_by_label("Live off").next().is_some());
     }
 
     #[test]

@@ -1274,7 +1274,7 @@ impl App {
             engine::ReadingOrigin::Hardware
         };
         if self.workflow == Workflow::SignalMonitor {
-            self.alignment_workspace.show_last_recording = false;
+            self.alignment_workspace.signal_live = false;
         }
         self.trace.clear();
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
