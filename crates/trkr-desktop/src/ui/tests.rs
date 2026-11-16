@@ -1411,15 +1411,16 @@ fn alignment_shows_monitor_controls_plots_and_motion_panels_on_one_screen() {
         let size = egui::Vec2::new(precision::Columns::minimum_width(false, false), height);
         render_app_frame(&mut app, &context, size);
         for key in [
-            "alignment_signal_mode",
             "alignment_settings_button",
             "start_button",
+            "stop_button",
             "alignment_monitor_plots",
             "alignment_widget",
         ] {
             assert!(app.geometry.contains_key(key), "{key} at {height}");
         }
         for key in [
+            "alignment_signal_mode",
             "output_group",
             "output_dir_edit",
             "monitor_move_group",

@@ -462,6 +462,10 @@ pub enum Command {
     Shutdown,
 }
 impl Command {
+    fn reserves_cancellation(&self) -> bool {
+        self.is_job() || matches!(self, Self::ConnectInventory { .. })
+    }
+
     fn is_job(&self) -> bool {
         matches!(
             self,
@@ -682,8 +686,8 @@ impl Controller {
         if self.busy.load(Ordering::Acquire) && changes_lockin_settings(&command) {
             return Err(OperationError::LockinBusy.into());
         }
-        let job = command.is_job();
-        if job {
+        let cancellable = command.reserves_cancellation();
+        if cancellable {
             if self.busy.swap(true, Ordering::AcqRel) {
                 return Err(OperationError::Busy.into());
             }
@@ -696,7 +700,7 @@ impl Controller {
             .is_err()
         {
             self.pending.fetch_sub(1, Ordering::AcqRel);
-            if job {
+            if cancellable {
                 self.busy.store(false, Ordering::Release);
             }
             return Err(OperationError::WorkerStopped.into());
@@ -839,6 +843,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 break;
             }
             let job = cmd.is_job();
+            let cancellable = cmd.reserves_cancellation();
             let acquisition = matches!(
                 cmd,
                 Command::Run { .. } | Command::MonitorUntilStop { .. } | Command::Replay { .. }
@@ -927,6 +932,8 @@ fn controller_with_mode(read_only: bool) -> Controller {
                     Phase::Error
                 }
                 .into();
+            }
+            if cancellable {
                 working.store(false, Ordering::Release);
             }
             if background_refresh {

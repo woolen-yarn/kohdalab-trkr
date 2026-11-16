@@ -161,6 +161,12 @@ impl App {
                 self.power_meter_retired.insert(current.session_id.clone());
             }
         }
+        if let Some(trend) = &mut self.alignment_workspace.power_trend
+            && trend.id == id
+            && (!status.connected || trend.session_id != status.session_id)
+        {
+            trend.running = false;
+        }
         if status.connected {
             self.power_meter_disconnected.remove(&id);
         }
@@ -176,6 +182,21 @@ impl App {
                     history.pop_front();
                 }
                 self.power_meter_seen.insert(id.clone(), now);
+                if let Some(trend) = &mut self.alignment_workspace.power_trend
+                    && trend.running
+                    && trend.id == id
+                    && status.connected
+                    && status.error.is_none()
+                    && reading.corrected_w.is_finite()
+                {
+                    trend.simulated = reading.simulated;
+                    if trend.points.len() == POWER_HISTORY {
+                        trend.points.pop_front();
+                    }
+                    trend
+                        .points
+                        .push_back([trend.started.elapsed().as_secs_f64(), reading.corrected_w]);
+                }
             }
         }
         if let Some(existing) = self
@@ -493,81 +514,169 @@ impl App {
 
     pub(super) fn alignment_power_monitor(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         precision::record(&mut self.geometry, "alignment_power_monitor", rect);
-        let id = self
+        let configured = self
             .settings
             .workflow_device_ids(Workflow::SignalMonitor)
             .ok()
             .map(|ids| ids.power_meter)
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| self.inventory.selected.power_meter.clone());
-        let Some(entry) = self
-            .inventory
+        let mut connected_meters = self
+            .snapshot
             .power_meters
             .iter()
-            .find(|entry| entry.id == id)
-        else {
-            ui.put(
-                rect,
-                egui::Label::new("Add a power meter in Devices to view live power"),
-            );
-            return;
-        };
-        let status = self.power_meter_status(&id);
-        let reading = status.and_then(|status| status.reading.as_ref());
-        let active = status.is_some_and(|status| status.connected && status.error.is_none())
-            && self
-                .power_meter_seen
-                .get(&id)
-                .is_some_and(|seen| seen.elapsed() < Duration::from_secs(3));
-        let state = if status.is_some_and(|status| status.error.is_some()) {
-            "ERROR"
-        } else if active {
-            "LIVE"
-        } else if reading.is_some() {
-            "HELD"
-        } else {
-            "WAITING"
-        };
-        let mut points = self.power_history_points(&id, active);
-        let current = reading.map(|reading| reading.corrected_w);
-        let maximum = points
-            .iter()
-            .fold(current.unwrap_or(0.).abs(), |extent, p| {
-                extent.max(p[1].abs())
-            });
-        let (scale, prefix) = presentation::metric_divisor(maximum);
-        for point in &mut points {
-            point[1] /= scale;
-        }
-        let heading = precision::rect(rect.left(), rect.top(), rect.width(), 30.);
-        ui.scope_builder(egui::UiBuilder::new().max_rect(heading), |ui| {
-            ui.horizontal(|ui| {
-                let value = current
-                    .map_or_else(|| "— W".into(), |value| format_power(value, scale, prefix));
-                ui.label(
-                    egui::RichText::new(format!("P  {value}"))
-                        .size(18.)
-                        .strong()
-                        .color(crate::live_view::TEAL),
-                );
-                ui.weak(entry.display_name());
-                if reading.is_some_and(|reading| reading.simulated) {
-                    ui.weak("SIM");
+            .filter(|status| status.connected);
+        let fallback = connected_meters
+            .next()
+            .filter(|_| connected_meters.next().is_none());
+        let id = self
+            .alignment_workspace
+            .power_meter
+            .clone()
+            .unwrap_or_else(|| {
+                if configured.is_empty() {
+                    fallback.map(|status| status.id.clone()).unwrap_or_default()
+                } else {
+                    configured.to_owned()
                 }
-                ui.weak(state);
             });
-        });
-        let plot = egui::Rect::from_min_max(rect.min + Vec2::new(0., 33.), rect.max);
-        super::alignment_workspace::draw_recent_trend(
+        let running = self
+            .alignment_workspace
+            .power_trend
+            .as_ref()
+            .is_some_and(|trend| trend.running);
+        let status = self.power_meter_status(&id);
+        let ready = status.filter(|status| status.connected && status.error.is_none());
+        let session_id = ready.map(|status| status.session_id.clone());
+        let (start, stop) =
+            self.alignment_monitor_buttons(ui, rect, session_id.is_some() && !running, running);
+        if start && let Some(session_id) = session_id {
+            self.alignment_workspace.power_trend = Some(super::alignment_workspace::PowerTrend {
+                id: id.clone(),
+                session_id,
+                simulated: false,
+                started: Instant::now(),
+                running: true,
+                points: VecDeque::new(),
+            });
+        }
+        if stop && let Some(trend) = &mut self.alignment_workspace.power_trend {
+            trend.running = false;
+        }
+        let mut form = precision::Form::new(ui, &mut self.geometry, rect.min);
+        if form.button(
+            "alignment_power_settings_button",
+            precision::rect(rect.width() - 88., 0., 88., 26.),
+            "Settings…",
+            !self.demo_viewer,
+        ) {
+            self.alignment_cancel_hold();
+            self.alignment_workspace.power_settings = true;
+        }
+        if self.alignment_workspace.power_settings {
+            let dialog =
+                egui::Modal::new(egui::Id::new("alignment-power-settings")).show(ui.ctx(), |ui| {
+                    ui.heading("Power Monitor Settings");
+                    let mut selected = id.clone();
+                    let current = self
+                        .inventory
+                        .power_meters
+                        .iter()
+                        .find(|meter| meter.id == id)
+                        .map_or_else(
+                            || "Select a power meter".to_owned(),
+                            |meter| meter.display_name(),
+                        );
+                    ui.horizontal(|ui| {
+                        ui.label("Device");
+                        ui.add_enabled_ui(!running, |ui| {
+                            egui::ComboBox::from_id_salt("alignment-power-device")
+                                .selected_text(current)
+                                .show_ui(ui, |ui| {
+                                    for meter in &self.inventory.power_meters {
+                                        ui.selectable_value(
+                                            &mut selected,
+                                            meter.id.clone(),
+                                            meter.display_name(),
+                                        );
+                                    }
+                                });
+                        });
+                    });
+                    if selected != id {
+                        self.alignment_workspace.power_meter = Some(selected);
+                        self.alignment_workspace.power_trend = None;
+                    }
+                    ui.button("Done").clicked()
+                });
+            if dialog.inner || dialog.should_close() {
+                self.alignment_workspace.power_settings = false;
+            }
+        }
+        let area = self.alignment_monitor_plot_area(rect);
+        let trend = self.alignment_workspace.power_trend.as_ref();
+        let points = trend.map(|trend| &trend.points);
+        let current = points
+            .and_then(|points| points.back())
+            .map(|point| point[1]);
+        let maximum = points
+            .into_iter()
+            .flatten()
+            .map(|point| point[1].abs())
+            .fold(0., f64::max);
+        let (scale, prefix) = presentation::metric_divisor(maximum);
+        let value =
+            current.map_or_else(|| "— W".into(), |value| format_power(value, scale, prefix));
+        let status = self.power_meter_status(
+            trend
+                .filter(|trend| trend.running)
+                .map_or(&id, |trend| &trend.id),
+        );
+        let source = if status.is_some_and(|status| status.error.is_some()) {
+            "Power meter error"
+        } else if let Some(trend) = trend.filter(|trend| trend.running) {
+            if trend.started.elapsed().as_secs_f64()
+                - trend.points.back().map_or(0., |point| point[0])
+                >= 3.
+            {
+                "Stale"
+            } else {
+                "Monitoring"
+            }
+        } else if current.is_some() {
+            "Stopped"
+        } else if status.is_some_and(|status| status.connected) {
+            "Ready"
+        } else {
+            "Connect a power meter"
+        };
+        let value = if trend.is_some_and(|trend| trend.simulated) {
+            format!("P  {value} · SIM")
+        } else {
+            format!("P  {value}")
+        };
+        let x_origin = points
+            .filter(|points| points.len() == POWER_HISTORY)
+            .and_then(|points| points.front())
+            .map_or(0., |point| point[0]);
+        let label = format!("P ({prefix}W)");
+        let id = egui::Id::new((
+            "alignment-power",
+            &id,
+            trend.map(|trend| trend.started),
+            &label,
+        ));
+        super::alignment_workspace::draw_monitor_plot(
             ui,
-            plot,
-            egui::Id::new(("alignment-power", id)),
-            (
-                "Power",
-                &format!("{prefix}W"),
-                points,
-                crate::live_view::TEAL,
-            ),
+            area,
+            id,
+            (&value, source, &label, x_origin),
+            points
+                .into_iter()
+                .flatten()
+                .map(|p| [p[0], p[1] / scale])
+                .collect(),
+            0,
         );
     }
 

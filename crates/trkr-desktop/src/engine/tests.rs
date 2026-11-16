@@ -288,6 +288,41 @@ fn all_connect_collects_each_device_error_including_power_after_motion_failure()
 }
 
 #[test]
+fn all_connect_after_stop_attempts_devices_and_releases_the_worker() {
+    let controller = controller();
+    for _ in 0..2 {
+        controller.stop();
+        controller
+            .send(Command::ConnectInventory {
+                inventory: invalid_connection_inventory(),
+                errors: vec![],
+            })
+            .unwrap();
+        let Event::Error(error) = controller
+            .events
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+        else {
+            panic!("expected a per-device connection error");
+        };
+        assert!(
+            error.contains("bad-lockin") && error.contains("bad-power"),
+            "{error}"
+        );
+        assert!(!error.contains("Connection attempts stopped"), "{error}");
+        assert!(matches!(
+            controller
+                .events
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap(),
+            Event::State(_)
+        ));
+        assert!(!controller.has_pending());
+        assert!(!controller.busy.load(Ordering::Acquire));
+    }
+}
+
+#[test]
 fn all_connect_stop_does_not_attempt_the_remaining_devices() {
     let mut session = Session::default();
     let (send, _events) = mpsc::sync_channel(16);

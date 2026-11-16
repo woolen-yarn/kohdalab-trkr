@@ -1273,9 +1273,6 @@ impl App {
         } else {
             engine::ReadingOrigin::Hardware
         };
-        if self.workflow == Workflow::SignalMonitor {
-            self.alignment_workspace.show_last_recording = false;
-        }
         self.trace.clear();
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         let index = Self::ix(self.workflow);
@@ -1376,6 +1373,13 @@ impl App {
             && !self.controller.has_pending()
         {
             self.mode = s.signal_mode;
+        }
+        if let Some(trend) = &mut self.alignment_workspace.power_trend
+            && !s.power_meters.iter().any(|meter| {
+                meter.id == trend.id && meter.session_id == trend.session_id && meter.connected
+            })
+        {
+            trend.running = false;
         }
         self.snapshot = s;
         for status in self.snapshot.power_meters.clone() {
@@ -2060,12 +2064,17 @@ impl App {
             form.enabled = !self.demo_viewer;
             let w = rect.width();
             precision::record(form.geometry, "lockin_group", rect);
+            let was_expanded = self.device_expanded[0];
             form.toggle(
                 "lockin_device",
                 precision::rect(11., 27., 71., 24.),
                 &mut self.device_expanded[0],
                 "Device",
             );
+            if !was_expanded && self.device_expanded[0] {
+                self.lockin_settings_expanded = true;
+                form.ui.ctx().request_repaint();
+            }
             form.value(
                 "lockin_name",
                 precision::rect(102., 27., w - 212., 24.),
@@ -4014,6 +4023,8 @@ impl App {
         if load && !self.demo_viewer {
             match Settings::load(std::path::Path::new(&self.config_path)) {
                 Ok(s) => {
+                    self.alignment_workspace.power_trend = None;
+                    self.alignment_workspace.power_meter = None;
                     self.settings = s;
                     self.hydrate();
                     self.device_feedback.clear();
