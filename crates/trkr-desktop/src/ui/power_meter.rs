@@ -535,17 +535,15 @@ impl App {
             .fold(current.unwrap_or(0.).abs(), |extent, p| {
                 extent.max(p[1].abs())
             });
-        let (scale, prefix) = power_scale(maximum);
+        let (scale, prefix) = presentation::metric_divisor(maximum);
         for point in &mut points {
             point[1] /= scale;
         }
         let heading = precision::rect(rect.left(), rect.top(), rect.width(), 30.);
         ui.scope_builder(egui::UiBuilder::new().max_rect(heading), |ui| {
             ui.horizontal(|ui| {
-                let value = current.map_or_else(
-                    || "— W".into(),
-                    |value| format!("{:.3} {prefix}W", value / scale),
-                );
+                let value = current
+                    .map_or_else(|| "— W".into(), |value| format_power(value, scale, prefix));
                 ui.label(
                     egui::RichText::new(format!("P  {value}"))
                         .size(18.)
@@ -602,8 +600,10 @@ impl App {
         let points = self.power_history_points(id, active);
         let maximum = points
             .iter()
-            .fold(0_f64, |extent, p| extent.max(p[1].abs()));
-        let (scale, prefix) = power_scale(maximum);
+            .fold(current.unwrap_or(0.).abs(), |extent, p| {
+                extent.max(p[1].abs())
+            });
+        let (scale, prefix) = presentation::metric_divisor(maximum);
         let window_seconds = points.first().map_or(2., |p| -p[0]);
         crate::live_view::draw_channel(
             ui,
@@ -616,7 +616,7 @@ impl App {
                 active,
                 unit: "W".into(),
                 prefix,
-                display: current.map_or_else(|| "— W".into(), format_power),
+                display: current.map_or_else(|| "— W".into(), |w| format_power(w, scale, prefix)),
                 current,
                 points,
                 age_seconds: self
@@ -639,29 +639,14 @@ fn timestamp_seconds(value: &str) -> f64 {
         .unwrap_or(0.)
 }
 
-fn format_power(watts: f64) -> String {
+fn format_power(watts: f64, divisor: f64, prefix: &str) -> String {
     if !watts.is_finite() {
         return "— W".into();
     }
-    let (scale, prefix) = power_scale(watts);
     format!(
         "{} {prefix}W",
-        App::significant(watts / scale, crate::power_meter::SIGNIFICANT_DIGITS)
+        App::significant(watts / divisor, crate::power_meter::SIGNIFICANT_DIGITS)
     )
-}
-
-fn power_scale(watts: f64) -> (f64, &'static str) {
-    if watts.abs() >= 1. {
-        (1., "")
-    } else if watts.abs() >= 1e-3 {
-        (1e-3, "m")
-    } else if watts.abs() >= 1e-6 {
-        (1e-6, "µ")
-    } else if watts.abs() >= 1e-9 {
-        (1e-9, "n")
-    } else {
-        (1e-12, "p")
-    }
 }
 
 #[cfg(test)]
@@ -792,8 +777,8 @@ mod tests {
 
     #[test]
     fn power_display_uses_si_prefixes_without_zero_substitution() {
-        assert_eq!(format_power(2.5e-3), "2.5 mW");
-        assert_eq!(format_power(f64::NAN), "— W");
+        assert_eq!(format_power(2.5e-3, 1e-3, "m"), "2.5 mW");
+        assert_eq!(format_power(f64::NAN, 1., ""), "— W");
     }
 
     #[test]

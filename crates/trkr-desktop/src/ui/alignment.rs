@@ -868,7 +868,10 @@ impl App {
                 let signal =
                     trkr_core::Signal::new(x, y, x.hypot(y), y.atan2(x).to_degrees()).ok()?;
                 Some(Sample {
-                    recording: Default::default(),
+                    recording: Box::new(crate::engine::SampleRecording {
+                        signal_unit: "V".into(),
+                        ..Default::default()
+                    }),
                     timing: Default::default(),
                     captured_at: None,
                     elapsed: t,

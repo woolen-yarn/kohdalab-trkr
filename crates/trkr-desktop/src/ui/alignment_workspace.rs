@@ -258,15 +258,29 @@ impl App {
         let use_live = hardware_live && !self.signal_recording() && latest.is_none();
         let fresh = use_live && self.live.recent();
         let base_unit = if use_live {
-            self.display_signal_unit()
+            self.live.unit().unwrap_or("unknown").into()
         } else {
-            latest
-                .map(|s| s.recording.signal_unit.as_str())
-                .filter(|u| !u.is_empty())
-                .map_or_else(|| self.display_signal_unit(), str::to_owned)
+            latest.map_or_else(
+                || self.display_signal_unit(),
+                |sample| presentation::sample_signal_unit(sample).into(),
+            )
         };
+        let live_points = use_live.then(|| {
+            self.live
+                .points_at(mode, index, 1., self.live.newest(fresh))
+        });
         let (scale, unit) = if matches!(base_unit.as_str(), "A" | "V") {
-            let (scale, label) = qualified_lockin_sensitivity(&self.snapshot, self.model)
+            let magnitude = if let Some(points) = &live_points {
+                points
+                    .iter()
+                    .map(|point| point[1].abs())
+                    .filter(|&value| value > 0.)
+                    .reduce(f64::max)
+            } else {
+                presentation::trace_signal_magnitude(&self.trace, mode, false)
+            };
+            let (scale, label) = magnitude
+                .or_else(|| qualified_lockin_sensitivity(&self.snapshot, self.model))
                 .map(presentation::voltage_scale_from_sensitivity)
                 .unwrap_or_else(|| {
                     if self.source_demo && !self.demo_viewer {
@@ -306,9 +320,11 @@ impl App {
         let value = value
             .map(|signal| format!("{:.4} {unit}", mode.values(signal)[index] * factor))
             .unwrap_or_else(|| format!("— {unit}"));
-        let points = if use_live {
-            self.live
-                .points_at(mode, index, scale, self.live.newest(fresh))
+        let points = if let Some(mut points) = live_points {
+            for point in &mut points {
+                point[1] *= factor;
+            }
+            points
         } else {
             self.trace
                 .iter()
@@ -316,7 +332,8 @@ impl App {
                     let value = mode.values(s.signal)[index] * factor;
                     ((angle
                         || latest.is_some_and(|last| {
-                            s.recording.signal_unit == last.recording.signal_unit
+                            presentation::sample_signal_unit(s)
+                                == presentation::sample_signal_unit(last)
                         }))
                         && value.is_finite())
                     .then_some([s.elapsed, value])
@@ -347,7 +364,13 @@ impl App {
         } else {
             format!("{name} ({unit})")
         };
-        let id = egui::Id::new(("alignment-signal", name, use_live, self.plot_epoch));
+        let id = egui::Id::new((
+            "alignment-signal",
+            name,
+            use_live,
+            self.plot_epoch,
+            &y_label,
+        ));
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(chart)
@@ -578,7 +601,7 @@ fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
         },
         |ui| app.alignment_signal_plot(ui, ui.max_rect()),
     );
-    let id = egui::Id::new(("alignment-signal", "X", false, app.plot_epoch));
+    let id = egui::Id::new(("alignment-signal", "X", false, app.plot_epoch, "X (µV)"));
     let bounds = egui_plot::PlotMemory::load(&ctx, id).unwrap();
     assert!(bounds.bounds().min()[0] <= 0.);
     assert!(bounds.bounds().max()[0] >= end);

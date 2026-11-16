@@ -110,16 +110,40 @@ pub struct PlotViewport<'a> {
     pub history: &'a crate::plot_history::History,
 }
 
-pub fn voltage_scale_from_sensitivity(sensitivity_v: f64) -> (f64, &'static str) {
-    if sensitivity_v < 1e-6 {
-        (1e9, "nV")
-    } else if sensitivity_v < 1e-3 {
-        (1e6, "uV")
-    } else if sensitivity_v < 1. {
-        (1e3, "mV")
-    } else {
-        (1., "V")
+const METRIC_SCALES: [(f64, &str, &str); 11] = [
+    (1e12, "T", "TV"),
+    (1e9, "G", "GV"),
+    (1e6, "M", "MV"),
+    (1e3, "k", "kV"),
+    (1., "", "V"),
+    (1e-3, "m", "mV"),
+    (1e-6, "µ", "µV"),
+    (1e-9, "n", "nV"),
+    (1e-12, "p", "pV"),
+    (1e-15, "f", "fV"),
+    (1e-18, "a", "aV"),
+];
+
+fn metric_scale(value: f64) -> (f64, &'static str, &'static str) {
+    let magnitude = value.abs();
+    if !magnitude.is_finite() || magnitude == 0. {
+        return (1., "", "V");
     }
+    METRIC_SCALES
+        .iter()
+        .copied()
+        .find(|(factor, _, _)| magnitude >= factor * (1. - 1e-12))
+        .unwrap_or(METRIC_SCALES[METRIC_SCALES.len() - 1])
+}
+
+pub(crate) fn metric_divisor(value: f64) -> (f64, &'static str) {
+    let (factor, prefix, _) = metric_scale(value);
+    (factor, prefix)
+}
+
+pub fn voltage_scale_from_sensitivity(sensitivity_v: f64) -> (f64, &'static str) {
+    let (factor, _, label) = metric_scale(sensitivity_v);
+    (factor.recip(), label)
 }
 
 /// Use the largest displayed signal to choose a shared prefix for X/Y or R.
@@ -140,6 +164,17 @@ pub(crate) fn trace_signal_magnitude(
         .reduce(f64::max)
 }
 
+fn acquired_plot_scale(
+    samples: &[Sample],
+    mode: DisplayMode,
+    log: bool,
+) -> Option<(f64, &'static str)> {
+    if !matches!(trace_signal_unit(samples), Some("V" | "A")) {
+        return None;
+    }
+    trace_signal_magnitude(samples, mode, log).map(voltage_scale_from_sensitivity)
+}
+
 /// Display scale only: storage retains the original acquired value and unit.
 pub fn signal_display_scale(scale: f64, label: &str, unit: &str) -> (f64, String) {
     if !matches!(unit, "V" | "A") {
@@ -155,13 +190,15 @@ fn signal_component(samples: &[Sample], sample: &Sample, mode: DisplayMode, chan
     signal_component_in(trace_signal_unit(samples), sample, mode, channel)
 }
 
-/// Unit of the newest sample, or `None` when it is unqualified.  Points whose
-/// unit differs from it are hidden rather than relabelled.
+/// Use the newest sample's unit. Older points in another unit cannot share
+/// its intensity axis. Unitless values remain unqualified.
 fn trace_signal_unit(samples: &[Sample]) -> Option<&str> {
-    samples
-        .last()
-        .map(|last| last.recording.signal_unit.as_str())
-        .filter(|unit| !unit.is_empty())
+    samples.last().map(sample_signal_unit)
+}
+
+pub(crate) fn sample_signal_unit(sample: &Sample) -> &str {
+    let unit = &sample.recording.signal_unit;
+    if unit.is_empty() { "unknown" } else { unit }
 }
 
 fn signal_component_in(
@@ -170,8 +207,9 @@ fn signal_component_in(
     mode: DisplayMode,
     channel: usize,
 ) -> f64 {
-    if let Some(unit) = trace_unit
-        && sample.recording.signal_unit != unit
+    if !(mode == DisplayMode::RTheta && channel == 1)
+        && let Some(unit) = trace_unit
+        && sample_signal_unit(sample) != unit
     {
         return f64::NAN;
     }
@@ -239,6 +277,7 @@ pub(crate) fn color(i: usize) -> Color32 {
 pub fn plot_count(workflow: Workflow) -> usize {
     workflow.plot_count()
 }
+#[derive(Clone, Copy)]
 struct PlotView<'a> {
     epoch: u64,
     y_log: bool,
@@ -258,13 +297,20 @@ struct LineSpec {
 }
 
 impl PlotView<'_> {
+    fn auto_signal_units(mut self) -> Self {
+        if let Some((scale, label)) = acquired_plot_scale(
+            self.samples,
+            self.mode,
+            self.y_log && self.plan.workflow == Workflow::Trkr,
+        ) {
+            self.voltage_scale = scale;
+            self.voltage_unit = label;
+        }
+        self
+    }
+
     fn trace_display_scale(&self) -> (f64, String) {
-        match self
-            .samples
-            .last()
-            .map(|s| s.recording.signal_unit.as_str())
-            .filter(|unit| !unit.is_empty())
-        {
+        match trace_signal_unit(self.samples) {
             Some(unit) => signal_display_scale(self.voltage_scale, self.voltage_unit, unit),
             None => (self.voltage_scale, self.voltage_unit.into()),
         }
@@ -705,7 +751,7 @@ pub fn plots(
     geometry: &mut crate::precision::Geometry,
     viewport: PlotViewport<'_>,
 ) {
-    let view = PlotView {
+    let fallback_view = PlotView {
         epoch: viewport.epoch,
         y_log: viewport.y_log,
         samples,
@@ -714,6 +760,7 @@ pub fn plots(
         voltage_scale: viewport.voltage_scale,
         voltage_unit: viewport.voltage_unit,
     };
+    let view = fallback_view.auto_signal_units();
     let gap = 8.;
     let first_height = ((viewport.area.height() - gap).max(0.) * 0.5).ceil();
     let second_height = (viewport.area.height() - gap - first_height)
@@ -734,6 +781,25 @@ pub fn plots(
                 Vec2::new(viewport.area.width(), second_height),
             )
         }
+    };
+    let retained_view = if plan.workflow == Workflow::Srkr {
+        let other_axis = match plan.fast {
+            Axis::X => Axis::Y,
+            Axis::Y => Axis::X,
+            Axis::U => Axis::V,
+            Axis::V => Axis::U,
+            Axis::T => Axis::T,
+        };
+        viewport.history.srkr_axis(plan, other_axis).map(|trace| {
+            PlotView {
+                samples: &trace.samples,
+                plan: &trace.plan,
+                ..fallback_view
+            }
+            .auto_signal_units()
+        })
+    } else {
+        None
     };
     for (signal, map_cache) in cache.iter_mut().enumerate() {
         let row = row_rect(signal);
@@ -768,16 +834,8 @@ pub fn plots(
             {
                 let rect =
                     Rect::from_min_size(egui::pos2(x, row.min.y), Vec2::new(width, row.height()));
-                let retained = (axis != plan.fast)
-                    .then(|| viewport.history.srkr_axis(plan, axis))
-                    .flatten();
-                let axis_view = PlotView {
-                    samples: retained
-                        .map(|trace| trace.samples.as_slice())
-                        .unwrap_or(view.samples),
-                    plan: retained.map(|trace| &trace.plan).unwrap_or(view.plan),
-                    ..view
-                };
+                let retained = (axis != plan.fast).then_some(retained_view).flatten();
+                let axis_view = retained.unwrap_or(view);
                 axis_view.line(
                     ui,
                     rect,
@@ -843,6 +901,13 @@ pub fn verify_visible_data(
         return Err("No replay plot samples".into());
     }
     let log = y_log && plan.workflow == Workflow::Trkr;
+    let scale = acquired_plot_scale(samples, mode, log).map_or(scale, |(scale, _)| scale);
+
+    let value_scale = if matches!(trace_signal_unit(samples), Some("V" | "A")) {
+        scale
+    } else {
+        1.
+    };
     for signal in 0..2 {
         let spec_id = match plan.workflow {
             Workflow::SignalMonitor | Workflow::Trkr => "standard",
@@ -886,7 +951,7 @@ pub fn verify_visible_data(
                 * if mode == DisplayMode::RTheta && signal == 1 {
                     1.
                 } else {
-                    scale
+                    value_scale
                 };
             let Some(y) = plotted_y(y, log) else {
                 continue;
@@ -1125,9 +1190,9 @@ mod tests {
         mode: DisplayMode,
         channel: usize,
     ) -> f64 {
-        if let Some(last) = samples.last()
-            && !last.recording.signal_unit.is_empty()
-            && sample.recording.signal_unit != last.recording.signal_unit
+        if !(mode == DisplayMode::RTheta && channel == 1)
+            && let Some(last) = samples.last()
+            && sample_signal_unit(sample) != sample_signal_unit(last)
         {
             return f64::NAN;
         }
@@ -1535,9 +1600,86 @@ mod tests {
             trace_signal_magnitude(&trace, mode, log).map(voltage_scale_from_sensitivity)
         };
         assert_eq!(prefix(DisplayMode::Xy, false), Some((1e3, "mV")));
-        assert_eq!(prefix(DisplayMode::Xy, true), Some((1e6, "uV")));
+        assert_eq!(prefix(DisplayMode::Xy, true), Some((1e6, "µV")));
         assert_eq!(prefix(DisplayMode::RTheta, false), Some((1e3, "mV")));
         assert_eq!(trace_signal_magnitude(&[], DisplayMode::Xy, false), None);
+    }
+
+    #[test]
+    fn replay_bounds_follow_the_mode_specific_prefix() {
+        let ctx = egui::Context::default();
+        let plan = Plan {
+            workflow: Workflow::Trkr,
+            ..Plan::default()
+        };
+        let samples: Vec<_> = plan
+            .targets()
+            .unwrap()
+            .into_iter()
+            .take(2)
+            .enumerate()
+            .map(|(index, target)| Sample {
+                recording: Box::new(crate::engine::SampleRecording {
+                    signal_unit: "V".into(),
+                    ..Default::default()
+                }),
+                timing: Default::default(),
+                captured_at: None,
+                elapsed: index as f64,
+                target,
+                signal: Signal::new(0.8e-3, 0.8e-3, 1.13e-3, 45.).unwrap(),
+                position: Position::default(),
+            })
+            .collect();
+        let mut cache = [None, None];
+        let mut geometry = crate::precision::Geometry::new();
+        let history = crate::plot_history::History::default();
+        for (mode, log) in [
+            (DisplayMode::Xy, false),
+            (DisplayMode::RTheta, false),
+            (DisplayMode::Xy, true),
+        ] {
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800., 500.))),
+                    ..Default::default()
+                },
+                |ui| {
+                    plots(
+                        ui,
+                        &samples,
+                        &plan,
+                        mode,
+                        &mut cache,
+                        &mut geometry,
+                        PlotViewport {
+                            area: ui.max_rect(),
+                            epoch: 1,
+                            y_log: log,
+                            voltage_scale: 1e3,
+                            voltage_unit: "mV",
+                            history: &history,
+                        },
+                    )
+                },
+            );
+            verify_visible_data(&ctx, &samples, &plan, mode, 1e3, 1, log).unwrap();
+        }
+    }
+
+    #[test]
+    fn engineering_prefixes_cover_small_values_and_exact_boundaries() {
+        for (value, factor, prefix) in [
+            (0., 1., ""),
+            (-1e-3, 1e-3, "m"),
+            (1e-6 * (1. - 2e-13), 1e-6, "µ"),
+            (0.99e-6, 1e-9, "n"),
+            (62e-15, 1e-15, "f"),
+            (3e-12, 1e-12, "p"),
+            (f64::NAN, 1., ""),
+        ] {
+            assert_eq!(metric_divisor(value), (factor, prefix));
+        }
     }
 
     #[test]

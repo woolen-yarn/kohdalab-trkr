@@ -1390,7 +1390,9 @@ impl App {
                 || self.live.signal().is_none())
             && let Some(signal) = self.snapshot.signal
         {
-            self.live.push(signal, engine::ReadingOrigin::Hardware);
+            let unit = snapshot_signal_unit(&self.snapshot, self.model);
+            self.live
+                .push(signal, engine::ReadingOrigin::Hardware, unit);
         }
     }
     fn receive(&mut self) {
@@ -1429,12 +1431,8 @@ impl App {
                         self.eta.observe(timing);
                     }
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
-                        if self.trace.last().is_some_and(|last| {
-                            last.recording.signal_unit != s.recording.signal_unit
-                        }) {
-                            self.live.clear();
-                        }
-                        self.live.push(s.signal, self.active_live_origin);
+                        self.live
+                            .push(s.signal, self.active_live_origin, &s.recording.signal_unit);
                     }
                     let trace = if self.active_workflow == self.workflow {
                         &mut self.trace
@@ -1448,7 +1446,8 @@ impl App {
                     self.snapshot.signal = Some(reading.signal);
                     self.snapshot.signal_origin = Some(reading.origin);
                     self.snapshot.position = reading.position;
-                    self.live.push(reading.signal, reading.origin);
+                    self.live
+                        .push(reading.signal, reading.origin, &reading.signal_unit);
                 }
                 Event::Phase(phase) => self.snapshot.phase = phase,
                 Event::State(s) => self.apply_snapshot(*s),
@@ -1957,7 +1956,11 @@ impl App {
     }
     fn lockin(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let previous_mode = self.mode;
-        let signal_unit = self.display_signal_unit();
+        let signal_unit = self
+            .live
+            .unit()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.display_signal_unit());
         let phase = device_phase(
             self.snapshot.devices[0],
             self.snapshot.running,
@@ -1968,11 +1971,6 @@ impl App {
         let caption = device_caption(self.snapshot.devices[0], self.model.name(), phase);
         self.poll_gpib_refresh();
         let sensitivity = qualified_lockin_sensitivity(&self.snapshot, self.model);
-        let (voltage_scale, voltage_unit) = sensitivity
-            .map(presentation::voltage_scale_from_sensitivity)
-            .unwrap_or_else(|| self.demo_voltage_scale());
-        let (voltage_scale, voltage_unit) =
-            presentation::signal_display_scale(voltage_scale, voltage_unit, &signal_unit);
         let alarm = lockin_health_text(&self.snapshot.lockin);
         let time_constant = self
             .snapshot
@@ -2194,7 +2192,7 @@ impl App {
                 );
             }
             let sens = sensitivity
-                .map(|v| format!("{} {voltage_unit}", Self::significant(v * voltage_scale, 3)))
+                .map(|value| Self::si_text(value, sensitivity_unit))
                 .unwrap_or_else(|| "-".into());
             let state = if self.snapshot.devices[0]
                 && matches!(origin, Some(engine::ReadingOrigin::Hardware))
@@ -3911,13 +3909,7 @@ impl App {
             .as_ref()
             .unwrap_or_else(|| self.plan())
             .clone();
-        let magnitude = if plan.workflow == Workflow::Trkr {
-            presentation::trace_signal_magnitude(&self.trace, self.mode, self.trkr_log_y)
-        } else {
-            None
-        };
-        let (scale, unit) = magnitude
-            .or_else(|| qualified_lockin_sensitivity(&self.snapshot, self.model))
+        let (scale, unit) = qualified_lockin_sensitivity(&self.snapshot, self.model)
             .map(presentation::voltage_scale_from_sensitivity)
             .unwrap_or_else(|| self.demo_voltage_scale());
         let signal_unit = self
