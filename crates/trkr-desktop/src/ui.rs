@@ -115,6 +115,7 @@ const MEASUREMENT_TABS: [Workflow; 4] = [
     Workflow::Strkr,
     Workflow::Srkr2d,
 ];
+const MEASUREMENT_PAGE_TOP: f32 = 30.;
 const MEASUREMENT_TAB_WIDTHS: [f32; 4] = [51., 51., 57., 68.];
 fn show_scan_theta(workflow: Workflow, axis: Axis) -> bool {
     if workflow == Workflow::Srkr2d {
@@ -567,8 +568,7 @@ impl App {
                 self.alignment_workspace.monitor = alignment_workspace::MonitorTab::Power;
             }
             if state == "alignment-recording-settings" {
-                self.alignment_workspace.settings =
-                    Some(alignment_workspace::SettingsTab::Recording);
+                self.alignment_workspace.settings = Some(alignment_workspace::SettingsTab::Output);
             }
             // The preview re-hydrates the profile; Alignment now shows the
             // Signal Monitor Output, so keep public captures path-neutral.
@@ -1273,6 +1273,9 @@ impl App {
         } else {
             engine::ReadingOrigin::Hardware
         };
+        if self.workflow == Workflow::SignalMonitor {
+            self.alignment_workspace.show_last_recording = false;
+        }
         self.trace.clear();
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         let index = Self::ix(self.workflow);
@@ -1348,10 +1351,11 @@ impl App {
         }
         s.power_meters
             .retain(|status| !self.power_meter_retired.contains(&status.session_id));
+        let previous_unit = snapshot_signal_unit(&self.snapshot, self.model);
+        let incoming_unit = snapshot_signal_unit(&s, self.model);
         if !self.source_demo
             && !self.demo_viewer
-            && snapshot_signal_unit(&self.snapshot, self.model)
-                != snapshot_signal_unit(&s, self.model)
+            && matches!((previous_unit, incoming_unit), ("V", "A") | ("A", "V"))
         {
             self.live.clear();
         }
@@ -1386,11 +1390,12 @@ impl App {
             && self.snapshot.devices[0]
             && !self.source_demo
             && self.snapshot.signal_origin == Some(engine::ReadingOrigin::Hardware)
-            && (self.live.origin() != Some(engine::ReadingOrigin::Hardware)
-                || self.live.signal().is_none())
+            && self.live.origin() != Some(engine::ReadingOrigin::Hardware)
             && let Some(signal) = self.snapshot.signal
         {
-            self.live.push(signal, engine::ReadingOrigin::Hardware);
+            let unit = snapshot_signal_unit(&self.snapshot, self.model);
+            self.live
+                .push(signal, engine::ReadingOrigin::Hardware, unit);
         }
     }
     fn receive(&mut self) {
@@ -1426,15 +1431,11 @@ impl App {
                     if let (Some(timing), Some(captured)) = (s.timing.progress, s.captured_at)
                         && timing.completed_at >= captured
                     {
-                        self.eta.observe(s.recording.point_index, timing);
+                        self.eta.observe(timing);
                     }
                     if self.active_live_origin == engine::ReadingOrigin::Replay {
-                        if self.trace.last().is_some_and(|last| {
-                            last.recording.signal_unit != s.recording.signal_unit
-                        }) {
-                            self.live.clear();
-                        }
-                        self.live.push(s.signal, self.active_live_origin);
+                        self.live
+                            .push(s.signal, self.active_live_origin, &s.recording.signal_unit);
                     }
                     let trace = if self.active_workflow == self.workflow {
                         &mut self.trace
@@ -1442,15 +1443,14 @@ impl App {
                         &mut self.saved_traces[Self::ix(self.active_workflow)]
                     };
                     trace.push(s);
-                    if trace.len() > MAX_TRACE {
-                        trace.drain(..MAX_TRACE / 2);
-                    }
+                    trim_plot_trace(trace, self.active_workflow, MAX_TRACE);
                 }
                 Event::Live(reading) => {
                     self.snapshot.signal = Some(reading.signal);
                     self.snapshot.signal_origin = Some(reading.origin);
                     self.snapshot.position = reading.position;
-                    self.live.push(reading.signal, reading.origin);
+                    self.live
+                        .push(reading.signal, reading.origin, &reading.signal_unit);
                 }
                 Event::Phase(phase) => self.snapshot.phase = phase,
                 Event::State(s) => self.apply_snapshot(*s),
@@ -1959,7 +1959,11 @@ impl App {
     }
     fn lockin(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         let previous_mode = self.mode;
-        let signal_unit = self.display_signal_unit();
+        let signal_unit = self
+            .live
+            .unit()
+            .map(str::to_owned)
+            .unwrap_or_else(|| self.display_signal_unit());
         let phase = device_phase(
             self.snapshot.devices[0],
             self.snapshot.running,
@@ -1970,11 +1974,6 @@ impl App {
         let caption = device_caption(self.snapshot.devices[0], self.model.name(), phase);
         self.poll_gpib_refresh();
         let sensitivity = qualified_lockin_sensitivity(&self.snapshot, self.model);
-        let (voltage_scale, voltage_unit) = sensitivity
-            .map(presentation::voltage_scale_from_sensitivity)
-            .unwrap_or_else(|| self.demo_voltage_scale());
-        let (voltage_scale, voltage_unit) =
-            presentation::signal_display_scale(voltage_scale, voltage_unit, &signal_unit);
         let alarm = lockin_health_text(&self.snapshot.lockin);
         let time_constant = self
             .snapshot
@@ -2196,7 +2195,7 @@ impl App {
                 );
             }
             let sens = sensitivity
-                .map(|v| format!("{} {voltage_unit}", Self::significant(v * voltage_scale, 3)))
+                .map(|value| Self::si_text(value, sensitivity_unit))
                 .unwrap_or_else(|| "-".into());
             let state = if self.snapshot.devices[0]
                 && matches!(origin, Some(engine::ReadingOrigin::Hardware))
@@ -3333,11 +3332,12 @@ impl App {
         }
         precision::record(&mut self.geometry, "measurement_tabs", area);
         let page = rect(
-            area.min.x + 2.,
-            area.min.y + 26.,
-            area.width() - 6.,
-            area.height() - 30.,
+            area.min.x,
+            area.min.y + MEASUREMENT_PAGE_TOP,
+            area.width(),
+            area.height() - MEASUREMENT_PAGE_TOP - 4.,
         );
+        precision::record(&mut self.geometry, "measurement_page", page);
         ui.painter().rect(
             page,
             10.,
@@ -4105,12 +4105,8 @@ impl App {
             && self.active_workflow == self.workflow
     }
     fn eta_label(&self, now: Instant) -> String {
-        if self.showing_until_stop_run() {
-            return if self.snapshot.running {
-                "Continuous".into()
-            } else {
-                "-".into()
-            };
+        if self.workflow == Workflow::SignalMonitor {
+            return "-".into();
         }
         if !self.snapshot.running
             || self.active_workflow != self.workflow
@@ -4132,12 +4128,10 @@ impl App {
             }
             .into();
         }
-        let plan = self.active_plan();
-        let interval = (plan.workflow == Workflow::SignalMonitor).then_some(plan.interval_s);
         let remaining = if self.demo_viewer {
             self.demo_eta(now, total)
         } else {
-            self.eta.remaining(total, interval, now)
+            self.eta.remaining(total, now)
         };
         remaining
             .map(|seconds| format!("~{:.0} s", seconds.ceil()))
@@ -4203,7 +4197,7 @@ impl App {
                 .translate(area.min.to_vec2()),
             egui::Id::new("eta-help"),
             egui::Sense::hover(),
-        ).on_hover_text("Estimated time to finish acquiring points. Uses completed rows and tracks line changes separately. Return-to-zero and finalization are shown as separate phases.");
+        ).on_hover_text("Estimated time to finish acquiring points. Uses completed points, including waits and reads. For 2D scans, the first estimate uses point pace until the first measured line change. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
             egui::Id::new("plot-options-menu"),
@@ -4589,7 +4583,7 @@ impl eframe::App for App {
                 self.measure(ui, columns.measurement);
                 if self.alignment_tab {
                     let area = egui::Rect::from_min_max(
-                        columns.measurement.min + Vec2::new(0., 30.),
+                        columns.measurement.min + Vec2::new(0., MEASUREMENT_PAGE_TOP),
                         columns.plots.max,
                     );
                     self.alignment_workspace_view(ui, columns.measurement, area);
@@ -4616,6 +4610,51 @@ impl eframe::App for App {
         self.notifications.show(&ctx);
     }
 }
+fn trim_plot_trace(trace: &mut Vec<Sample>, workflow: Workflow, limit: usize) {
+    let count = trace.len();
+    if count <= limit {
+        return;
+    }
+    if workflow == Workflow::SignalMonitor {
+        // Keep displayed extrema plus endpoints when compacting the history.
+        // CSV recording is independent of the display trace.
+        const BUCKET: usize = 24;
+        let mut keep = vec![false; count];
+        keep[0] = true;
+        keep[count - 1] = true;
+        for (bucket, samples) in trace.chunks(BUCKET).enumerate() {
+            let base = bucket * BUCKET;
+            let mut extrema: [Option<[(f64, usize); 2]>; 4] = [None; 4];
+            for (index, sample) in samples.iter().enumerate() {
+                let signal = sample.signal;
+                for (bounds, value) in
+                    extrema
+                        .iter_mut()
+                        .zip([signal.x_v, signal.y_v, signal.r_v, signal.theta_deg])
+                {
+                    if !value.is_finite() {
+                        continue;
+                    }
+                    let [low, high] = bounds.get_or_insert([(value, base + index); 2]);
+                    if value < low.0 {
+                        *low = (value, base + index);
+                    }
+                    if value > high.0 {
+                        *high = (value, base + index);
+                    }
+                }
+            }
+            for (_, index) in extrema.into_iter().flatten().flatten() {
+                keep[index] = true;
+            }
+        }
+        let mut keep = keep.into_iter();
+        trace.retain(|_| keep.next().unwrap_or(false));
+    } else {
+        trace.drain(..limit / 2);
+    }
+}
+
 fn lockin_health_text(settings: &Value) -> Option<&'static str> {
     if settings
         .get("Status Error")

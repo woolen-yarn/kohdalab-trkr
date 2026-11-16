@@ -469,7 +469,7 @@ mod tests {
         h.run_steps(3);
         h.get_by_label("Done").click();
         h.run_steps(3);
-        h.get_by_label("Record").click();
+        h.get_by_label("Start").click();
         let deadline = Instant::now() + Duration::from_secs(4);
         while (!h.state().snapshot.running || h.state().trace.is_empty())
             && Instant::now() < deadline

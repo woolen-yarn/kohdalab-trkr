@@ -17,33 +17,8 @@ struct Scale {
 
 impl Scale {
     fn for_magnitude(value: f64) -> Self {
-        if !value.is_finite() || value <= 0. {
-            return Self {
-                factor: 1.,
-                prefix: "",
-            };
-        }
-        for (factor, prefix) in [
-            (1e12, "T"),
-            (1e9, "G"),
-            (1e6, "M"),
-            (1e3, "k"),
-            (1., ""),
-            (1e-3, "m"),
-            (1e-6, "µ"),
-            (1e-9, "n"),
-            (1e-12, "p"),
-            (1e-15, "f"),
-            (1e-18, "a"),
-        ] {
-            if value >= factor * (1. - 1e-12) {
-                return Self { factor, prefix };
-            }
-        }
-        Self {
-            factor: 1e-18,
-            prefix: "a",
-        }
+        let (factor, prefix) = crate::presentation::metric_divisor(value);
+        Self { factor, prefix }
     }
     fn tick(self, value: f64, spacing: f64) -> String {
         let step = (spacing.abs() / self.factor).max(f64::MIN_POSITIVE);
@@ -325,6 +300,7 @@ mod tests {
         history.push(
             trkr_core::Signal::new(-999.123e-6, 999.987e-6, 0.002, -179.999).unwrap(),
             ReadingOrigin::Replay,
+            "V",
         );
         for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
             for channel in 0..2 {
