@@ -164,14 +164,24 @@ pub fn draw_channel(ui: &mut egui::Ui, area: egui::Rect, channel: LiveChannel) -
                 .include_x(0.)
                 .include_y(0.)
                 .y_axis_formatter(move |mark, _| scale.tick(mark.value, mark.step_size))
-                .label_formatter(|_, _| String::new())
+                .label_formatter(|name, point| {
+                    crate::presentation::point_label(
+                        name,
+                        "Time (s)",
+                        point.x,
+                        point.y / scale.factor,
+                    )
+                })
                 .show(ui, |plot| {
                     plot.line(
-                        Line::new("trend", channel.points)
-                            .color(channel.color)
-                            .width(1.5_f32)
-                            .fill(0_f32)
-                            .fill_alpha(0.75_f32),
+                        Line::new(
+                            format!("{}{}", channel.prefix, channel.unit),
+                            channel.points,
+                        )
+                        .color(channel.color)
+                        .width(1.5_f32)
+                        .fill(0_f32)
+                        .fill_alpha(0.75_f32),
                     );
                 });
             let age = channel

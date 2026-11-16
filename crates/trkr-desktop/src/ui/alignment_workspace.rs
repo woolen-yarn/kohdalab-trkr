@@ -382,7 +382,7 @@ impl App {
             ui,
             chart,
             egui::Id::new(("alignment-signal", name)),
-            (name, points, color),
+            (name, unit, points, color),
             true,
         );
     }
@@ -511,7 +511,7 @@ pub(super) fn draw_monitor_trend(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     id: egui::Id,
-    (name, points, color): (&str, Vec<[f64; 2]>, Color32),
+    (name, unit, points, color): (&str, &str, Vec<[f64; 2]>, Color32),
     show_time: bool,
 ) {
     ui.scope_builder(
@@ -533,8 +533,15 @@ pub(super) fn draw_monitor_trend(
                 .include_x(0.)
                 .x_axis_formatter(|tick, _| format!("{} s", tick.value))
                 .y_axis_min_width(62.)
+                .label_formatter(|name, point| {
+                    crate::presentation::point_label(name, "Time (s)", point.x, point.y)
+                })
                 .show(ui, |plot| {
-                    plot.line(Line::new(name, points).color(color).width(1.5_f32))
+                    plot.line(
+                        Line::new(format!("{name} ({unit})"), points)
+                            .color(color)
+                            .width(1.5_f32),
+                    )
                 });
         },
     );

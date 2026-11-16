@@ -564,7 +564,12 @@ impl App {
             ui,
             plot,
             egui::Id::new(("alignment-power", id)),
-            ("Power", points, crate::live_view::TEAL),
+            (
+                "Power",
+                &format!("{prefix}W"),
+                points,
+                crate::live_view::TEAL,
+            ),
             true,
         );
     }

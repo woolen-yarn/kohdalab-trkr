@@ -14,6 +14,7 @@ pub struct HeatmapCache {
     xs: Vec<f64>,
     ys: Vec<f64>,
     extent: HeatmapExtent,
+    values: Vec<f64>,
     texture: TextureHandle,
 }
 
@@ -80,7 +81,24 @@ struct PreparedHeatmap {
     xs: Vec<f64>,
     ys: Vec<f64>,
     extent: HeatmapExtent,
+    values: Vec<f64>,
     image: egui::ColorImage,
+}
+
+pub(crate) fn point_label(name: &str, x_label: &str, x: f64, y: f64) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
+    format!("{x_label}: {}\n{name}: {}", coordinate(x), coordinate(y))
+}
+
+fn coordinate(value: f64) -> String {
+    let magnitude = value.abs();
+    if magnitude >= 1e6 || (magnitude > 0. && magnitude < 1e-3) {
+        format!("{value:.6e}")
+    } else {
+        format!("{value:.6}")
+    }
 }
 
 pub struct PlotViewport<'a> {
@@ -340,9 +358,7 @@ impl PlotView<'_> {
                 .auto_bounds(false)
         };
         if log {
-            plot = plot
-                .y_axis_formatter(|mark, _| format_log_tick(mark.value))
-                .label_formatter(|name, point| format!("{name}: {:.6e}", 10_f64.powf(point.y)));
+            plot = plot.y_axis_formatter(|mark, _| format_log_tick(mark.value));
         }
         if !monitor {
             plot = plot.custom_x_axes(vec![
@@ -359,7 +375,11 @@ impl PlotView<'_> {
                     }),
             ]);
         }
-        plot.show(ui, |p| {
+        plot.label_formatter(|name, point| {
+            let y = if log { 10_f64.powf(point.y) } else { point.y };
+            point_label(name, &label, point.x, y)
+        })
+        .show(ui, |p| {
             for segment in segments {
                 p.line(
                     Line::new(self.signal_label(spec.signal), segment)
@@ -447,6 +467,7 @@ fn prepare_heatmap(
         .map(|sample| (signal_component(samples, sample, mode, signal) * signal_scale).abs())
         .fold(0., f64::max);
     let mut image = egui::ColorImage::filled([xs.len(), ys.len()], Color32::TRANSPARENT);
+    let mut values = vec![f64::NAN; image.pixels.len()];
     for sample in samples {
         if let Some(y) = sample.target.slow
             && let (Ok(xi), Ok(yi)) = (
@@ -456,7 +477,9 @@ fn prepare_heatmap(
         {
             let value = signal_component(samples, sample, mode, signal) * signal_scale;
             if value.is_finite() {
-                image.pixels[(ys.len() - 1 - yi) * xs.len() + xi] = diverging(value, max);
+                let pixel = (ys.len() - 1 - yi) * xs.len() + xi;
+                image.pixels[pixel] = diverging(value, max);
+                values[pixel] = value;
             }
         }
     }
@@ -464,8 +487,27 @@ fn prepare_heatmap(
         extent: heatmap_extent(&xs, &ys),
         xs,
         ys,
+        values,
         image,
     })
+}
+
+// Match the nearest-filtered raster, including grids with uneven spacing.
+fn heatmap_cell(
+    point: PlotPoint,
+    center: PlotPoint,
+    size: Vec2,
+    [columns, rows]: [usize; 2],
+) -> Option<(usize, usize)> {
+    let u = (point.x - center.x) / f64::from(size.x) + 0.5;
+    let v = (point.y - center.y) / f64::from(size.y) + 0.5;
+    if !(0. ..=1.).contains(&u) || !(0. ..=1.).contains(&v) {
+        return None;
+    }
+    Some((
+        ((u * columns as f64) as usize).min(columns - 1),
+        ((v * rows as f64) as usize).min(rows - 1),
+    ))
 }
 
 fn heatmap_needs_rebuild(cached_key: Option<HeatmapKey>, key: HeatmapKey) -> bool {
@@ -507,6 +549,7 @@ impl PlotView<'_> {
                         cache.xs = prepared.xs;
                         cache.ys = prepared.ys;
                         cache.extent = prepared.extent;
+                        cache.values = prepared.values;
                     }
                     None => {
                         let texture = ui.ctx().load_texture(
@@ -519,6 +562,7 @@ impl PlotView<'_> {
                             xs: prepared.xs,
                             ys: prepared.ys,
                             extent: prepared.extent,
+                            values: prepared.values,
                             texture,
                         });
                     }
@@ -590,19 +634,40 @@ impl PlotView<'_> {
             .expect("valid heatmap cache when data exists");
         // Match Python ImageItem.setRect(min_fast,min_slow,max-min,max-min).
         let size = Vec2::new(cache.extent.width as f32, cache.extent.height as f32);
-        plot.show(ui, |p| {
-            p.image(PlotImage::new(
-                self.signal_label(signal),
-                cache.texture.id(),
+        let result = plot.label_formatter(|_, _| String::new()).show(ui, |p| {
+            p.image(
+                PlotImage::new(
+                    self.signal_label(signal),
+                    cache.texture.id(),
+                    cache.extent.center,
+                    size,
+                )
+                .allow_hover(false),
+            );
+        });
+        if let Some(pos) = result.response.hover_pos()
+            && let Some((xi, yi)) = heatmap_cell(
+                result.transform.value_from_position(pos),
                 cache.extent.center,
                 size,
-            ))
-        })
-        .response
-        .on_hover_text(format!(
-            "{} · target grid · normalized ±1",
-            self.signal_label(signal)
-        ));
+                [cache.xs.len(), cache.ys.len()],
+            )
+        {
+            let value = cache.values[(cache.ys.len() - 1 - yi) * cache.xs.len() + xi];
+            if value.is_finite() {
+                result.response.on_hover_text(format!(
+                    "{}_cor ({}): {}\n{}_cor ({}): {}\n{}: {}",
+                    self.plan.fast.name(),
+                    self.plan.fast.unit(),
+                    coordinate(cache.xs[xi]),
+                    self.plan.slow.name(),
+                    self.plan.slow.unit(),
+                    coordinate(cache.ys[yi]),
+                    self.signal_label(signal),
+                    coordinate(value),
+                ));
+            }
+        }
     }
 }
 pub fn plots(
@@ -1379,6 +1444,8 @@ mod tests {
         assert_eq!(prepared.xs, vec![0., 2.]);
         assert_eq!(prepared.ys, vec![1., 4.]);
         assert_eq!(prepared.image.size, [2, 2]);
+        assert!(prepared.values[0].is_nan());
+        assert_eq!(&prepared.values[1..], &[1., -1., 0.]);
         assert_eq!(
             prepared.image.pixels,
             vec![
@@ -1392,6 +1459,34 @@ mod tests {
         assert_eq!(prepared.extent.height, 3.);
         assert_eq!(prepared.extent.center, PlotPoint::new(1., 2.5));
     }
+    #[test]
+    fn hover_label_keeps_units_and_small_signal_values() {
+        assert_eq!(
+            point_label("X (V)", "t_cor (ps)", -0.125, 2.5e-8),
+            "t_cor (ps): -0.125000\nX (V): 2.500000e-8",
+        );
+        assert!(point_label("", "t_cor (ps)", 1., 2.).is_empty());
+    }
+
+    #[test]
+    fn heatmap_hover_maps_to_visible_texels_and_stays_inside_the_image() {
+        let center = PlotPoint::new(1., 2.5);
+        let size = Vec2::new(2., 3.);
+        assert_eq!(
+            heatmap_cell(PlotPoint::new(0., 1.), center, size, [2, 2]),
+            Some((0, 0))
+        );
+        assert_eq!(
+            heatmap_cell(PlotPoint::new(2., 4.), center, size, [2, 2]),
+            Some((1, 1))
+        );
+        assert_eq!(heatmap_cell(center, center, size, [1, 1]), Some((0, 0)));
+        assert_eq!(
+            heatmap_cell(PlotPoint::new(1., 4.01), center, size, [2, 2]),
+            None
+        );
+    }
+
     #[test]
     fn signal_display_units_follow_the_qualified_base_quantity() {
         assert_eq!(signal_display_scale(1e6, "uV", "V"), (1e6, "uV".into()));
