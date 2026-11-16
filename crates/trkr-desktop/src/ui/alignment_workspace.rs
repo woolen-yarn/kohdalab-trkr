@@ -1,5 +1,4 @@
 use super::*;
-use egui_plot::Line;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum MonitorTab {
@@ -514,7 +513,7 @@ fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
         },
         |ui| app.alignment_signal_plot(ui, ui.max_rect()),
     );
-    let id = egui::Id::new(("alignment-signal", "X", false, app.plot_epoch, "X (µV)"));
+    let id = egui::Id::new(("alignment-signal", "X", app.plot_epoch, "X (µV)"));
     let bounds = egui_plot::PlotMemory::load(&ctx, id).unwrap();
     assert!(bounds.bounds().min()[0] <= 0.);
     assert!(bounds.bounds().max()[0] >= end);
