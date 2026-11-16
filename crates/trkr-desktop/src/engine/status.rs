@@ -99,7 +99,7 @@ impl fmt::Display for OperationError {
             Self::ReadOnly => "demo controller is read-only; hardware, acquisition, and file output commands are disabled",
             Self::Busy => "An operation is already running",
             Self::LockinBusy => {
-                "Lock-in settings cannot be changed while a measurement or motion operation is running"
+                "Lock-in settings cannot be changed while another instrument operation is running"
             }
             Self::WorkerStopped => "Instrument worker stopped",
             Self::UnknownAxis => "Unknown motion axis",

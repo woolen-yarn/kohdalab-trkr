@@ -43,6 +43,8 @@ impl SignalChannel {
 
 pub(super) struct PowerTrend {
     pub id: String,
+    pub session_id: String,
+    pub simulated: bool,
     pub started: Instant,
     pub running: bool,
     pub points: VecDeque<[f64; 2]>,
@@ -241,16 +243,20 @@ impl App {
             .inner
             .clicked()
         };
+        let (start_key, stop_key) = match self.alignment_workspace.monitor {
+            MonitorTab::Signal => ("start_button", "stop_button"),
+            MonitorTab::Power => ("power_start_button", "power_stop_button"),
+        };
         let start = button(
             "Start",
-            "start_button",
+            start_key,
             256.,
             Color32::from_rgb(48, 107, 214),
             can_start,
         );
         let stop = button(
             "Stop",
-            "stop_button",
+            stop_key,
             172.,
             Color32::from_rgb(173, 69, 76),
             can_stop,
@@ -343,7 +349,7 @@ impl App {
             ui,
             area,
             id,
-            (&format!("{name}  {value}"), source, &y_label),
+            (&format!("{name}  {value}"), source, &y_label, 0.),
             points,
             index,
         );
@@ -513,7 +519,7 @@ pub(super) fn draw_monitor_plot(
     ui: &mut egui::Ui,
     area: egui::Rect,
     id: egui::Id,
-    (value, source, y_label): (&str, &str, &str),
+    (value, source, y_label, x_origin): (&str, &str, &str, f64),
     points: Vec<[f64; 2]>,
     color_index: usize,
 ) {
@@ -541,7 +547,7 @@ pub(super) fn draw_monitor_plot(
                 .allow_zoom(false)
                 .allow_scroll(false)
                 .allow_drag(false)
-                .include_x(0.)
+                .include_x(x_origin)
                 .label_formatter(|name, point| {
                     presentation::point_label(name, x_label, point.x, point.y)
                 })
@@ -737,6 +743,27 @@ mod tests {
         let trend = h.state().alignment_workspace.power_trend.as_ref().unwrap();
         assert!(!trend.running);
         assert_eq!(trend.points.len(), 1);
+        h.get_by_label("Start").click();
+        h.run_steps(3);
+        assert!(
+            h.state()
+                .alignment_workspace
+                .power_trend
+                .as_ref()
+                .unwrap()
+                .running
+        );
+        let mut snapshot = h.state().snapshot.clone();
+        snapshot.power_meters.clear();
+        h.state_mut().apply_snapshot(snapshot);
+        assert!(
+            !h.state()
+                .alignment_workspace
+                .power_trend
+                .as_ref()
+                .unwrap()
+                .running
+        );
         let motion_height = |app: &App| app.geometry["alignment_widget"][3];
         let height = motion_height(h.state());
         h.get_by_label("Scanners").click();

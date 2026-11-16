@@ -161,6 +161,12 @@ impl App {
                 self.power_meter_retired.insert(current.session_id.clone());
             }
         }
+        if let Some(trend) = &mut self.alignment_workspace.power_trend
+            && trend.id == id
+            && (!status.connected || trend.session_id != status.session_id)
+        {
+            trend.running = false;
+        }
         if status.connected {
             self.power_meter_disconnected.remove(&id);
         }
@@ -183,6 +189,7 @@ impl App {
                     && status.error.is_none()
                     && reading.corrected_w.is_finite()
                 {
+                    trend.simulated = reading.simulated;
                     if trend.points.len() == POWER_HISTORY {
                         trend.points.pop_front();
                     }
@@ -507,11 +514,13 @@ impl App {
 
     pub(super) fn alignment_power_monitor(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
         precision::record(&mut self.geometry, "alignment_power_monitor", rect);
-        let configured =
-            self.settings.raw["measurements"]["signal_monitor"]["device_ids"]["power_meter"]
-                .as_str()
-                .filter(|id| !id.is_empty())
-                .unwrap_or(&self.inventory.selected.power_meter);
+        let configured = self
+            .settings
+            .workflow_device_ids(Workflow::SignalMonitor)
+            .ok()
+            .map(|ids| ids.power_meter)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| self.inventory.selected.power_meter.clone());
         let mut connected_meters = self
             .snapshot
             .power_meters
@@ -536,14 +545,16 @@ impl App {
             .power_trend
             .as_ref()
             .is_some_and(|trend| trend.running);
-        let connected = self
-            .power_meter_status(&id)
-            .is_some_and(|status| status.connected);
+        let status = self.power_meter_status(&id);
+        let ready = status.filter(|status| status.connected && status.error.is_none());
+        let session_id = ready.map(|status| status.session_id.clone());
         let (start, stop) =
-            self.alignment_monitor_buttons(ui, rect, connected && !running, running);
-        if start {
+            self.alignment_monitor_buttons(ui, rect, session_id.is_some() && !running, running);
+        if start && let Some(session_id) = session_id {
             self.alignment_workspace.power_trend = Some(super::alignment_workspace::PowerTrend {
                 id: id.clone(),
+                session_id,
+                simulated: false,
                 started: Instant::now(),
                 running: true,
                 points: VecDeque::new(),
@@ -552,14 +563,13 @@ impl App {
         if stop && let Some(trend) = &mut self.alignment_workspace.power_trend {
             trend.running = false;
         }
-        let settings = precision::rect(rect.right() - 88., rect.top(), 88., 26.);
-        if ui
-            .put(
-                settings,
-                egui::Button::new("Settings…").min_size(settings.size()),
-            )
-            .clicked()
-        {
+        let mut form = precision::Form::new(ui, &mut self.geometry, rect.min);
+        if form.button(
+            "alignment_power_settings_button",
+            precision::rect(rect.width() - 88., 0., 88., 26.),
+            "Settings…",
+            !self.demo_viewer,
+        ) {
             self.alignment_cancel_hold();
             self.alignment_workspace.power_settings = true;
         }
@@ -617,15 +627,38 @@ impl App {
         let (scale, prefix) = presentation::metric_divisor(maximum);
         let value =
             current.map_or_else(|| "— W".into(), |value| format_power(value, scale, prefix));
-        let source = match trend {
-            Some(trend) if trend.running => match self.power_meter_status(&trend.id) {
-                Some(status) if status.connected && status.error.is_none() => "Monitoring",
-                _ => "Power meter unavailable",
-            },
-            Some(_) if current.is_some() => "Stopped",
-            _ if connected => "Ready",
-            _ => "Connect a power meter",
+        let status = self.power_meter_status(
+            trend
+                .filter(|trend| trend.running)
+                .map_or(&id, |trend| &trend.id),
+        );
+        let source = if status.is_some_and(|status| status.error.is_some()) {
+            "Power meter error"
+        } else if let Some(trend) = trend.filter(|trend| trend.running) {
+            if trend.started.elapsed().as_secs_f64()
+                - trend.points.back().map_or(0., |point| point[0])
+                >= 3.
+            {
+                "Stale"
+            } else {
+                "Monitoring"
+            }
+        } else if current.is_some() {
+            "Stopped"
+        } else if status.is_some_and(|status| status.connected) {
+            "Ready"
+        } else {
+            "Connect a power meter"
         };
+        let value = if trend.is_some_and(|trend| trend.simulated) {
+            format!("P  {value} · SIM")
+        } else {
+            format!("P  {value}")
+        };
+        let x_origin = points
+            .filter(|points| points.len() == POWER_HISTORY)
+            .and_then(|points| points.front())
+            .map_or(0., |point| point[0]);
         let label = format!("P ({prefix}W)");
         let id = egui::Id::new((
             "alignment-power",
@@ -637,7 +670,7 @@ impl App {
             ui,
             area,
             id,
-            (&format!("P  {value}"), source, &label),
+            (&value, source, &label, x_origin),
             points
                 .into_iter()
                 .flatten()

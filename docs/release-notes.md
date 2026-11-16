@@ -7,6 +7,8 @@
 - Signal Monitor saves acquired points to CSV and keeps the recording visible after Stop. / Signal MonitorはStopで取得済みの点をCSVに保存し、記録を表示したままにします。
 - Opening Device on the lock-in card also expands Settings. / 左パネルのロックインでDeviceを開くとSettingsも展開します。
 
+Power Monitor’s device choice applies to the current session. The trend shows up to the 180 most recent readings and stays visible after Stop. / Power Monitorの機器選択は現在のセッションに適用され、プロットには直近180点までを表示し、Stop後も保持します。
+
 ## Packages / 配布形式
 
 | OS | Installer / インストーラー | Portable / ポータブル |

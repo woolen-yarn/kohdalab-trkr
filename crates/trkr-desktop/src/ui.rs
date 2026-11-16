@@ -1374,6 +1374,13 @@ impl App {
         {
             self.mode = s.signal_mode;
         }
+        if let Some(trend) = &mut self.alignment_workspace.power_trend
+            && !s.power_meters.iter().any(|meter| {
+                meter.id == trend.id && meter.session_id == trend.session_id && meter.connected
+            })
+        {
+            trend.running = false;
+        }
         self.snapshot = s;
         for status in self.snapshot.power_meters.clone() {
             self.observe_power_meter(status);
@@ -4016,6 +4023,8 @@ impl App {
         if load && !self.demo_viewer {
             match Settings::load(std::path::Path::new(&self.config_path)) {
                 Ok(s) => {
+                    self.alignment_workspace.power_trend = None;
+                    self.alignment_workspace.power_meter = None;
                     self.settings = s;
                     self.hydrate();
                     self.device_feedback.clear();
