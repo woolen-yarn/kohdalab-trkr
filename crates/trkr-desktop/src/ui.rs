@@ -3911,7 +3911,13 @@ impl App {
             .as_ref()
             .unwrap_or_else(|| self.plan())
             .clone();
-        let (scale, unit) = qualified_lockin_sensitivity(&self.snapshot, self.model)
+        let magnitude = if plan.workflow == Workflow::Trkr {
+            presentation::trace_signal_magnitude(&self.trace, self.mode, self.trkr_log_y)
+        } else {
+            None
+        };
+        let (scale, unit) = magnitude
+            .or_else(|| qualified_lockin_sensitivity(&self.snapshot, self.model))
             .map(presentation::voltage_scale_from_sensitivity)
             .unwrap_or_else(|| self.demo_voltage_scale());
         let signal_unit = self

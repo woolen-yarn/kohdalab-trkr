@@ -122,6 +122,24 @@ pub fn voltage_scale_from_sensitivity(sensitivity_v: f64) -> (f64, &'static str)
     }
 }
 
+/// Use the largest displayed signal to choose a shared prefix for X/Y or R.
+pub(crate) fn trace_signal_magnitude(
+    samples: &[Sample],
+    mode: DisplayMode,
+    positive_only: bool,
+) -> Option<f64> {
+    let unit = trace_signal_unit(samples);
+    let channels = if mode == DisplayMode::RTheta { 1 } else { 2 };
+    samples
+        .iter()
+        .flat_map(|sample| {
+            (0..channels).map(move |channel| signal_component_in(unit, sample, mode, channel))
+        })
+        .filter(|value| value.is_finite() && *value != 0. && (!positive_only || *value > 0.))
+        .map(f64::abs)
+        .reduce(f64::max)
+}
+
 /// Display scale only: storage retains the original acquired value and unit.
 pub fn signal_display_scale(scale: f64, label: &str, unit: &str) -> (f64, String) {
     if !matches!(unit, "V" | "A") {
@@ -1485,6 +1503,33 @@ mod tests {
             heatmap_cell(PlotPoint::new(1., 4.01), center, size, [2, 2]),
             None
         );
+    }
+
+    #[test]
+    fn trace_magnitude_keeps_the_qualified_unit_and_excludes_theta() {
+        let sample = |x, y, r, unit: &str| Sample {
+            recording: Box::new(crate::engine::SampleRecording {
+                signal_unit: unit.into(),
+                ..Default::default()
+            }),
+            timing: Default::default(),
+            captured_at: None,
+            elapsed: 0.,
+            target: Plan::default().targets().unwrap()[0],
+            signal: Signal::new(x, y, r, 179.).unwrap(),
+            position: Position::default(),
+        };
+        let trace = [
+            sample(10., 10., 15., "A"),
+            sample(-0.002, 0.000_015, 0.002, "V"),
+        ];
+        let prefix = |mode, log| {
+            trace_signal_magnitude(&trace, mode, log).map(voltage_scale_from_sensitivity)
+        };
+        assert_eq!(prefix(DisplayMode::Xy, false), Some((1e3, "mV")));
+        assert_eq!(prefix(DisplayMode::Xy, true), Some((1e6, "uV")));
+        assert_eq!(prefix(DisplayMode::RTheta, false), Some((1e3, "mV")));
+        assert_eq!(trace_signal_magnitude(&[], DisplayMode::Xy, false), None);
     }
 
     #[test]
