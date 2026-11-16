@@ -491,6 +491,99 @@ impl App {
         }
     }
 
+    pub(super) fn alignment_power_monitor(&mut self, ui: &mut egui::Ui, rect: egui::Rect) {
+        precision::record(&mut self.geometry, "alignment_power_monitor", rect);
+        let id = self
+            .settings
+            .workflow_device_ids(Workflow::SignalMonitor)
+            .ok()
+            .map(|ids| ids.power_meter)
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| self.inventory.selected.power_meter.clone());
+        let Some(entry) = self
+            .inventory
+            .power_meters
+            .iter()
+            .find(|entry| entry.id == id)
+        else {
+            ui.put(
+                rect,
+                egui::Label::new("Add a power meter in Devices to view live power"),
+            );
+            return;
+        };
+        let status = self.power_meter_status(&id);
+        let reading = status.and_then(|status| status.reading.as_ref());
+        let active = status.is_some_and(|status| status.connected && status.error.is_none())
+            && self
+                .power_meter_seen
+                .get(&id)
+                .is_some_and(|seen| seen.elapsed() < Duration::from_secs(3));
+        let state = if status.is_some_and(|status| status.error.is_some()) {
+            "ERROR"
+        } else if active {
+            "LIVE"
+        } else if reading.is_some() {
+            "HELD"
+        } else {
+            "WAITING"
+        };
+        let mut points = self.power_history_points(&id, active);
+        let current = reading.map(|reading| reading.corrected_w);
+        let maximum = points
+            .iter()
+            .fold(current.unwrap_or(0.).abs(), |extent, p| {
+                extent.max(p[1].abs())
+            });
+        let (scale, prefix) = power_scale(maximum);
+        for point in &mut points {
+            point[1] /= scale;
+        }
+        let heading = precision::rect(rect.left(), rect.top(), rect.width(), 30.);
+        ui.scope_builder(egui::UiBuilder::new().max_rect(heading), |ui| {
+            ui.horizontal(|ui| {
+                let value = current.map_or_else(
+                    || "— W".into(),
+                    |value| format!("{:.3} {prefix}W", value / scale),
+                );
+                ui.label(
+                    egui::RichText::new(format!("P  {value}"))
+                        .size(18.)
+                        .strong()
+                        .color(crate::live_view::TEAL),
+                );
+                ui.weak(entry.display_name());
+                if reading.is_some_and(|reading| reading.simulated) {
+                    ui.weak("SIM");
+                }
+                ui.weak(state);
+            });
+        });
+        let plot = egui::Rect::from_min_max(rect.min + Vec2::new(0., 33.), rect.max);
+        super::alignment_workspace::draw_monitor_trend(
+            ui,
+            plot,
+            egui::Id::new(("alignment-power", id)),
+            ("Power", points, crate::live_view::TEAL),
+            true,
+        );
+    }
+
+    fn power_history_points(&self, id: &str, active: bool) -> Vec<[f64; 2]> {
+        let history = self.power_meter_history.get(id);
+        let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1e9;
+        let last = history
+            .and_then(|h| h.back())
+            .map(|(t, _)| timestamp_seconds(t));
+        let newest = if active { now } else { last.unwrap_or(now) };
+        history
+            .into_iter()
+            .flatten()
+            .map(|(completed, watts)| [timestamp_seconds(completed) - newest, *watts])
+            .filter(|point| (-30. ..=0.).contains(&point[0]) && point[1].is_finite())
+            .collect()
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn paint_power_plot(
         &self,
@@ -502,18 +595,7 @@ impl App {
         simulated: bool,
         state: &str,
     ) {
-        let history = self.power_meter_history.get(id);
-        let now = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as f64 / 1e9;
-        let last = history
-            .and_then(|h| h.back())
-            .map(|(t, _)| timestamp_seconds(t));
-        let newest = if active { now } else { last.unwrap_or(now) };
-        let points: Vec<[f64; 2]> = history
-            .into_iter()
-            .flatten()
-            .map(|(completed, watts)| [timestamp_seconds(completed) - newest, *watts])
-            .filter(|point| point[0] >= -30. && point[1].is_finite())
-            .collect();
+        let points = self.power_history_points(id, active);
         let maximum = points
             .iter()
             .fold(0_f64, |extent, p| extent.max(p[1].abs()));

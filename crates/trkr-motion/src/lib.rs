@@ -1,8 +1,9 @@
 //! Portable motion configuration and protocol exports.
 mod pool;
 pub mod protocol;
-pub use pool::MotionPortPool;
+pub use pool::{MotionPortPool, shareable_bus};
 pub mod catalog;
+pub mod native_jog;
 
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
@@ -1112,6 +1113,142 @@ impl MotionRig {
         }
         Ok(view)
     }
+    /// T/X/Y axes present in this rig.
+    pub fn connected_axes(&self) -> [bool; 3] {
+        [
+            self.delay.is_some(),
+            self.scanners[0].is_some(),
+            self.scanners[1].is_some(),
+        ]
+    }
+    /// Split this view into `(remaining, owned)` without any I/O.
+    ///
+    /// `owned` contains only the requested axes and holds an exclusive claim
+    /// on each of their serial connections; `remaining` contains every other
+    /// axis as an ordinary shared view. The split is refused, and nothing is
+    /// claimed, if a requested axis is missing, if a requested axis shares a
+    /// serial connection (or normalized port name) with a remaining axis, or
+    /// if a connection is already claimed. While `owned` (or any view derived
+    /// from it) is alive, every other view of those connections is refused.
+    pub fn split_exclusive(&self, axes: [bool; 3]) -> Result<(Self, Self), String> {
+        const NAMES: [&str; 3] = ["T", "X", "Y"];
+        if !axes.iter().any(|axis| *axis) {
+            return Err("No axis was requested".into());
+        }
+        let present = self.connected_axes();
+        let port_of = |axis: usize| -> Option<(usize, String)> {
+            match axis {
+                0 => self.delay.as_ref().map(|d| (d.port, d.config.port.clone())),
+                _ => self.scanners[axis - 1]
+                    .as_ref()
+                    .map(|s| (s.port, s.config.port.clone())),
+            }
+        };
+        let port_key = |name: &str| name.trim().to_ascii_uppercase().replace("\\\\.\\", "");
+        let mut owned_ids = Vec::new();
+        let mut kept_ids = Vec::new();
+        for axis in 0..3 {
+            if axes[axis] && !present[axis] {
+                return Err(format!("Axis {} is not connected", NAMES[axis]));
+            }
+            let Some((index, name)) = port_of(axis) else {
+                continue;
+            };
+            let id = self.ports[index]
+                .connection_id()
+                .ok_or("Motion connection cannot be exclusively owned")?;
+            if axes[axis] {
+                owned_ids.push((axis, id, port_key(&name)));
+            } else {
+                kept_ids.push((id, port_key(&name)));
+            }
+        }
+        for (axis, id, key) in &owned_ids {
+            if kept_ids
+                .iter()
+                .any(|(other, other_key)| other == id || other_key == key)
+            {
+                return Err(format!(
+                    "Axis {} shares serial port {key} with an axis that remains in use",
+                    NAMES[*axis]
+                ));
+            }
+        }
+        let mut owned = Self {
+            ports: vec![],
+            delay: None,
+            scanners: [None, None],
+        };
+        let mut remaining = Self {
+            ports: vec![],
+            delay: None,
+            scanners: [None, None],
+        };
+        // One claim per connection; further axes on it reuse the owner view.
+        let mut remap: [HashMap<usize, usize>; 2] = [HashMap::new(), HashMap::new()];
+        let mut route =
+            |target: &mut Self, exclusive: bool, source: usize| -> Result<usize, String> {
+                let id = self.ports[source]
+                    .connection_id()
+                    .ok_or("Motion connection cannot be exclusively owned")?;
+                let map = &mut remap[usize::from(exclusive)];
+                if let Some(index) = map.get(&id) {
+                    return Ok(*index);
+                }
+                let port = if exclusive {
+                    self.ports[source].exclusive_clone()?
+                } else {
+                    self.ports[source]
+                        .shared_clone()
+                        .ok_or("Connection is not shareable")?
+                };
+                target.ports.push(port);
+                map.insert(id, target.ports.len() - 1);
+                Ok(target.ports.len() - 1)
+            };
+        if let Some(d) = &self.delay {
+            let target = if axes[0] { &mut owned } else { &mut remaining };
+            let mut d = d.clone();
+            d.port = route(&mut *target, axes[0], d.port)?;
+            target.delay = Some(d);
+        }
+        for (i, scanner) in self.scanners.iter().enumerate() {
+            if let Some(s) = scanner {
+                let exclusive = axes[i + 1];
+                let target = if exclusive {
+                    &mut owned
+                } else {
+                    &mut remaining
+                };
+                let mut s = s.clone();
+                s.port = route(&mut *target, exclusive, s.port)?;
+                target.scanners[i] = Some(s);
+            }
+        }
+        Ok((remaining, owned))
+    }
+    /// Require every axis in this rig to report a stationary controller state
+    /// (the same states accepted after STOP), then read back the position.
+    /// A moving, homing or faulted axis fails. This issues queries only; the
+    /// closed-loop READY state is still established by the move itself.
+    pub fn confirm_stationary(&mut self) -> Result<Position, String> {
+        if let Some(d) = &self.delay
+            && !protocol::delay_ready(&mut self.ports[d.port])?
+        {
+            return Err("Delay stage is not stationary".into());
+        }
+        for (i, s) in self.scanners.iter().enumerate() {
+            if let Some(s) = s
+                && !s.config.protocol().stopped(&mut self.ports[s.port])?
+            {
+                return Err(format!(
+                    "Scanner {} is not stationary",
+                    if i == 0 { "X" } else { "Y" }
+                ));
+            }
+        }
+        self.position()
+    }
     /// Normalized settings actually used by this connection, including defaults.
     pub fn recording_configuration(&self) -> MotionConfig {
         let scanner = |index: usize| {
@@ -1310,6 +1447,86 @@ impl MotionRig {
         }
         Ok(out)
     }
+    /// Move relative to the controller's last target (Newport PR).
+    pub fn step_scanner_relative(
+        &mut self,
+        axis: usize,
+        delta: f64,
+        cancel: &AtomicBool,
+        mut progress: Option<&mut dyn FnMut(Position) -> Result<(), String>>,
+    ) -> Result<Position, String> {
+        finite(delta, "Scanner increment")?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("motion cancelled".into());
+        }
+        let scanner = axis
+            .checked_sub(1)
+            .and_then(|i| self.scanners.get_mut(i))
+            .and_then(Option::as_mut)
+            .ok_or("Connect this scanner axis first")?;
+        let mut protocol = scanner.config.protocol();
+        protocol.ensure_closed_loop &= !scanner.prepared;
+        let bus = &mut self.ports[scanner.port];
+        let encoded = format!("{delta:.digits$}", digits = scanner.config.digits());
+        let encoded_delta = encoded
+            .parse::<f64>()
+            .map_err(|_| "Invalid scanner increment")?;
+        if encoded_delta == 0. {
+            return Err("Scanner increment rounds to zero".into());
+        }
+        let baseline = protocol.target_position(bus)?;
+        let [device_low, device_high] = protocol.software_limits(bus)?;
+        let (profile_low, profile_high) = scanner.config.native_limits()?;
+        let low = profile_low.max(device_low);
+        let high = profile_high.min(device_high);
+        let target_within_limits = |baseline| {
+            let target = baseline + encoded_delta;
+            if (low..=high).contains(&target) {
+                Ok(target)
+            } else {
+                Err(format!(
+                    "Target {target} is outside permitted travel [{low}, {high}]"
+                ))
+            }
+        };
+        target_within_limits(baseline)?;
+        protocol.prepare(bus, cancel)?;
+        scanner.prepared = true;
+        if !protocol.controller_move_ready(&protocol.state(bus)?) {
+            return Err("Controller must be in ordinary READY for a relative move".into());
+        }
+        // Preparing a disabled controller or changing CC loop mode can
+        // alter the last target. Validate the target PR will actually use.
+        let native_target = target_within_limits(protocol.target_position(bus)?)?;
+        protocol.check_command_error(bus)?;
+        if cancel.load(Ordering::Acquire) {
+            return Err("motion cancelled".into());
+        }
+        let mut targets = [None; 3];
+        targets[axis] = Some(scanner.config.sample_um_from_raw(native_target));
+        let started = protocol
+            .start_native(bus, true, &encoded)
+            .and_then(|()| protocol.check_command_error(bus));
+        let result = (|| {
+            started?;
+            self.wait(
+                targets,
+                cancel,
+                Duration::from_secs(30),
+                true,
+                &mut progress,
+            )?;
+            let position = self.position()?;
+            self.verify_targets(&position, targets)?;
+            Ok(position)
+        })();
+        if let Err(error) = result.as_ref() {
+            self.stop()
+                .map_err(|stop| format!("{error}; stop failed: {stop}"))?;
+        }
+        result
+    }
+
     fn start(&mut self, targets: [Option<f64>; 3], cancel: &AtomicBool) -> Result<(), String> {
         if cancel.load(Ordering::Acquire) {
             return Err("motion cancelled".into());
@@ -1326,16 +1543,10 @@ impl MotionRig {
             if let Some(v) = v {
                 let s = self.scanners[i].as_ref().ok_or("Scanner not connected")?;
                 let raw = s.config.raw_target(*v)?;
-                let axis = if s.config.model()?.capabilities().uses_named_axis {
-                    s.config.axis.as_str()
-                } else {
-                    ""
-                };
-                self.ports[s.port].write(&format!(
-                    "{}PA{axis}{raw:.digits$}",
-                    s.config.controller_address,
-                    digits = s.config.digits()
-                ))?;
+                let encoded = format!("{raw:.digits$}", digits = s.config.digits());
+                s.config
+                    .protocol()
+                    .start_native(&mut self.ports[s.port], false, &encoded)?;
             }
         }
         Ok(())

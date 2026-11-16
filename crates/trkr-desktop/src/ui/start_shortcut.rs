@@ -25,7 +25,8 @@ impl Availability {
 impl App {
     pub(super) fn start_availability(&self, plan: &Plan) -> Availability {
         Availability {
-            blocked: self.alignment_tab
+            // Alignment hosts Signal Monitor; it never starts a scan.
+            blocked: (self.alignment_tab && plan.workflow != Workflow::SignalMonitor)
                 || self.snapshot.running
                 || self.measurement_pending
                 || self.controller.has_pending()
@@ -41,6 +42,10 @@ impl App {
     }
     pub(super) fn start_overlay_open(&self, ctx: &egui::Context) -> bool {
         self.measurement_settings.is_some()
+            || self.alignment_workspace.settings.is_some()
+            // Typing a target into an Alignment readout: Enter belongs to
+            // that field, so Ctrl+Enter must not also start the monitor.
+            || self.alignment.editing_position()
             || self.inventory_dialog.is_some()
             || self.dialog.is_some()
             || self.initialize_axis.is_some()
@@ -54,6 +59,10 @@ impl App {
         was_blocked: bool,
     ) {
         if requested
+            && (!self.alignment_tab
+                || (!self.alignment_workspace.motion_only
+                    && self.alignment_workspace.monitor
+                        == super::alignment_workspace::MonitorTab::Signal))
             && !was_blocked
             && !self.start_overlay_open(ctx)
             && self.start_availability(self.plan()).allows(self.plan())

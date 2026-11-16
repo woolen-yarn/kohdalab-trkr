@@ -1,7 +1,7 @@
 //! Alignment controls rendered in the central work area.
 //!
-//! This view deliberately owns no transport.  Every movement is represented as
-//! an engine command, so the regular worker retains exclusive serial access.
+//! Hardware movement is an engine command. The explicit GUI trial routes
+//! held gestures to an in-process simulated controller.
 
 use super::*;
 use crate::alignment_config::{AlignmentLayout, Panel};
@@ -10,6 +10,9 @@ use crate::{
     inventory::{DelayEntry, DeviceIds, Inventory, LockinEntry, ScannerEntry},
 };
 use trkr_motion::{DelayConfig, Position, ScannerConfig};
+
+mod jog_simulation;
+use jog_simulation::JogSimulation;
 
 const SURFACE: Color32 = Color32::from_rgb(26, 27, 32);
 const BORDER: Color32 = Color32::from_rgb(56, 58, 67);
@@ -93,6 +96,141 @@ pub struct AlignmentUi {
     skip_home: bool,
     move_to_coordinate_zero: bool,
     preview: bool,
+    jog_simulation: Option<JogSimulation>,
+    /// Coordinate being typed into. Enter or its Move moves once; Escape,
+    /// focus loss or leaving the card cancels without moving. There is no
+    /// separate stored target per axis.
+    editing: Option<PositionEdit>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PositionEdit {
+    kind: MotionKind,
+    id: String,
+    axis: usize,
+    unit: AlignmentUnit,
+    text: String,
+    /// The readout the field was prefilled with. Committing it unchanged is
+    /// not a move: by then it may be a stale position, and moving back to it
+    /// would undo motion the user never asked to undo.
+    seed: String,
+    /// Frames since the edit opened; focus is requested on the first one.
+    frames: u8,
+}
+
+/// Where the cards' absolute moves can go this frame.
+#[derive(Clone, Debug, Default)]
+struct MoveContext {
+    /// Idle and unlocked: a move is one worker job for the panel's device.
+    idle: bool,
+    /// Running hardware Signal Monitor: its executor and selected devices.
+    parallel: Option<(engine::ParallelMotionStatus, DeviceIds)>,
+    /// Why no move is possible when neither route applies.
+    blocked: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MoveRoute {
+    Worker,
+    Parallel,
+}
+
+const AXIS_NAMES: [&str; 3] = ["t", "X", "Y"];
+
+/// The one enable/validation rule shared by the Move buttons and the
+/// editable position readouts.
+fn axis_route(
+    context: &MoveContext,
+    kind: MotionKind,
+    id: &str,
+    axis: usize,
+    connected: bool,
+    unit: AlignmentUnit,
+) -> Result<MoveRoute, String> {
+    if context.idle {
+        return if connected {
+            Ok(MoveRoute::Worker)
+        } else {
+            Err("Connect this axis first".into())
+        };
+    }
+    let Some((status, ids)) = &context.parallel else {
+        return Err(context.blocked.into());
+    };
+    let selected = match kind {
+        MotionKind::Delay => &ids.delay,
+        MotionKind::Scanner => &ids.scanner,
+    };
+    if selected != id || !status.axes[axis] {
+        return Err(format!(
+            "{} is not handed off to the running Signal Monitor",
+            AXIS_NAMES[axis]
+        ));
+    }
+    if unit == AlignmentUnit::Native {
+        return Err("During a Signal Monitor, move in ps / µm (native units unavailable)".into());
+    }
+    if let Some(fault) = &status.fault {
+        return Err(format!("Moves stopped for this monitor: {fault}"));
+    }
+    if !status.accepting {
+        return Err("The Signal Monitor is not accepting moves".into());
+    }
+    if status.moving {
+        return Err("A move is already in progress".into());
+    }
+    Ok(MoveRoute::Parallel)
+}
+
+/// Check typed targets against the displayed travel and resolve the
+/// corrected unit with the exact offset the card subtracts for display.
+fn resolve_targets(
+    values: [Option<f64>; 3],
+    unit: AlignmentUnit,
+    zero: [f64; 3],
+    limits: [Option<[f64; 2]>; 3],
+) -> Result<([Option<f64>; 3], AlignmentUnit), String> {
+    let mut targets = [None; 3];
+    for (axis, value) in values.into_iter().enumerate() {
+        let Some(value) = value else { continue };
+        if !value.is_finite() {
+            return Err("Move target must be finite; no move was sent".into());
+        }
+        if let Some([low, high]) = limits[axis] {
+            let slack = 1e-9 * low.abs().max(high.abs()).max(1.);
+            if value < low - slack || value > high + slack {
+                return Err(format!(
+                    "{} target {} is outside travel {} to {}; no move was sent",
+                    AXIS_NAMES[axis],
+                    compact(Some(value)),
+                    compact(Some(low)),
+                    compact(Some(high))
+                ));
+            }
+        }
+        targets[axis] = Some(if unit == AlignmentUnit::Corrected {
+            value + zero[axis]
+        } else {
+            value
+        });
+    }
+    if targets.iter().all(Option::is_none) {
+        return Err("No move target".into());
+    }
+    let unit = if unit == AlignmentUnit::Corrected {
+        AlignmentUnit::Physical
+    } else {
+        unit
+    };
+    Ok((targets, unit))
+}
+
+/// Parse a typed readout value. Only plain finite numbers are accepted.
+fn parse_target(text: &str) -> Option<f64> {
+    text.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
 }
 
 impl Default for AlignmentUi {
@@ -108,6 +246,8 @@ impl Default for AlignmentUi {
             skip_home: false,
             move_to_coordinate_zero: false,
             preview: false,
+            jog_simulation: None,
+            editing: None,
         }
     }
 }
@@ -126,6 +266,11 @@ impl AlignmentUi {
     #[cfg(test)]
     pub(super) fn test_holding(&self) -> bool {
         self.held.is_some()
+    }
+
+    /// A position readout is being typed into; global shortcuts stay off.
+    pub(super) fn editing_position(&self) -> bool {
+        self.editing.is_some()
     }
 
     pub(super) fn highlights(&self, kind: &str, id: &str) -> bool {
@@ -194,6 +339,17 @@ enum Intent {
         kind: MotionKind,
         id: String,
     },
+    /// One absolute move, already validated against the displayed travel.
+    /// `targets` are physical ps/µm, or native for a worker move.
+    MoveTo {
+        kind: MotionKind,
+        id: String,
+        targets: [Option<f64>; 3],
+        unit: AlignmentUnit,
+        route: MoveRoute,
+    },
+    /// A refused move: say why instead of sending anything.
+    Note(String),
     Stop,
 }
 
@@ -206,6 +362,9 @@ struct RenderState<'a> {
     locked: bool,
     intents: &'a mut Vec<Intent>,
     held_down: &'a mut bool,
+    moves: &'a MoveContext,
+    /// The open position edit was rendered this frame.
+    edit_seen: &'a mut bool,
 }
 
 struct StepControl<'a> {
@@ -282,15 +441,17 @@ impl App {
         }
     }
 
-    /// The root layout calls this instead of the plot area while Alignment is
-    /// selected.  It intentionally keeps all configuration and device cards
-    /// in their normal left/right panels.
+    /// Motion controls alongside the live signal.
     pub(super) fn alignment_view(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
-        let locked = !self.inventory_editable()
+        // A preview never commands hardware, whatever its demo flags.
+        let locked = self.alignment.preview
+            || self.alignment_workspace.settings.is_some()
+            || !self.inventory_editable()
             || self.alignment.options.is_some()
             || self.alignment.initialize.is_some()
             || self.alignment.delete_panel.is_some();
         let previous_layout = self.alignment.layout.clone();
+        let moves = self.alignment_move_context(locked);
         let delay_options: Vec<_> = self
             .inventory
             .delays
@@ -323,7 +484,12 @@ impl App {
                     name: entry.display_name(),
                 },
                 entry: entry.clone(),
-                state: self.device_state(MotionKind::Delay, &entry.id),
+                state: parallel_readback(
+                    self.device_state(MotionKind::Delay, &entry.id),
+                    MotionKind::Delay,
+                    &entry.id,
+                    &moves,
+                ),
             })
             .collect();
         let scanners: Vec<_> = self
@@ -340,7 +506,12 @@ impl App {
                     name: entry.display_name(),
                 },
                 entry: entry.clone(),
-                state: self.device_state(MotionKind::Scanner, &entry.id),
+                state: parallel_readback(
+                    self.device_state(MotionKind::Scanner, &entry.id),
+                    MotionKind::Scanner,
+                    &entry.id,
+                    &moves,
+                ),
             })
             .collect();
 
@@ -354,13 +525,67 @@ impl App {
         );
         let mut intents = Vec::new();
         let mut held_down = false;
+        let mut edit_seen = false;
         ui.scope_builder(egui::UiBuilder::new().max_rect(area), |ui| {
-            if self.alignment.preview {
+            let trial = self.alignment.jog_simulation.is_some();
+            if let Some(sim) = &mut self.alignment.jog_simulation {
+                let drop = button(
+                    ui,
+                    egui::Rect::from_min_size(
+                        area.right_top() + Vec2::new(-130., 8.),
+                        Vec2::new(118., 26.),
+                    ),
+                    if sim.link_up {
+                        "Drop link"
+                    } else {
+                        "Restore link"
+                    },
+                    true,
+                )
+                .on_hover_text("F8 toggles the simulated link while holding an arrow")
+                .clicked();
+                if drop
+                    || ui.input(|input| {
+                        input.events.iter().any(|event| {
+                            matches!(
+                                event,
+                                egui::Event::Key {
+                                    key: egui::Key::F8,
+                                    pressed: true,
+                                    repeat: false,
+                                    ..
+                                }
+                            )
+                        })
+                    })
+                {
+                    sim.toggle_link();
+                }
                 label(
                     ui,
-                    area.min + Vec2::new(200., 14.),
+                    area.min + Vec2::new(14., 41.),
+                    sim.status(),
+                    Color32::from_rgb(237, 174, 74),
+                );
+            } else if self.alignment.preview {
+                label(
+                    ui,
+                    area.min + Vec2::new(14., 41.),
                     "PREVIEW — synthetic positions · no hardware",
                     Color32::from_rgb(237, 174, 74),
+                );
+            } else if self.snapshot.running {
+                // Panel jogs need the idle worker. Say where moves go instead
+                // of leaving disabled controls unexplained.
+                label(
+                    ui,
+                    area.min + Vec2::new(14., 41.),
+                    if moves.parallel.is_some() {
+                        "Steps wait for Stop · Move / position entry use handed-off axes"
+                    } else {
+                        "Panels wait for the run to stop"
+                    },
+                    MUTED,
                 );
             }
             let tabs =
@@ -393,22 +618,23 @@ impl App {
             };
             let can_add =
                 !locked && self.alignment.layout.panels(kind).len() < AlignmentLayout::limit(kind);
-            if button(
-                ui,
-                egui::Rect::from_min_size(
-                    area.right_top() + Vec2::new(-112., 8.),
-                    Vec2::new(100., 26.),
-                ),
-                "+ Add panel",
-                can_add,
-            )
-            .clicked()
+            if !trial
+                && button(
+                    ui,
+                    egui::Rect::from_min_size(
+                        area.right_top() + Vec2::new(-112., 8.),
+                        Vec2::new(100., 26.),
+                    ),
+                    "+ Add panel",
+                    can_add,
+                )
+                .clicked()
                 && let Err(error) = self.alignment.layout.add(kind)
             {
                 self.note(error);
             }
             let content = egui::Rect::from_min_max(
-                area.min + Vec2::new(10., 42.),
+                area.min + Vec2::new(10., 64.),
                 area.max - Vec2::new(10., 10.),
             );
             let page = self.alignment.page;
@@ -430,6 +656,8 @@ impl App {
                             locked,
                             intents: &mut intents,
                             held_down: &mut held_down,
+                            moves: &moves,
+                            edit_seen: &mut edit_seen,
                         };
                         match page {
                             AlignmentPage::Delay => {
@@ -452,12 +680,16 @@ impl App {
                             }
                             AlignmentPage::Scanner => {
                                 let gap = 8.;
-                                let width = ((content.width() - gap) * 0.5).max(240.);
+                                let columns = if content.width() >= 648. { 2 } else { 1 };
+                                let width =
+                                    (content.width() - gap * (columns - 1) as f32) / columns as f32;
                                 let mut y = content.min.y;
-                                for row in 0..render.alignment.layout.scanners.len().div_ceil(2) {
-                                    let first = row * 2;
+                                for row in
+                                    0..render.alignment.layout.scanners.len().div_ceil(columns)
+                                {
+                                    let first = row * columns;
                                     let height = 282.;
-                                    for column in 0..2 {
+                                    for column in 0..columns {
                                         let slot = first + column;
                                         if slot >= render.alignment.layout.scanners.len() {
                                             break;
@@ -493,13 +725,23 @@ impl App {
         });
 
         let focused = ui.ctx().input(|input| input.focused);
+        // A readout edit that is no longer on screen, or a window that lost
+        // focus, cancels the edit. Nothing moves without an explicit Enter.
+        if !edit_seen || !focused {
+            self.alignment.editing = None;
+        }
         if self.alignment.held.is_some() && (!held_down || !focused) {
             self.alignment_cancel_hold();
         }
         if held_down && focused && self.alignment.held.is_some() {
-            self.controller.renew_hold();
+            if self.alignment.jog_simulation.is_some() {
+                self.tick_simulated_hold(ui.input(|input| input.time));
+            } else {
+                self.controller.renew_hold();
+            }
             ui.ctx().request_repaint_after(Duration::from_millis(20));
         }
+        self.advance_simulated_unconfirmed_axis(ui.ctx());
         if !focused || !ui.ctx().input(|input| input.pointer.primary_down()) {
             self.alignment.pressed = None;
         }
@@ -516,9 +758,17 @@ impl App {
     pub(super) fn alignment_cancel_hold(&mut self) {
         self.alignment.pressed = None;
         if self.alignment.held.take().is_some() {
-            self.controller.release_hold();
-            self.note("Alignment hold stopped");
+            if self.alignment.jog_simulation.is_some() {
+                self.release_simulated_hold();
+            } else {
+                self.controller.release_hold();
+                self.note("Alignment hold stop requested");
+            }
         }
+    }
+
+    pub(super) fn alignment_jog_trial_active(&self) -> bool {
+        self.alignment.jog_simulation.is_some()
     }
 
     /// Populate the central alignment page for screenshot/layout capture.
@@ -527,13 +777,14 @@ impl App {
     pub(super) fn enable_alignment_preview(&mut self, scanner: bool) {
         self.demo_viewer = true;
         self.source_demo = true;
-        self.alignment_tab = true;
+        self.open_alignment();
         self.alignment.page = if scanner {
             AlignmentPage::Scanner
         } else {
             AlignmentPage::Delay
         };
         self.alignment.preview = true;
+        self.alignment.jog_simulation = None;
         self.alignment.held = None;
         self.alignment.initialize = None;
 
@@ -590,6 +841,52 @@ impl App {
         self.snapshot.registered_devices = preview_device_states(&self.inventory);
     }
 
+    /// Full-screen Alignment capture with a synthetic Signal Monitor trace.
+    /// Built on the no-I/O alignment preview: the panels stay locked by
+    /// `preview`, and the monitor is a simulation (`source_demo`) whose Start
+    /// would only run the synthetic engine source. Nothing here is sent to
+    /// the worker, so no device is opened.
+    pub(super) fn enable_alignment_monitor_preview(&mut self) {
+        // The replay viewer has no Signal Monitor; show the simulated
+        // monitor's real controls instead. `preview` keeps panels locked.
+        self.demo_viewer = false;
+        self.source_demo = true;
+        self.open_alignment();
+        let index = Self::ix(Workflow::SignalMonitor);
+        let mut plan = self.plans[index].clone();
+        plan.interval_s = 0.1;
+        plan.n_points = 600;
+        self.plans[index] = plan.clone();
+        self.trace = (0..240)
+            .filter_map(|i| {
+                let t = i as f64 * plan.interval_s;
+                let x = 1.0e-3 * (0.8 + 0.15 * (t * 0.9).sin() + 0.04 * (t * 5.3).cos());
+                let y = 1.0e-3 * (0.25 + 0.06 * (t * 0.7).cos());
+                let signal =
+                    trkr_core::Signal::new(x, y, x.hypot(y), y.atan2(x).to_degrees()).ok()?;
+                Some(Sample {
+                    recording: Default::default(),
+                    timing: Default::default(),
+                    captured_at: None,
+                    elapsed: t,
+                    signal,
+                    position: Position::default(),
+                    target: trkr_core::Target {
+                        fast: t,
+                        slow: None,
+                        corrected: [0.; 3],
+                        physical: [0.; 3],
+                        line: 0,
+                    },
+                })
+            })
+            .collect();
+        self.trace_plans[index] = Some(plan);
+        self.scan_progress[index] = (240, 600);
+        self.plot_epoch = self.plot_epoch.wrapping_add(1);
+        self.snapshot.phase = "PREVIEW — simulated monitor · no hardware".into();
+    }
+
     pub(super) fn enable_alignment_options_preview(&mut self) {
         if self.alignment.page == AlignmentPage::Scanner {
             // Show both states in the no-I/O Options fixture. Use the same
@@ -638,9 +935,105 @@ impl App {
             .cloned()
     }
 
+    /// Card moves: idle unlocked hardware goes to the worker; a running
+    /// hardware Signal Monitor routes handed-off axes to its executor.
+    /// Previews, replay and simulation never move hardware.
+    fn alignment_move_context(&self, locked: bool) -> MoveContext {
+        let blocked = |blocked| MoveContext {
+            blocked,
+            ..Default::default()
+        };
+        if self.alignment.preview || self.demo_viewer {
+            return blocked("Preview · moves never reach hardware");
+        }
+        // Python owns the instrument: no local route, idle or parallel.
+        if self.python_locked() {
+            return blocked("Python has control · local moves are off");
+        }
+        if self.alignment_workspace.settings.is_some()
+            || self.alignment.options.is_some()
+            || self.alignment.initialize.is_some()
+            || self.alignment.delete_panel.is_some()
+        {
+            return blocked("Close the open dialog to move");
+        }
+        if !self.snapshot.running {
+            return if locked {
+                blocked("Moves wait for the current operation")
+            } else {
+                MoveContext {
+                    idle: true,
+                    ..Default::default()
+                }
+            };
+        }
+        if self.source_demo {
+            return blocked("Simulation · stages never move");
+        }
+        let Some(status) = self.controller.parallel_motion() else {
+            return blocked("Measurement running · moves wait for it to stop");
+        };
+        match self.settings.workflow_device_ids(Workflow::SignalMonitor) {
+            Ok(ids) => MoveContext {
+                parallel: Some((status, ids)),
+                ..Default::default()
+            },
+            Err(_) => blocked("Signal Monitor devices are unavailable"),
+        }
+    }
+
+    fn apply_alignment_move(
+        &mut self,
+        kind: MotionKind,
+        id: String,
+        targets: [Option<f64>; 3],
+        unit: AlignmentUnit,
+        route: MoveRoute,
+    ) {
+        // Ownership may have changed between drawing and applying.
+        if self.python_locked() {
+            self.note("Python has control · no move was sent");
+            return;
+        }
+        let result = match route {
+            MoveRoute::Worker => self
+                .controller
+                .send(Command::Alignment {
+                    kind,
+                    id,
+                    action: AlignmentAction::MoveTo { targets, unit },
+                })
+                .map(|()| "Moving to target…"),
+            // The executor takes physical ps/µm; native units never get here.
+            MoveRoute::Parallel if unit == AlignmentUnit::Physical => self
+                .controller
+                .move_parallel(targets, engine::spatial_approach())
+                .map(|()| "Moving during Signal Monitor…"),
+            MoveRoute::Parallel => Err("Native-unit moves are unavailable during a monitor".into()),
+        };
+        match result {
+            Ok(message) => self.note(message),
+            Err(error) => self.note(error),
+        }
+    }
+
     fn apply_alignment_intents(&mut self, intents: Vec<Intent>) {
         for intent in intents {
             match intent {
+                Intent::MoveTo {
+                    kind,
+                    id,
+                    targets,
+                    unit,
+                    route,
+                } => self.apply_alignment_move(kind, id, targets, unit, route),
+                Intent::Note(message) => self.note(message),
+                // Python may have taken control after this frame was drawn:
+                // local Step/End and holds never reach the worker then.
+                Intent::Command { .. } | Intent::Hold { .. } if self.python_locked() => {
+                    self.note("Python has control · no move was sent");
+                }
+                Intent::Command { .. } if self.alignment.jog_simulation.is_some() => {}
                 Intent::Command { kind, id, action } => {
                     if let Err(error) =
                         self.controller
@@ -655,6 +1048,10 @@ impl App {
                     unit,
                 } => {
                     if self.alignment.held.is_none() {
+                        if self.alignment.jog_simulation.is_some() {
+                            self.start_simulated_hold(control);
+                            continue;
+                        }
                         let action = AlignmentAction::Jog {
                             axis: control.axis,
                             amount: if control.positive {
@@ -701,6 +1098,9 @@ impl App {
                 Intent::DeletePanel { kind, id } => {
                     self.alignment_cancel_hold();
                     self.alignment.delete_panel = Some((kind, id));
+                }
+                Intent::Stop if self.alignment.jog_simulation.is_some() => {
+                    self.alignment_cancel_hold()
                 }
                 Intent::Stop => {
                     self.alignment.pressed = None;
@@ -1030,13 +1430,41 @@ fn draw_delay_card(
     );
     let unit = render.alignment.layout.delays[slot].unit;
     let display = delay_display(panel, unit);
-    render.ui.painter().text(
-        rect.center_top() + Vec2::new(0., 86.),
-        egui::Align2::CENTER_TOP,
-        format!("{}  {}", display.label, compact(display.current)),
-        egui::FontId::proportional(20.),
-        TEXT,
+    // The coordinate, its inline edit and its Move form one group and share
+    // one route rule (units, travel, view-only and interlocks).
+    let route = axis_route(
+        render.moves,
+        MotionKind::Delay,
+        &panel.option.id,
+        0,
+        connected,
+        unit,
     );
+    let zero = [panel.entry.zero_ps, 0., 0.];
+    let limits = [display.limits, None, None];
+    let readout = delay_coordinate_group(rect);
+    if let Some(value) = position_editor(
+        render,
+        readout,
+        MotionKind::Delay,
+        &panel.option.id,
+        0,
+        unit,
+        &display,
+        &route,
+        20.,
+    ) {
+        push_move(
+            render,
+            MotionKind::Delay,
+            &panel.option.id,
+            [Some(value), None, None],
+            unit,
+            zero,
+            limits,
+            route,
+        );
+    }
     let rail_rect = egui::Rect::from_min_max(
         rect.min + Vec2::new(112., 126.),
         rect.right_top() + Vec2::new(-112., 162.),
@@ -1109,9 +1537,21 @@ fn draw_delay_card(
     label(
         render.ui,
         rect.min + Vec2::new(14., 184.),
-        "Click: step · Hold: move",
+        if render.alignment.jog_simulation.is_some() {
+            "Hold arrow to jog"
+        } else {
+            "Click: step · Hold: move"
+        },
         MUTED,
     );
+}
+
+/// The delay card's coordinate group: readout/edit with Move beside it.
+fn delay_coordinate_group(card: egui::Rect) -> egui::Rect {
+    egui::Rect::from_center_size(
+        card.center_top() + Vec2::new(0., 98.),
+        Vec2::new((card.width() - 28.).clamp(0., 304.), 26.),
+    )
 }
 
 fn draw_scanner_card(
@@ -1186,25 +1626,58 @@ fn draw_scanner_card(
         scanner_display(panel, unit, 1),
     ];
     let layout = scanner_card_layout(rect);
+    let routes: [Result<MoveRoute, String>; 2] = std::array::from_fn(|axis| {
+        axis_route(
+            render.moves,
+            MotionKind::Scanner,
+            &panel.option.id,
+            axis + 1,
+            axes[axis + 1],
+            unit,
+        )
+    });
+    let zero = [0., panel.entry.zero_um[0], panel.entry.zero_um[1]];
+    let limits = [None, display[0].limits, display[1].limits];
     for (axis, readout) in layout.readouts.into_iter().enumerate() {
         // Values may be much wider than a compact card. The fixed readout
-        // rectangle prevents visual overlap, while the hover keeps all digits
-        // available instead of silently losing scientific detail.
-        let text = format!(
-            "{}  {}",
-            display[axis].label,
-            compact(display[axis].current)
-        );
-        render
-            .ui
-            .put(
-                readout,
-                egui::Label::new(egui::RichText::new(&text).font(egui::FontId::proportional(12.)))
-                    .truncate(),
-            )
-            .on_hover_text(text);
+        // rectangle clips instead of overlapping, while the hover keeps all
+        // digits available instead of silently losing scientific detail.
+        if let Some(value) = position_editor(
+            render,
+            readout,
+            MotionKind::Scanner,
+            &panel.option.id,
+            axis + 1,
+            unit,
+            &display[axis],
+            &routes[axis],
+            12.,
+        ) {
+            let mut values = [None; 3];
+            values[axis + 1] = Some(value);
+            push_move(
+                render,
+                MotionKind::Scanner,
+                &panel.option.id,
+                values,
+                unit,
+                zero,
+                limits,
+                routes[axis].clone(),
+            );
+        }
     }
     position_graph(render.ui, layout.graph, &display);
+    label(
+        render.ui,
+        rect.min + Vec2::new(14., 256.),
+        if render.alignment.jog_simulation.is_some() {
+            "Hold arrow to jog"
+        } else {
+            "Click: step · Hold: move"
+        },
+        MUTED,
+    );
     for (axis, positive, offset, direction) in [
         (1, false, Vec2::new(-(layout.pad.x + 4.), 0.), (-1., 0.)),
         (1, true, Vec2::new(layout.pad.x + 4., 0.), (1., 0.)),
@@ -1237,12 +1710,6 @@ fn draw_scanner_card(
     {
         render.intents.push(Intent::Stop);
     }
-    label(
-        render.ui,
-        rect.min + Vec2::new(14., 264.),
-        "Click: step · Hold: move",
-        MUTED,
-    );
 }
 
 /// Geometry for the scanner's compact graph-and-control region.  The graph
@@ -1271,8 +1738,9 @@ fn scanner_card_layout(rect: egui::Rect) -> ScannerCardLayout {
     const MARGIN: f32 = 14.;
     const TOP: f32 = 88.;
     const GAP: f32 = 10.;
-    const MIN_CONTROL_WIDTH: f32 = 96.;
-    const MAX_GRAPH_SIZE: f32 = 172.;
+    // Each coordinate group holds its readout/edit and a Move button.
+    const MIN_CONTROL_WIDTH: f32 = 150.;
+    const MAX_GRAPH_SIZE: f32 = 160.;
 
     let content = egui::Rect::from_min_max(
         rect.min + Vec2::new(MARGIN, TOP),
@@ -1284,26 +1752,307 @@ fn scanner_card_layout(rect: egui::Rect) -> ScannerCardLayout {
         egui::pos2(graph.right() + GAP, content.top()),
         content.right_top(),
     );
-    let readout_height = 18.;
+    let readout_height = 26.;
+    let readout_size = Vec2::new(controls.width().min(156.), readout_height);
     let readouts = [
+        egui::Rect::from_min_size(controls.min, readout_size),
         egui::Rect::from_min_size(
-            controls.min + Vec2::new(0., 2.),
-            Vec2::new(controls.width(), readout_height),
-        ),
-        egui::Rect::from_min_size(
-            controls.min + Vec2::new(0., 22.),
-            Vec2::new(controls.width(), readout_height),
+            controls.min + Vec2::new(0., readout_height + 4.),
+            readout_size,
         ),
     ];
     // The 8 px allowance is the total inter-button gap in the pad bounds.
     let pad_width = ((controls.width() - 8.) / 3.).clamp(26., 42.);
-    let pad = Vec2::new(pad_width, (pad_width - 2.).clamp(28., 40.));
-    let pad_center = egui::pos2(controls.center().x, rect.top() + 198.);
+    let pad = Vec2::new(pad_width, (pad_width - 2.).clamp(28., 36.));
+    let pad_center = egui::pos2(controls.center().x, rect.top() + 210.);
     ScannerCardLayout {
         graph,
         readouts,
         pad_center,
         pad,
+    }
+}
+
+/// During a hardware Signal Monitor the executor owns the handed-off axes,
+/// so show its readback on the selected device's card.
+fn parallel_readback(
+    state: Option<DeviceState>,
+    kind: MotionKind,
+    id: &str,
+    moves: &MoveContext,
+) -> Option<DeviceState> {
+    let mut state = state?;
+    let Some((status, ids)) = &moves.parallel else {
+        return Some(state);
+    };
+    let from = &status.position;
+    let to = &mut state.position;
+    match kind {
+        MotionKind::Delay if ids.delay == id && status.axes[0] => {
+            to.physical[0] = from.physical[0];
+            to.delay_stage_mm = from.delay_stage_mm;
+            to.delay_stage_pulse = from.delay_stage_pulse;
+        }
+        MotionKind::Scanner if ids.scanner == id => {
+            if status.axes[1] {
+                to.physical[1] = from.physical[1];
+                to.x_scanner_mm = from.x_scanner_mm;
+                to.x_scanner_deg = from.x_scanner_deg;
+            }
+            if status.axes[2] {
+                to.physical[2] = from.physical[2];
+                to.y_scanner_mm = from.y_scanner_mm;
+                to.y_scanner_deg = from.y_scanner_deg;
+            }
+        }
+        _ => {}
+    }
+    Some(state)
+}
+
+/// Validate and queue one absolute move, or explain why it was refused.
+#[allow(clippy::too_many_arguments)]
+fn push_move(
+    render: &mut RenderState<'_>,
+    kind: MotionKind,
+    id: &str,
+    values: [Option<f64>; 3],
+    unit: AlignmentUnit,
+    zero: [f64; 3],
+    limits: [Option<[f64; 2]>; 3],
+    route: Result<MoveRoute, String>,
+) {
+    render.intents.push(
+        match route.and_then(|route| {
+            resolve_targets(values, unit, zero, limits)
+                .map(|(targets, unit)| (route, targets, unit))
+        }) {
+            Ok((route, targets, unit)) => Intent::MoveTo {
+                kind,
+                id: id.into(),
+                targets,
+                unit,
+                route,
+            },
+            Err(error) => Intent::Note(error),
+        },
+    );
+}
+
+/// Width of the Move button that ends every coordinate group.
+const GROUP_MOVE_WIDTH: f32 = 52.;
+const GROUP_GAP: f32 = 6.;
+
+/// Split one coordinate group into its readout/edit field and Move button.
+fn coordinate_group(rect: egui::Rect) -> (egui::Rect, egui::Rect) {
+    let move_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - GROUP_MOVE_WIDTH, rect.top()),
+        rect.max,
+    );
+    let field = egui::Rect::from_min_max(
+        rect.min,
+        egui::pos2(
+            (move_rect.left() - GROUP_GAP).max(rect.left()),
+            rect.bottom(),
+        ),
+    );
+    (field, move_rect)
+}
+
+/// One coordinate group: the current position readout, which becomes a
+/// text field when clicked, with its own Move button beside it. Enter or
+/// Move commits the typed value once; Escape, focus loss elsewhere or a
+/// blocked axis never moves. Move is only enabled while a value is typed,
+/// so there is no second, stale target to send by mistake.
+#[allow(clippy::too_many_arguments)]
+fn position_editor(
+    render: &mut RenderState<'_>,
+    rect: egui::Rect,
+    kind: MotionKind,
+    id: &str,
+    axis: usize,
+    unit: AlignmentUnit,
+    display: &PositionDisplay,
+    route: &Result<MoveRoute, String>,
+    font: f32,
+) -> Option<f64> {
+    let (field, move_rect) = coordinate_group(rect);
+    let widget = egui::Id::new(("alignment-position-edit", format!("{kind:?}"), id, axis));
+    let is_this = |alignment: &AlignmentUi| {
+        alignment.editing.as_ref().is_some_and(|edit| {
+            edit.kind == kind && edit.id == id && edit.axis == axis && edit.unit == unit
+        })
+    };
+    // A press on this group's Move takes focus from the field; that must not
+    // cancel the edit Move is about to commit.
+    let over_move = render
+        .ui
+        .ctx()
+        .pointer_interact_pos()
+        .is_some_and(|pointer| move_rect.contains(pointer));
+    let mut commit = None;
+    if is_this(&*render.alignment) && route.is_ok() {
+        *render.edit_seen = true;
+        let edit = render.alignment.editing.as_mut()?;
+        let response = render.ui.put(
+            field,
+            egui::TextEdit::singleline(&mut edit.text)
+                .id(widget)
+                .font(egui::FontId::proportional(font.min(16.)))
+                .horizontal_align(egui::Align::Center),
+        );
+        let first = edit.frames == 0;
+        edit.frames = edit.frames.saturating_add(1);
+        if first {
+            response.request_focus();
+        } else {
+            let (enter, escape) = render.ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            let lost = response.lost_focus();
+            if lost && enter && !escape {
+                commit = Some(edit.text.clone());
+            } else if escape || ((lost || !response.has_focus()) && !over_move) {
+                render.alignment.editing = None;
+            }
+        }
+    } else {
+        draw_readout(
+            render, field, widget, kind, id, axis, unit, display, route, font,
+        );
+    }
+    // Move needs a value the user actually typed: the untouched prefill is
+    // the position at open time, possibly stale by now.
+    let typing = commit.is_none()
+        && route.is_ok()
+        && is_this(&*render.alignment)
+        && render
+            .alignment
+            .editing
+            .as_ref()
+            .is_some_and(|edit| edit.text.trim() != edit.seed.trim());
+    let move_button = button(render.ui, move_rect, "Move", typing);
+    let move_button = match route {
+        Ok(_) if typing => move_button.on_hover_text("Move once to the typed value"),
+        Ok(_) => move_button.on_disabled_hover_text(
+            "Click the coordinate and type a new target · Enter or Move sends one move",
+        ),
+        Err(reason) => move_button.on_disabled_hover_text(reason.as_str()),
+    };
+    if typing && move_button.clicked() {
+        commit = render
+            .alignment
+            .editing
+            .as_ref()
+            .map(|edit| edit.text.clone());
+    }
+    let text = commit?;
+    let unchanged = render
+        .alignment
+        .editing
+        .take()
+        .is_some_and(|edit| text.trim() == edit.seed.trim());
+    if unchanged {
+        render
+            .intents
+            .push(Intent::Note("Target unchanged; no move was sent".into()));
+        return None;
+    }
+    let value = parse_target(&text);
+    if value.is_none() {
+        render.intents.push(Intent::Note(
+            "Enter a finite number; no move was sent".into(),
+        ));
+    }
+    value
+}
+
+/// The idle coordinate readout. Clicking it opens the inline edit.
+#[allow(clippy::too_many_arguments)]
+fn draw_readout(
+    render: &mut RenderState<'_>,
+    rect: egui::Rect,
+    widget: egui::Id,
+    kind: MotionKind,
+    id: &str,
+    axis: usize,
+    unit: AlignmentUnit,
+    display: &PositionDisplay,
+    route: &Result<MoveRoute, String>,
+    font: f32,
+) {
+    let text = format!("{}  {}", display.label, compact(display.current));
+    let tooltip = display
+        .native_readback
+        .as_ref()
+        .map_or_else(|| text.clone(), |readback| format!("{text}\n{readback}"));
+    let painter = render
+        .ui
+        .painter()
+        .with_clip_rect(render.ui.clip_rect().intersect(rect));
+    let content = rect.shrink2(Vec2::new(2., 0.));
+    let galley = position_galley(&painter, &text, font, content.width());
+    let x = if font >= 16. {
+        content.center().x - galley.size().x * 0.5
+    } else {
+        content.left()
+    };
+    painter.galley(
+        egui::pos2(x, content.center().y - galley.size().y * 0.5),
+        galley,
+        TEXT,
+    );
+    let response = render
+        .ui
+        .interact(rect, widget.with("readout"), egui::Sense::click());
+    let response = match route {
+        Ok(_) => response.on_hover_text(format!(
+            "{tooltip}\nClick to type a target · Enter or Move moves once · Esc cancels"
+        )),
+        Err(reason) => response.on_hover_text(format!("{tooltip}\n{reason}")),
+    };
+    if response.clicked() && route.is_ok() {
+        let seed = display
+            .current
+            .map(|value| compact(Some(value)))
+            .unwrap_or_default();
+        render.alignment.editing = Some(PositionEdit {
+            kind,
+            id: id.into(),
+            axis,
+            unit,
+            text: seed.clone(),
+            seed,
+            frames: 0,
+        });
+        *render.edit_seen = true;
+    }
+}
+
+/// Font metrics differ across platforms. Fit the rendered label, including
+/// its unit and value, inside the space reserved beside Move.
+fn position_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font: f32,
+    width: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let layout =
+        |size| painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(size), TEXT);
+    let preferred = layout(font);
+    if preferred.size().x <= width {
+        return preferred;
+    }
+    let mut size = (font * width / preferred.size().x).max(8.);
+    loop {
+        let galley = layout(size);
+        if galley.size().x <= width || size <= 8. {
+            return galley;
+        }
+        size = (size - 0.5).max(8.);
     }
 }
 
@@ -1324,7 +2073,10 @@ fn motion_button(
     };
     let active = render.alignment.held.as_ref() == Some(&held);
     let focused = render.ui.ctx().input(|i| i.focused);
-    let enabled = !control.locked && valid_increment(control.amount) && focused;
+    let trial = render.alignment.jog_simulation.as_ref();
+    let enabled = focused
+        && valid_increment(control.amount)
+        && trial.map_or(!control.locked, JogSimulation::can_start);
     let response = button(
         render.ui,
         egui::Rect::from_min_size(control.position, control.size),
@@ -1381,7 +2133,7 @@ fn motion_button(
             });
         }
     }
-    if response.clicked() && enabled && !active {
+    if response.clicked() && enabled && !active && trial.is_none() {
         let press = render
             .alignment
             .pressed
@@ -1428,14 +2180,24 @@ fn motion_arrow_button(
         _ => "Y",
     };
     let sign = if control.positive { "+" } else { "−" };
-    motion_button(render, control, "").on_hover_text(format!(
-        "{axis}{sign} · Click: one step · Hold: move · Release: stop"
-    ));
+    let label = format!("{axis}{sign}");
+    let trial = render.alignment.jog_simulation.as_ref();
+    let arrow_enabled = trial.map_or(!control.locked, JogSimulation::can_start);
+    let description = if trial.is_some() {
+        "Hold: simulated jog · Release: stop"
+    } else {
+        "Click: one step · Hold: move · Release: stop"
+    };
+    let response =
+        motion_button(render, control, "").on_hover_text(format!("{label} · {description}"));
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, arrow_enabled, &label));
+
     paint_arrow(
         render.ui,
         control.position + control.size * 0.5,
         direction,
-        if control.locked || !valid_increment(control.amount) {
+        if !arrow_enabled || !valid_increment(control.amount) {
             MUTED
         } else {
             TEXT
@@ -1633,6 +2395,7 @@ struct PositionDisplay {
     limits: Option<[f64; 2]>,
     label: String,
     native_increases: bool,
+    native_readback: Option<String>,
 }
 
 fn delay_display(panel: &DelayPanel, unit: AlignmentUnit) -> PositionDisplay {
@@ -1678,6 +2441,7 @@ fn delay_display(panel: &DelayPanel, unit: AlignmentUnit) -> PositionDisplay {
         }
         .into(),
         native_increases: endpoints.is_none_or(|[a, b]| b > a),
+        native_readback: None,
     }
 }
 
@@ -1741,6 +2505,27 @@ fn scanner_display(panel: &ScannerPanel, unit: AlignmentUnit, axis: usize) -> Po
         limits: endpoints.map(|[a, b]| [a.min(b), a.max(b)]),
         label,
         native_increases: endpoints.is_none_or(|[a, b]| b > a),
+        native_readback: config.as_ref().and_then(|config| {
+            let p = position?;
+            if config.controller == "CONEXAGAP" {
+                let degrees = if axis == 0 {
+                    p.x_scanner_deg
+                } else {
+                    p.y_scanner_deg
+                }?;
+                Some(format!(
+                    "Controller {} · measured angle: {degrees}°",
+                    config.axis
+                ))
+            } else {
+                let mm = if axis == 0 {
+                    p.x_scanner_mm
+                } else {
+                    p.y_scanner_mm
+                }?;
+                Some(format!("Controller TP: {mm} mm"))
+            }
+        }),
     }
 }
 
@@ -1908,6 +2693,27 @@ mod tests {
     }
 
     #[test]
+    fn rendered_delay_coordinate_fits_beside_move() {
+        let context = egui::Context::default();
+        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+            for width in [240., 400., 832.] {
+                let card = precision::rect(0., 0., width, 216.);
+                let (field, button) = coordinate_group(delay_coordinate_group(card));
+                let available = field.width() - 4.;
+                for text in [
+                    "Position (mm)  210.000",
+                    "Position (mm)  500.000",
+                    "t_cor (ps)  -10000.000",
+                ] {
+                    let galley = position_galley(ui.painter(), text, 20., available);
+                    assert!(galley.size().x <= available, "{text} at width {width}");
+                }
+                assert!(field.right() < button.left());
+            }
+        });
+    }
+
+    #[test]
     fn scanner_card_keeps_long_coordinate_readouts_clear_of_graph_and_cross_pad() {
         // These are deliberately wider than the preview values: the geometry,
         // rather than a lucky short value, reserves the readout column.
@@ -1917,12 +2723,14 @@ mod tests {
                 current: Some(-123_456.789),
                 limits: None,
                 native_increases: true,
+                native_readback: None,
             },
             PositionDisplay {
                 label: "Y_cor (µm)".into(),
                 current: Some(987_654.321),
                 limits: None,
                 native_increases: true,
+                native_readback: None,
             },
         ];
         assert!(displays.iter().all(|display| {
@@ -1942,7 +2750,22 @@ mod tests {
                 assert!(card.contains_rect(readout));
                 assert!(!readout.intersects(layout.graph));
                 assert!(!readout.intersects(pad_bounds));
+                // Each coordinate keeps its own Move beside it in one group.
+                let (field, move_rect) = coordinate_group(readout);
+                assert!(readout.contains_rect(field) && readout.contains_rect(move_rect));
+                assert!(field.max.x < move_rect.min.x);
+                assert_eq!(field.center().y, move_rect.center().y);
+                assert!(field.width() >= 60., "{width}");
             }
+            assert!(!layout.readouts[0].intersects(layout.readouts[1]));
+        }
+        // The delay group stays clear of the end/step arrows below it.
+        for width in [400., 812.] {
+            let card = precision::rect(0., 0., width, 216.);
+            let group = delay_coordinate_group(card);
+            assert!(card.contains_rect(group));
+            assert!(group.max.y < card.min.y + 120.);
+            assert!(group.min.y > card.min.y + 74.);
         }
     }
 
@@ -2083,6 +2906,8 @@ mod tests {
         };
         let mut intents = Vec::new();
         let mut down = false;
+        let moves = MoveContext::default();
+        let mut edit_seen = false;
         let _ = context.run_ui(input, |ui| {
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 let mut render = RenderState {
@@ -2091,6 +2916,8 @@ mod tests {
                     locked,
                     intents: &mut intents,
                     held_down: &mut down,
+                    moves: &moves,
+                    edit_seen: &mut edit_seen,
                 };
                 motion_button(
                     &mut render,
@@ -2249,6 +3076,51 @@ mod tests {
         }
     }
     #[test]
+    fn agap_corrected_zero_keeps_the_controller_angle_visible() {
+        let app = App::with_context(&egui::Context::default(), false);
+        let mut entry = app.inventory.scanners[0].clone();
+        entry.x = Some(ScannerConfig {
+            controller: "CONEXAGAP".into(),
+            port: "COM9".into(),
+            actuator: Some("AG-M100D".into()),
+            axis: "U".into(),
+            origin_pos: Some(0.),
+            sample_um_per_unit: 582.,
+            ..ScannerConfig::default()
+        });
+        entry.zero_um[0] = -0.582;
+        let panel = ScannerPanel {
+            option: DeviceOption {
+                id: entry.id.clone(),
+                name: entry.display_name(),
+            },
+            state: Some(DeviceState {
+                id: entry.id.clone(),
+                kind: "scanner".into(),
+                position: Position {
+                    x_scanner_deg: Some(-0.001),
+                    physical: [None, Some(-0.582), None],
+                    ..Position::default()
+                },
+                connected: [false, true, false],
+                delay_calibration: None,
+                phase: "Connected".into(),
+            }),
+            entry,
+        };
+        let corrected = scanner_display(&panel, AlignmentUnit::Corrected, 0);
+        assert_eq!(corrected.current, Some(0.));
+        assert_eq!(
+            corrected.native_readback.as_deref(),
+            Some("Controller U · measured angle: -0.001°")
+        );
+        assert_eq!(
+            scanner_display(&panel, AlignmentUnit::Native, 0).current,
+            Some(-0.001)
+        );
+    }
+
+    #[test]
     fn selected_coordinates_and_limits_follow_latest_offsets() {
         let mut app = App::with_context(&egui::Context::default(), true);
         app.enable_alignment_preview(false);
@@ -2403,6 +3275,44 @@ mod tests {
     }
 
     #[test]
+    fn monitor_preview_keeps_panels_locked_without_demo_viewer() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, false);
+        app.enable_alignment_preview(false);
+        app.enable_alignment_monitor_preview();
+        assert!(app.alignment.preview && !app.demo_viewer && app.source_demo);
+        assert!(app.alignment_tab);
+        let before = app.alignment.layout.delays.len();
+        let area = precision::rect(0., 0., 1000., 600.);
+        // Click "+ Add panel": a locked preview must ignore it.
+        for pressed in [None, Some(true), Some(false)] {
+            let pos = egui::pos2(938., 21.);
+            let mut events = vec![egui::Event::PointerMoved(pos)];
+            if let Some(pressed) = pressed {
+                events.push(egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                });
+            }
+            let _ = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(area),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default()
+                        .show_inside(ui, |ui| app.alignment_view(ui, area));
+                },
+            );
+        }
+        assert_eq!(app.alignment.layout.delays.len(), before);
+        assert!(!app.controller.has_pending());
+    }
+
+    #[test]
     fn options_and_left_editor_follow_confirmed_direction_on_both_scanner_axes() {
         let mut app = App::with_context(&egui::Context::default(), false);
         let id = app.inventory.selected.scanner.clone();
@@ -2483,5 +3393,351 @@ mod tests {
         assert!(app.alignment.options.is_none());
         assert!(app.alignment.initialize.is_some());
         assert!(!app.controller.has_pending());
+    }
+
+    fn monitor_context(status: engine::ParallelMotionStatus) -> MoveContext {
+        MoveContext {
+            parallel: Some((
+                status,
+                DeviceIds {
+                    delay: "delay-1".into(),
+                    scanner: "scanner-1".into(),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn card_moves_share_one_route_rule_for_idle_monitor_and_blocked_states() {
+        use AlignmentUnit::{Corrected, Native, Physical};
+        use MotionKind::{Delay, Scanner};
+        let idle = MoveContext {
+            idle: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            axis_route(&idle, Delay, "delay-1", 0, true, Native),
+            Ok(MoveRoute::Worker)
+        );
+        assert!(axis_route(&idle, Scanner, "scanner-1", 2, false, Physical).is_err());
+        // Previews, replay, simulation and ordinary runs explain themselves.
+        let blocked = MoveContext {
+            blocked: "Simulation · stages never move",
+            ..Default::default()
+        };
+        assert_eq!(
+            axis_route(&blocked, Delay, "delay-1", 0, true, Physical),
+            Err("Simulation · stages never move".into())
+        );
+        // Hardware Signal Monitor: only handed-off axes of its own devices,
+        // in ps / µm, while the executor is ready.
+        let ready = engine::ParallelMotionStatus {
+            axes: [true, true, false],
+            accepting: true,
+            ..Default::default()
+        };
+        let monitor = monitor_context(ready.clone());
+        assert_eq!(
+            axis_route(&monitor, Delay, "delay-1", 0, false, Physical),
+            Ok(MoveRoute::Parallel)
+        );
+        assert_eq!(
+            axis_route(&monitor, Scanner, "scanner-1", 1, true, Corrected),
+            Ok(MoveRoute::Parallel)
+        );
+        assert!(axis_route(&monitor, Scanner, "scanner-1", 2, true, Physical).is_err());
+        assert!(axis_route(&monitor, Scanner, "scanner-2", 1, true, Physical).is_err());
+        assert!(
+            axis_route(&monitor, Scanner, "scanner-1", 1, true, Native)
+                .unwrap_err()
+                .contains("native")
+        );
+        for refused in [
+            engine::ParallelMotionStatus {
+                moving: true,
+                ..ready.clone()
+            },
+            engine::ParallelMotionStatus {
+                fault: Some("earlier failure".into()),
+                ..ready.clone()
+            },
+            engine::ParallelMotionStatus {
+                accepting: false,
+                ..ready.clone()
+            },
+        ] {
+            let context = monitor_context(refused);
+            assert!(axis_route(&context, Delay, "delay-1", 0, true, Physical).is_err());
+        }
+    }
+
+    #[test]
+    fn typed_targets_respect_displayed_travel_and_resolve_corrected_exactly() {
+        let limits = [Some([-5., 15.]), Some([-10., 10.]), None];
+        let zero = [2.5, 4., 0.];
+        // Corrected = physical − zero on display, so physical = typed + zero.
+        assert_eq!(
+            resolve_targets(
+                [Some(-3.), Some(-2.), None],
+                AlignmentUnit::Corrected,
+                zero,
+                limits
+            ),
+            Ok(([Some(-0.5), Some(2.), None], AlignmentUnit::Physical))
+        );
+        // Native and physical values are passed through unchanged.
+        assert_eq!(
+            resolve_targets([None, Some(10.), None], AlignmentUnit::Native, zero, limits),
+            Ok(([None, Some(10.), None], AlignmentUnit::Native))
+        );
+        for values in [
+            [Some(15.5), None, None],
+            [None, Some(-10.5), None],
+            [None, Some(f64::NAN), None],
+            [None, None, None],
+        ] {
+            assert!(
+                resolve_targets(values, AlignmentUnit::Physical, zero, limits).is_err(),
+                "{values:?}"
+            );
+        }
+        assert_eq!(parse_target(" 1.25 "), Some(1.25));
+        assert_eq!(parse_target("inf"), None);
+        assert_eq!(parse_target("1 mm"), None);
+    }
+
+    #[test]
+    fn position_readout_moves_once_on_enter_and_never_on_escape_or_focus_loss() {
+        let context = egui::Context::default();
+        let mut alignment = AlignmentUi::default();
+        let display = PositionDisplay {
+            current: Some(1.),
+            limits: Some([-10., 10.]),
+            label: "X (µm)".into(),
+            native_increases: true,
+            native_readback: None,
+        };
+        let readout = precision::rect(20., 20., 200., 20.);
+        let moves = MoveContext {
+            idle: true,
+            ..Default::default()
+        };
+        let frame = |alignment: &mut AlignmentUi,
+                     events: Vec<egui::Event>,
+                     modifiers: egui::Modifiers,
+                     route: Result<MoveRoute, String>|
+         -> Option<f64> {
+            let mut intents = Vec::new();
+            let mut held_down = false;
+            let mut edit_seen = false;
+            let mut committed = None;
+            let _ = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(precision::rect(0., 0., 400., 300.)),
+                    events,
+                    modifiers,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                        let mut render = RenderState {
+                            ui,
+                            alignment,
+                            locked: false,
+                            intents: &mut intents,
+                            held_down: &mut held_down,
+                            moves: &moves,
+                            edit_seen: &mut edit_seen,
+                        };
+                        committed = position_editor(
+                            &mut render,
+                            readout,
+                            MotionKind::Scanner,
+                            "scanner-1",
+                            1,
+                            AlignmentUnit::Physical,
+                            &display,
+                            &route,
+                            12.,
+                        );
+                    });
+                },
+            );
+            // Same cleanup as `alignment_view`.
+            if !edit_seen {
+                alignment.editing = None;
+            }
+            committed
+        };
+        let key = |key, modifiers| egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let click = |pos: egui::Pos2| {
+            [true, false].map(|pressed| {
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: Default::default(),
+                    },
+                ]
+            })
+        };
+        let none = egui::Modifiers::default();
+        let ok = || -> Result<MoveRoute, String> { Ok(MoveRoute::Worker) };
+        let open = |alignment: &mut AlignmentUi| {
+            frame(alignment, vec![], none, ok());
+            for events in click(readout.center()) {
+                assert_eq!(frame(alignment, events, none, ok()), None);
+            }
+            assert!(alignment.editing.is_some());
+            // The field takes focus; select its text and type a target.
+            assert_eq!(frame(alignment, vec![], none, ok()), None);
+            frame(
+                alignment,
+                vec![key(egui::Key::A, egui::Modifiers::COMMAND)],
+                egui::Modifiers::COMMAND,
+                ok(),
+            );
+            assert_eq!(
+                frame(alignment, vec![egui::Event::Text("7.5".into())], none, ok()),
+                None
+            );
+            assert!(alignment.editing.is_some());
+        };
+
+        open(&mut alignment);
+        assert_eq!(
+            frame(
+                &mut alignment,
+                vec![key(egui::Key::Enter, none)],
+                none,
+                ok()
+            ),
+            Some(7.5)
+        );
+        assert!(alignment.editing.is_none());
+        // Enter again does nothing once the edit has closed.
+        assert_eq!(
+            frame(
+                &mut alignment,
+                vec![key(egui::Key::Enter, none)],
+                none,
+                ok()
+            ),
+            None
+        );
+
+        open(&mut alignment);
+        assert_eq!(
+            frame(
+                &mut alignment,
+                vec![key(egui::Key::Escape, none)],
+                none,
+                ok()
+            ),
+            None
+        );
+        assert!(alignment.editing.is_none());
+
+        open(&mut alignment);
+        for events in click(egui::pos2(350., 250.)) {
+            assert_eq!(frame(&mut alignment, events, none, ok()), None);
+        }
+        assert!(alignment.editing.is_none());
+
+        // The group's own Move commits the typed value exactly once.
+        let (field, move_rect) = coordinate_group(readout);
+        assert!(field.contains(readout.center()));
+        open(&mut alignment);
+        let committed: Vec<_> = click(move_rect.center())
+            .into_iter()
+            .filter_map(|events| frame(&mut alignment, events, none, ok()))
+            .collect();
+        assert_eq!(committed, [7.5]);
+        assert!(alignment.editing.is_none());
+        // Without a typed value, Move is disabled and never moves.
+        for _ in 0..2 {
+            for events in click(move_rect.center()) {
+                assert_eq!(frame(&mut alignment, events, none, ok()), None);
+            }
+        }
+        assert!(alignment.editing.is_none());
+
+        // Enter on the untouched prefill is not a move: that value is the
+        // position at open time and may be stale.
+        frame(&mut alignment, vec![], none, ok());
+        for events in click(readout.center()) {
+            assert_eq!(frame(&mut alignment, events, none, ok()), None);
+        }
+        assert!(alignment.editing.is_some());
+        assert_eq!(frame(&mut alignment, vec![], none, ok()), None);
+        assert_eq!(
+            frame(
+                &mut alignment,
+                vec![key(egui::Key::Enter, none)],
+                none,
+                ok()
+            ),
+            None
+        );
+        assert!(alignment.editing.is_none());
+
+        // A blocked axis never opens an editor.
+        let blocked =
+            || -> Result<MoveRoute, String> { Err("Simulation · stages never move".to_owned()) };
+        for events in click(readout.center()) {
+            assert_eq!(frame(&mut alignment, events, none, blocked()), None);
+        }
+        assert!(alignment.editing.is_none());
+    }
+
+    #[test]
+    fn open_position_edit_blocks_the_global_start_shortcut() {
+        let ctx = egui::Context::default();
+        let mut app = App::with_context(&ctx, false);
+        app.source_demo = true;
+        app.open_alignment();
+        assert!(!app.start_overlay_open(&ctx));
+        app.alignment.editing = Some(PositionEdit {
+            kind: MotionKind::Delay,
+            id: "delay-1".into(),
+            axis: 0,
+            unit: AlignmentUnit::Physical,
+            text: "1".into(),
+            seed: "0.000".into(),
+            frames: 2,
+        });
+        assert!(app.start_overlay_open(&ctx));
+        app.finish_start_shortcut(&ctx, true, false);
+        assert!(!app.snapshot.running && !app.controller.has_pending());
+    }
+
+    #[test]
+    fn preview_and_simulation_never_route_card_moves_to_hardware() {
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.enable_alignment_preview(false);
+        app.enable_alignment_monitor_preview();
+        let context = app.alignment_move_context(false);
+        assert!(!context.idle && context.parallel.is_none());
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.source_demo = true;
+        app.snapshot.running = true;
+        let context = app.alignment_move_context(true);
+        assert!(!context.idle && context.parallel.is_none());
+        assert_eq!(context.blocked, "Simulation · stages never move");
+        // An ordinary hardware run has no executor: moves wait for Stop.
+        app.source_demo = false;
+        let context = app.alignment_move_context(true);
+        assert!(context.parallel.is_none());
+        assert!(context.blocked.contains("wait"));
     }
 }

@@ -15,6 +15,7 @@ fn paused_controller() -> (Controller, Receiver<WorkerCommand>) {
             pending: Arc::new(AtomicUsize::new(0)),
             settings_refresh_pending: Arc::new(AtomicBool::new(false)),
             read_only: false,
+            parallel: Default::default(),
             thread: None,
         },
         requests,
@@ -401,6 +402,101 @@ fn demo_run_metadata_uses_requested_devices_instead_of_previous_selection() {
         serde_json::json!(requested.device_ids)
     );
     assert_eq!(metadata["rows"], 2);
+    // A finite monitor never claims the Until Stop mode.
+    assert!(metadata["context"].get("signal_monitor_length").is_none());
+}
+#[test]
+fn until_stop_monitor_reads_past_points_until_stop_and_records_every_row() {
+    let mut session = Session::default();
+    // Points (2) is ignored: the monitor reads until Stop.
+    let plan = Plan {
+        workflow: Workflow::SignalMonitor,
+        n_points: 2,
+        interval_s: 0.,
+        ..Default::default()
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let output = directory.path().join("until-stop.csv");
+    let (send, events) = mpsc::sync_channel(4096);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let stopper = {
+        let cancel = cancel.clone();
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut samples = 0;
+            while samples < 25 && Instant::now() < deadline {
+                match events.recv_timeout(Duration::from_millis(50)) {
+                    Ok(Event::Sample(_)) => samples += 1,
+                    Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return samples,
+                }
+            }
+            // The operator's Stop. Keep draining so no send can block it.
+            cancel.store(true, Ordering::Release);
+            while events.recv().is_ok() {}
+            samples
+        })
+    };
+    let result = session.acquire_run(
+        Source::Demo,
+        config(),
+        &plan,
+        Some(&output),
+        true,
+        &cancel,
+        &send,
+    );
+    drop(send);
+    let samples = stopper.join().unwrap();
+    result.unwrap();
+    assert!(samples >= 25, "{samples} samples");
+    assert_eq!(session.state.total, 0);
+    assert!(session.state.rows >= 25, "{} rows", session.state.rows);
+    let metadata: Value = serde_json::from_slice(
+        &std::fs::read(directory.path().join("until-stop.run.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        metadata["context"]["signal_monitor_length"]["mode"],
+        "until_stop"
+    );
+    // Stop is the normal end: every row read is in the finished recording.
+    assert_eq!(metadata["status"], "cancelled");
+    assert_eq!(metadata["rows"], serde_json::json!(session.state.rows));
+    let csv = std::fs::read_to_string(&output).unwrap();
+    assert!(csv.lines().count() > session.state.rows);
+}
+#[test]
+fn until_stop_is_never_accepted_from_json_and_only_for_signal_monitor() {
+    assert!(
+        serde_json::from_value::<Command>(serde_json::json!({
+            "command": "monitor_until_stop",
+            "source": "demo",
+            "config": {},
+            "plan": {},
+            "output": null,
+        }))
+        .is_err()
+    );
+    let mut session = Session::default();
+    let (send, _events) = mpsc::sync_channel(64);
+    let plan = Plan {
+        workflow: Workflow::Trkr,
+        ..Default::default()
+    };
+    let error = session
+        .acquire_run(
+            Source::Demo,
+            config(),
+            &plan,
+            None,
+            true,
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap_err();
+    assert!(error.contains("only for Signal Monitor"));
+    assert_eq!(session.state.rows, 0);
 }
 #[test]
 fn live_monitor_reads_fresh_signals_on_its_own_cadence_without_catchup() {
@@ -1141,8 +1237,22 @@ fn stop_normalizes_cancellation_but_never_a_failed_stop_or_restoration() {
     ));
 }
 
+/// Serializes the scripted lock-in tests. A failing test panics while holding
+/// the lease; that must report its own failure, not poison the lease and fail
+/// every later test that waits for it.
 #[cfg(unix)]
-static PROTECTION_TEST_LEASE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+struct ProtectionLease(std::sync::Mutex<()>);
+#[cfg(unix)]
+impl ProtectionLease {
+    fn lock(&self) -> Result<std::sync::MutexGuard<'_, ()>, std::convert::Infallible> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+}
+#[cfg(unix)]
+static PROTECTION_TEST_LEASE: ProtectionLease = ProtectionLease(std::sync::Mutex::new(()));
 
 #[cfg(unix)]
 fn scripted_lockin_session(dir: &Path, source: &str) -> Session {
@@ -1695,4 +1805,593 @@ fn optional_power_does_not_block_recording_and_missing_values_are_explicit() {
             assert!(row[error].contains("simulated"));
         }
     }
+}
+
+/// A Signal Monitor recording never contains a T/X/Y position: blank main CSV
+/// position columns, no position_read event, null reading positions and no
+/// final position. Handed-off moves are audited only as parallel_move events.
+fn assert_no_recorded_position(path: &Path) -> usize {
+    let mut csv = csv::Reader::from_path(path).unwrap();
+    let headers = csv.headers().unwrap().clone();
+    let columns: Vec<usize> = ["t_ps", "t_cor_ps", "x_um", "x_cor_um", "y_um", "y_cor_um"]
+        .iter()
+        .map(|name| {
+            headers
+                .iter()
+                .position(|header| header == *name)
+                .unwrap_or_else(|| panic!("missing {name}"))
+        })
+        .collect();
+    let rows: Vec<_> = csv.records().map(Result::unwrap).collect();
+    for (index, row) in rows.iter().enumerate() {
+        for column in &columns {
+            assert_eq!(&row[*column], "", "row {index} column {column}");
+        }
+    }
+    let events = crate::raw_csv::test_events(&path.with_extension("raw.csv"));
+    assert!(events.iter().all(|e| e["event"] != "position_read"));
+    for reading in events.iter().filter(|e| e["event"] == "reading") {
+        assert!(
+            reading["position"]["physical"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(Value::is_null),
+            "{reading}"
+        );
+    }
+    let finished = events.iter().find(|e| e["event"] == "finished").unwrap();
+    assert!(finished["last_observed_position"].is_null(), "{finished}");
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert!(metadata["last_observed_position"].is_null());
+    assert_eq!(
+        metadata["position_qualification"],
+        "not_recorded_signal_monitor"
+    );
+    rows.len()
+}
+
+#[test]
+fn demo_signal_monitor_records_no_position_and_hands_off_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = dir.path().join("demo.csv");
+    let (send, _events) = mpsc::sync_channel(256);
+    let mut session = Session::default();
+    // A stale pre-run observation must not leak into any row.
+    session.state.position.physical = [Some(1.0), Some(2.0), Some(3.0)];
+    let plan = Plan {
+        n_points: 3,
+        interval_s: 0.0,
+        ..Default::default()
+    };
+    assert_eq!(plan.workflow, Workflow::SignalMonitor);
+    session
+        .acquire(
+            Source::Demo,
+            config(),
+            &plan,
+            Some(&output),
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap();
+    assert!(session.parallel.is_none());
+    assert!(session.parallel_slot.status().is_none());
+    assert_eq!(assert_no_recorded_position(&output), 3);
+}
+
+#[test]
+fn controller_refuses_parallel_moves_without_a_hardware_monitor() {
+    let controller = controller();
+    assert!(controller.parallel_motion().is_none());
+    assert!(
+        controller
+            .move_parallel([None, Some(1.0), None], spatial_approach())
+            .is_err()
+    );
+    let read_only = controller_read_only();
+    assert!(
+        read_only
+            .move_parallel([None, Some(1.0), None], spatial_approach())
+            .is_err()
+    );
+}
+
+#[cfg(unix)]
+const MONITOR_LOCKIN: &str = r#"#!/bin/sh
+printf 'KIV\tOK\t-\n'
+while read -r operation address timeout payload; do
+  if [ "$operation" = EXIT ]; then break; fi
+  if [ "$payload" = 534e41503f312c322c332c340a ]; then printf 'KIV\tOK\t312c322c332c34\n'; else printf 'KIV\tOK\t30\n'; fi
+done
+"#;
+
+#[cfg(unix)]
+fn register_motion(
+    session: &mut Session,
+    kind: MotionKind,
+    mut rig: MotionRig,
+    motion: MotionConfig,
+) {
+    let ids = &session.config.as_ref().unwrap().device_ids;
+    let id = match kind {
+        MotionKind::Delay => ids.delay.clone(),
+        MotionKind::Scanner => ids.scanner.clone(),
+    };
+    let position = rig.position().unwrap();
+    let connected = rig.connected_axes();
+    let delay_calibration = rig.delay_calibration().unwrap();
+    session.connections.motions.insert(
+        (kind, id.clone()),
+        connections::ConnectedMotion {
+            config: motion,
+            rig,
+            state: DeviceState {
+                id,
+                kind: match kind {
+                    MotionKind::Delay => "delay",
+                    MotionKind::Scanner => "scanner",
+                }
+                .into(),
+                connected,
+                position,
+                delay_calibration,
+                phase: "Ready".into(),
+            },
+        },
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn idle_selected_position_is_shared_with_its_card_and_parked_positions_refresh() {
+    use parallel_motion::tests::{Sim, cc, scanner_rig};
+
+    let config = config();
+    let selected_id = config.device_ids.scanner.clone();
+    let mut session = Session {
+        config: Some(config),
+        ..Session::default()
+    };
+    let active = Sim::with_addresses(&[1]);
+    let active_config = MotionConfig {
+        x: Some(cc("COM5", 1)),
+        ..Default::default()
+    };
+    register_motion(
+        &mut session,
+        MotionKind::Scanner,
+        scanner_rig(&active_config, &[("COM5", &active)]),
+        active_config,
+    );
+    for (id, port) in [("parked-1", "COM4"), ("parked-2", "COM8")] {
+        let configuration = MotionConfig {
+            x: Some(cc(port, 1)),
+            ..Default::default()
+        };
+        let sim = Sim::with_addresses(&[1]);
+        session.config.as_mut().unwrap().device_ids.scanner = id.into();
+        register_motion(
+            &mut session,
+            MotionKind::Scanner,
+            scanner_rig(&configuration, &[(port, &sim)]),
+            configuration,
+        );
+        sim.axis(1, |axis| axis.position = 6.1);
+    }
+    session.config.as_mut().unwrap().device_ids.scanner = selected_id.clone();
+    session.rebuild_selected_motion().unwrap();
+    active.axis(1, |axis| axis.position = 5.9);
+    let before = active.commands().len();
+    for _ in 0..2 {
+        session.read_position().unwrap();
+        session.poll_registered_positions().unwrap();
+    }
+    assert_eq!(&active.commands()[before..], ["1TP", "1TP"]);
+    let cards = &session.state.registered_devices;
+    assert_eq!(session.state.position.x_scanner_mm, Some(5.9));
+    assert_eq!(
+        cards
+            .iter()
+            .find(|card| card.id == selected_id)
+            .unwrap()
+            .position
+            .x_scanner_mm,
+        Some(5.9)
+    );
+    for id in ["parked-1", "parked-2"] {
+        assert_eq!(
+            cards
+                .iter()
+                .find(|card| card.id == id)
+                .unwrap()
+                .position
+                .x_scanner_mm,
+            Some(6.1)
+        );
+    }
+}
+
+#[cfg(unix)]
+fn monitor_plan(points: usize, interval_s: f64) -> Plan {
+    Plan {
+        n_points: points,
+        interval_s,
+        ..Default::default()
+    }
+}
+
+#[cfg(unix)]
+fn gpib() -> Source {
+    Source::Gpib {
+        model: Model::Sr830,
+        address: 12,
+    }
+}
+
+#[cfg(unix)]
+const EXECUTOR: Option<&str> = Some("trkr-parallel-motion");
+
+/// After the executor's first exchange, nobody else reached this controller
+/// until the run returned.
+#[cfg(unix)]
+fn owned_only_by_executor(log: &[(String, Option<String>)]) {
+    let first = log
+        .iter()
+        .position(|(_, thread)| thread.as_deref() == EXECUTOR)
+        .expect("executor exchange");
+    for (command, thread) in &log[first..] {
+        assert_eq!(thread.as_deref(), EXECUTOR, "{command}");
+    }
+}
+
+#[cfg(unix)]
+fn wait_until_true(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting for {what}");
+        thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// Cancels the acquisition if the helper thread that drives parallel moves
+/// fails, so the monitor ends (aborting the in-flight move) and the test
+/// reports that failure promptly instead of waiting on a driver timeout while
+/// it holds the protection lease.
+#[cfg(unix)]
+struct CancelOnPanic(Arc<AtomicBool>);
+#[cfg(unix)]
+impl Drop for CancelOnPanic {
+    fn drop(&mut self) {
+        if thread::panicking() {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn monitor_hands_off_every_connected_axis_and_records_no_position() {
+    use parallel_motion::{
+        ParallelMove,
+        tests::{DelaySim, Sim, cc, delay_config, delay_rig, scanner_rig},
+    };
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = scripted_lockin_session(dir.path(), MONITOR_LOCKIN);
+    let delay = DelaySim::default();
+    let delay_motion = MotionConfig {
+        delay: Some(delay_config("COM6")),
+        ..Default::default()
+    };
+    register_motion(
+        &mut session,
+        MotionKind::Delay,
+        delay_rig(&delay_motion, &delay),
+        delay_motion,
+    );
+    let (x, y) = (Sim::with_addresses(&[1]), Sim::with_addresses(&[1]));
+    x.axis(1, |a| a.move_polls = 6);
+    let motion = MotionConfig {
+        x: Some(cc("COM5", 1)),
+        y: Some(cc("COM4", 1)),
+        ..Default::default()
+    };
+    register_motion(
+        &mut session,
+        MotionKind::Scanner,
+        scanner_rig(&motion, &[("COM5", &x), ("COM4", &y)]),
+        motion,
+    );
+    let slot = session.parallel_slot.clone();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let guard = CancelOnPanic(cancel.clone());
+    let requester = thread::spawn(move || {
+        let _guard = guard;
+        wait_until_true("published executor", || {
+            slot.status()
+                .is_some_and(|s| s.position.physical.iter().all(Option::is_some))
+        });
+        let status = slot.status().unwrap();
+        // Every selected connected axis, as one unit; no selection toggle.
+        assert_eq!(status.axes, [true, true, true]);
+        let t = status.position.physical[0].unwrap() + 10.0;
+        slot.request(ParallelMove {
+            targets: [Some(t), None, None],
+            approach: spatial_approach(),
+        })
+        .unwrap();
+        wait_until_true("delay move", || {
+            slot.status().is_some_and(|s| s.finished == 1)
+        });
+        slot.request(ParallelMove {
+            targets: [None, Some(2.0), None],
+            approach: spatial_approach(),
+        })
+        .unwrap();
+        wait_until_true("scanner move", || {
+            slot.status().is_some_and(|s| s.finished == 2)
+        });
+        (t, slot.status().unwrap())
+    });
+    let path = dir.path().join("monitor.csv");
+    let interval = 0.1;
+    let (send, _events) = mpsc::sync_channel(4096);
+    let started = Instant::now();
+    let acquired = session.acquire(
+        gpib(),
+        config(),
+        &monitor_plan(20, interval),
+        Some(&path),
+        &cancel,
+        &send,
+    );
+    // Join first so a requester failure is reported as the root cause.
+    let (t, moved) = requester.join().unwrap();
+    acquired.unwrap();
+    // 20 reads at 0.1 s; nothing may wait on a driver timeout.
+    assert!(
+        started.elapsed() < Duration::from_secs(15),
+        "monitor took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        moved.fault.is_none() && moved.last_error.is_none(),
+        "{moved:?}"
+    );
+    assert_eq!(moved.position.physical[1], Some(2.0));
+    assert!((moved.position.physical[0].unwrap() - t).abs() < 0.5);
+
+    // No position anywhere in the recording, and every read stays on the
+    // monitor schedule while T and X move.
+    assert_eq!(assert_no_recorded_position(&path), 20);
+    let mut csv = csv::Reader::from_path(&path).unwrap();
+    let headers = csv.headers().unwrap().clone();
+    let elapsed = headers.iter().position(|h| h == "elapsed_s").unwrap();
+    let rows: Vec<_> = csv.records().map(Result::unwrap).collect();
+    for (index, row) in rows.iter().enumerate() {
+        let late = row[elapsed].parse::<f64>().unwrap() - index as f64 * interval;
+        assert!(
+            (0.0..0.05).contains(&late),
+            "row {index} read {late} s late"
+        );
+    }
+
+    let events = crate::raw_csv::test_events(&path.with_extension("raw.csv"));
+    let moves: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "parallel_move")
+        .collect();
+    assert_eq!(moves.len(), 2);
+    assert!(moves.iter().all(|m| m["status"] == "complete"));
+    // The separate operation audit is not aligned to any measurement point.
+    assert!(moves.iter().all(|m| m["point_index"].is_null()));
+    // The moves genuinely overlapped measurement reads.
+    assert!(moves.iter().any(|movement| {
+        let window = (
+            movement["timing"]["host_started_elapsed_s"]
+                .as_f64()
+                .unwrap(),
+            movement["timing"]["host_completed_elapsed_s"]
+                .as_f64()
+                .unwrap(),
+        );
+        events.iter().any(|e| {
+            e["event"] == "reading"
+                && e["timing"]["signal"]["host_started_elapsed_s"]
+                    .as_f64()
+                    .is_some_and(|t| window.0 < t && t < window.1)
+        })
+    }));
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "complete");
+    let axes = &metadata["context"]["signal_monitor_motion"]["parallel_axes"];
+    assert_eq!(
+        (&axes["t"], &axes["x"], &axes["y"]),
+        (&Value::Bool(true), &Value::Bool(true), &Value::Bool(true))
+    );
+
+    // Once the executor touched each controller, nobody else did.
+    owned_only_by_executor(&delay.log());
+    owned_only_by_executor(&lock_log(&x));
+    owned_only_by_executor(&lock_log(&y));
+    assert!(y.commands().iter().all(|c| !c.contains("PA")));
+
+    // Ownership returned: one normal selected view of T, X and Y again; the
+    // display shows the executor's readback, not the pre-run state.
+    assert!(session.parallel.is_none());
+    assert!(session.parallel_slot.status().is_none());
+    assert_eq!(session.state.position.physical[1], Some(2.0));
+    let rig = session.rig.as_mut().unwrap();
+    assert_eq!(rig.connected_axes(), [true, true, true]);
+    assert_eq!(rig.position().unwrap().physical[1], Some(2.0));
+}
+
+#[cfg(unix)]
+#[test]
+fn monitor_without_motion_axes_runs_without_an_executor() {
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = scripted_lockin_session(dir.path(), MONITOR_LOCKIN);
+    let path = dir.path().join("lockin-only.csv");
+    let (send, _events) = mpsc::sync_channel(1024);
+    session
+        .acquire(
+            gpib(),
+            config(),
+            &monitor_plan(3, 0.02),
+            Some(&path),
+            &AtomicBool::new(false),
+            &send,
+        )
+        .unwrap();
+    assert!(session.parallel.is_none());
+    assert!(session.parallel_slot.status().is_none());
+    assert!(session.rig.is_none());
+    assert_eq!(assert_no_recorded_position(&path), 3);
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "complete");
+    let axes = &metadata["context"]["signal_monitor_motion"]["parallel_axes"];
+    assert_eq!(axes["t"], false);
+    assert_eq!(axes["x"], false);
+    assert_eq!(axes["y"], false);
+}
+
+#[cfg(unix)]
+#[test]
+fn stop_during_a_parallel_move_aborts_it_and_cleanup_stops_every_axis() {
+    use parallel_motion::tests::{DelaySim, Sim, cc, delay_config, delay_rig, scanner_rig};
+    let _lease = PROTECTION_TEST_LEASE.lock().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = scripted_lockin_session(dir.path(), MONITOR_LOCKIN);
+    let delay = DelaySim::default();
+    let delay_motion = MotionConfig {
+        delay: Some(delay_config("COM6")),
+        ..Default::default()
+    };
+    register_motion(
+        &mut session,
+        MotionKind::Delay,
+        delay_rig(&delay_motion, &delay),
+        delay_motion,
+    );
+    // X and Y share one serial session: they are handed off as one unit.
+    let x = Sim::with_addresses(&[1, 2]);
+    x.axis(1, |a| a.move_polls = u32::MAX);
+    let motion = MotionConfig {
+        x: Some(cc("COM4", 1)),
+        y: Some(cc("COM4", 2)),
+        ..Default::default()
+    };
+    register_motion(
+        &mut session,
+        MotionKind::Scanner,
+        scanner_rig(&motion, &[("COM4", &x)]),
+        motion,
+    );
+    let token = Arc::new(AtomicBool::new(false));
+    session.global_cancel = token.clone();
+    let slot = session.parallel_slot.clone();
+    let stopper = {
+        let token = token.clone();
+        let x = x.clone();
+        let guard = CancelOnPanic(token.clone());
+        thread::spawn(move || {
+            let _guard = guard;
+            wait_until_true("published executor", || {
+                slot.status().is_some_and(|s| s.axes == [true; 3])
+            });
+            slot.request(parallel_motion::ParallelMove {
+                targets: [None, Some(2.0), None],
+                approach: spatial_approach(),
+            })
+            .unwrap();
+            wait_until_true("motion start", || x.axis(1, |a| a.state == "28"));
+            // Controller::stop
+            token.store(true, Ordering::Release);
+            slot.abort();
+        })
+    };
+    let path = dir.path().join("stopped.csv");
+    let (send, _events) = mpsc::sync_channel(4096);
+    session
+        .acquire(
+            gpib(),
+            config(),
+            &monitor_plan(100, 0.05),
+            Some(&path),
+            &token,
+            &send,
+        )
+        .unwrap();
+    stopper.join().unwrap();
+    let metadata: Value =
+        serde_json::from_slice(&std::fs::read(path.with_extension("run.json")).unwrap()).unwrap();
+    assert_eq!(metadata["status"], "cancelled");
+    assert_no_recorded_position(&path);
+    let events = crate::raw_csv::test_events(&path.with_extension("raw.csv"));
+    let movement = events
+        .iter()
+        .find(|e| e["event"] == "parallel_move")
+        .expect("aborted move recorded");
+    assert_eq!(movement["status"], "failed");
+    let mut raw = csv::Reader::from_path(path.with_extension("raw.csv")).unwrap();
+    let headers = raw.headers().unwrap();
+    let event_column = headers
+        .iter()
+        .position(|name| name == "event_type")
+        .unwrap();
+    let error_column = headers.iter().position(|name| name == "error").unwrap();
+    let movement_row = raw
+        .records()
+        .map(Result::unwrap)
+        .find(|row| &row[event_column] == "parallel_move")
+        .expect("aborted move row");
+    assert_eq!(&movement_row[error_column], "motion cancelled");
+    // The executor stopped its move; after ownership returned, the normal
+    // Stop cleanup reached T, X and Y from the worker as well.
+    let x_log = lock_log(&x);
+    let pa = x_log
+        .iter()
+        .position(|(c, _)| c.starts_with("1PA"))
+        .unwrap();
+    for (command, by_executor) in [("1ST", true), ("1ST", false), ("2ST", false)] {
+        assert!(
+            x_log[pa..]
+                .iter()
+                .any(|(c, t)| c == command && (t.as_deref() == EXECUTOR) == by_executor),
+            "{command} by executor: {by_executor}"
+        );
+    }
+    let delay_log = delay.log();
+    for by_executor in [true, false] {
+        assert!(
+            delay_log
+                .iter()
+                .any(|(c, t)| c == "L:1" && (t.as_deref() == EXECUTOR) == by_executor),
+            "delay STOP by executor: {by_executor}"
+        );
+    }
+    // Worker cleanup verified every axis stationary, including the delay.
+    let stop = events
+        .iter()
+        .find(|e| e["event"] == "stop")
+        .expect("STOP outcome recorded");
+    assert_eq!(stop["verification"], "stationary_state_queries");
+    assert!(stop["error"].is_null(), "{stop}");
+    let worker_stop = delay_log
+        .iter()
+        .rposition(|(c, t)| c == "L:1" && t.as_deref() != EXECUTOR)
+        .unwrap();
+    assert!(delay_log[worker_stop..].iter().any(|(c, _)| c == "!:"));
+    assert!(session.parallel_slot.status().is_none());
+    assert_eq!(session.rig.as_ref().unwrap().connected_axes(), [true; 3]);
+}
+
+#[cfg(unix)]
+fn lock_log(sim: &parallel_motion::tests::Sim) -> Vec<(String, Option<String>)> {
+    sim.commands().into_iter().zip(sim.threads()).collect()
 }

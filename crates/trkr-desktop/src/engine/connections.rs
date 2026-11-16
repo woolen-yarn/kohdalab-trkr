@@ -576,16 +576,33 @@ impl Session {
         }
     }
     pub(super) fn poll_registered_positions(&mut self) -> Result<(), String> {
-        // One inactive connection per tick bounds UI latency as the inventory grows.
-        let count = self.connections.motions.len();
+        // The selected rig has already supplied both its snapshot and card
+        // readbacks. Poll only one parked device per tick.
+        let selected = self.rig.as_ref().and(self.config.as_ref());
+        let is_parked = |(kind, id): &(MotionKind, String)| {
+            selected.is_none_or(|config| {
+                id != match kind {
+                    MotionKind::Delay => &config.device_ids.delay,
+                    MotionKind::Scanner => &config.device_ids.scanner,
+                }
+            })
+        };
+        let count = self
+            .connections
+            .motions
+            .keys()
+            .filter(|key| is_parked(key))
+            .count();
         if count != 0 {
-            self.connection_poll_index = (self.connection_poll_index + 1) % count;
-            let entry = self
+            let index = self.connection_poll_index % count;
+            self.connection_poll_index = (index + 1) % count;
+            let (_, entry) = self
                 .connections
                 .motions
-                .values_mut()
-                .nth(self.connection_poll_index)
-                .expect("index bounded by connection count");
+                .iter_mut()
+                .filter(|(key, _)| is_parked(key))
+                .nth(index)
+                .expect("index bounded by parked connection count");
             match entry.rig.position() {
                 Ok(position) => {
                     entry.state.position = position;

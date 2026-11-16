@@ -6,7 +6,9 @@ pub use connections::{DeviceState, MotionKind};
 mod execution;
 #[path = "engine/exec/finalize.rs"]
 mod finalize;
-use finalize::{expected_stop_error, finalize_demo_recording};
+use finalize::{append_recording_error, expected_stop_error, finalize_demo_recording};
+mod parallel_motion;
+pub use parallel_motion::ParallelMotionStatus;
 mod recording;
 mod status;
 pub(crate) mod timing;
@@ -434,6 +436,16 @@ pub enum Command {
         plan: Plan,
         output: Option<PathBuf>,
     },
+    /// GUI-only Signal Monitor that runs until Stop. It is never accepted
+    /// from JSON (Python/remote/legacy keep the finite `run`). Targets are
+    /// derived one point at a time; nothing grows with the run length.
+    #[serde(skip_deserializing)]
+    MonitorUntilStop {
+        source: Source,
+        config: HardwareConfig,
+        plan: Plan,
+        output: Option<PathBuf>,
+    },
     LockinSettings,
     SetLockin {
         setting: String,
@@ -455,6 +467,7 @@ impl Command {
             self,
             Self::Alignment { .. }
                 | Self::Run { .. }
+                | Self::MonitorUntilStop { .. }
                 | Self::Move { .. }
                 | Self::Initialize { .. }
                 | Self::Replay { .. }
@@ -491,7 +504,9 @@ fn remote_failure_code(command: &Command) -> Option<&'static str> {
         | Command::LockinSettings
         | Command::SetLockin { .. }
         | Command::AutoLockin { .. } => "device_error",
-        Command::Run { .. } | Command::Replay { .. } => "job_failed",
+        Command::Run { .. } | Command::MonitorUntilStop { .. } | Command::Replay { .. } => {
+            "job_failed"
+        }
         Command::Stop | Command::Shutdown => return None,
     })
 }
@@ -549,9 +564,40 @@ pub struct Controller {
     pending: Arc<AtomicUsize>,
     settings_refresh_pending: Arc<AtomicBool>,
     read_only: bool,
+    parallel: parallel_motion::Slot,
     thread: Option<thread::JoinHandle<()>>,
 }
 impl Controller {
+    /// Standalone GUI move of an axis handed off by the running hardware
+    /// Signal Monitor. It bypasses the worker queue but not ownership: only
+    /// the separate executor that exclusively owns that axis's connection can
+    /// perform it, one move at a time, and it is refused after any failure or
+    /// Stop. `targets` are physical (T in ps, X/Y in sample µm).
+    ///
+    /// GUI only; no external API reaches it. Verified only against simulated
+    /// controllers, not on hardware.
+    pub fn move_parallel(
+        &self,
+        targets: [Option<f64>; 3],
+        approach: [bool; 3],
+    ) -> Result<(), String> {
+        #[cfg(feature = "gui-interaction-tests")]
+        if self.demo_only {
+            return Err("SIMULATED — hardware access disabled".into());
+        }
+        if self.read_only {
+            return Err(OperationError::ReadOnly.into());
+        }
+        if self.cancel.load(Ordering::Acquire) {
+            return Err("Stop requested; no parallel move was sent".into());
+        }
+        self.parallel
+            .request(parallel_motion::ParallelMove { targets, approach })
+    }
+    /// Present only while a hardware Signal Monitor has handed off axes.
+    pub fn parallel_motion(&self) -> Option<ParallelMotionStatus> {
+        self.parallel.status()
+    }
     #[cfg(feature = "gui-interaction-tests")]
     pub fn restrict_to_demo(&mut self) {
         self.demo_only = true;
@@ -613,6 +659,9 @@ impl Controller {
                 Command::Run {
                     source: Source::Demo,
                     ..
+                } | Command::MonitorUntilStop {
+                    source: Source::Demo,
+                    ..
                 } | Command::Stop
                     | Command::Shutdown
             )
@@ -656,6 +705,7 @@ impl Controller {
     }
     pub fn stop(&self) {
         self.cancel.store(true, Ordering::Release);
+        self.parallel.abort();
     }
 }
 impl Drop for Controller {
@@ -698,9 +748,13 @@ fn controller_with_mode(read_only: bool) -> Controller {
     let settings_refresh_worker = settings_refresh_pending.clone();
     let hold = alignment::HoldLease::default();
     let worker_hold = hold.clone();
+    let parallel = parallel_motion::Slot::default();
+    let worker_parallel = parallel.clone();
     let handle = thread::spawn(move || {
         let mut session = Session {
             hold: worker_hold,
+            global_cancel: token.clone(),
+            parallel_slot: worker_parallel,
             ..Session::default()
         };
         let mut last_position = Instant::now() - Duration::from_millis(500);
@@ -779,7 +833,10 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 break;
             }
             let job = cmd.is_job();
-            let acquisition = matches!(cmd, Command::Run { .. } | Command::Replay { .. });
+            let acquisition = matches!(
+                cmd,
+                Command::Run { .. } | Command::MonitorUntilStop { .. } | Command::Replay { .. }
+            );
             let context_only = matches!(
                 cmd,
                 Command::Select { .. }
@@ -913,6 +970,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
         pending,
         settings_refresh_pending,
         read_only,
+        parallel,
         thread: Some(handle),
     }
 }
@@ -931,6 +989,11 @@ struct Session {
     /// Origin of the current command's failure, if a lower layer exposed one.
     /// This is per-worker state; it is never shared globally.
     failure_code: Option<String>,
+    /// The controller's Stop token, for the parallel executor's own checks.
+    global_cancel: Arc<AtomicBool>,
+    parallel_slot: parallel_motion::Slot,
+    /// Present only during a hardware Signal Monitor with connected axes.
+    parallel: Option<parallel_motion::Executor>,
 }
 impl Session {
     fn refresh_power_states(&mut self) -> bool {
@@ -1177,6 +1240,15 @@ impl Session {
                 self.acquire(source, config, &plan, output.as_deref(), cancel, send)?;
                 return Ok(output);
             }
+            Command::MonitorUntilStop {
+                source,
+                config,
+                plan,
+                output,
+            } => {
+                self.acquire_run(source, config, &plan, output.as_deref(), true, cancel, send)?;
+                return Ok(output);
+            }
             Command::LockinSettings => {
                 self.lockin_context = None;
                 let model = self.config.as_ref().ok_or("Connect a lock-in first")?.model;
@@ -1307,6 +1379,7 @@ impl Session {
             if now >= deadline {
                 return Ok(true);
             }
+            self.check_parallel_motion()?;
             // Leave the end of the settling window free for the measurement read.
             if deadline - now >= self.live.read_budget {
                 poll_live(
@@ -1325,6 +1398,97 @@ impl Session {
             );
         }
         Ok(false)
+    }
+    /// Selected connected T/X/Y axes that a hardware Signal Monitor hands to
+    /// the parallel executor as one unit. All false when none is connected.
+    fn monitor_handoff_axes(&self) -> [bool; 3] {
+        self.rig
+            .as_ref()
+            .map(MotionRig::connected_axes)
+            .unwrap_or_default()
+    }
+    /// Moves ownership of every handed-off axis to a separate executor. The
+    /// measurement keeps no motion view; nothing changes on failure.
+    fn start_parallel_motion(&mut self, axes: [bool; 3], start: Instant) -> Result<(), String> {
+        if self.parallel.is_some() {
+            return Err("Parallel motion is already running".into());
+        }
+        let rig = self.rig.as_ref().ok_or("Motion axes are not connected")?;
+        let (remaining, owned) = rig.split_exclusive(axes)?;
+        if remaining.connected_axes().iter().any(|axis| *axis) {
+            return Err("Signal Monitor must hand off every selected motion axis".into());
+        }
+        let executor = parallel_motion::Executor::spawn(
+            &self.parallel_slot,
+            owned,
+            self.global_cancel.clone(),
+            start,
+        )?;
+        self.parallel = Some(executor);
+        self.rig = None;
+        Ok(())
+    }
+    fn check_parallel_motion(&self) -> Result<(), String> {
+        if self
+            .parallel
+            .as_ref()
+            .is_some_and(parallel_motion::Executor::unconfirmed)
+        {
+            return Err(parallel_motion::UNCONFIRMED.into());
+        }
+        Ok(())
+    }
+    fn record_parallel_audits(
+        &mut self,
+        recording: Option<&mut recording::Recording>,
+    ) -> Result<(), String> {
+        let Some(executor) = &self.parallel else {
+            return Ok(());
+        };
+        let audits = executor.take_audits();
+        if let Some(recording) = recording {
+            for audit in &audits {
+                recording.append_audit(audit)?;
+            }
+        }
+        Ok(())
+    }
+    /// Joins the executor (aborting an in-flight move unless the monitor
+    /// completed normally), records its remaining events, releases its
+    /// exclusive claims and restores the normal selected motion view.
+    fn finish_parallel_motion(
+        &mut self,
+        result: &mut Result<(), String>,
+        recording: Option<&mut recording::Recording>,
+        cancel: &AtomicBool,
+    ) {
+        let Some(executor) = self.parallel.take() else {
+            return;
+        };
+        let abort = result.is_err() || cancel.load(Ordering::Acquire);
+        let finished = executor.finish(abort);
+        if let Some(recording) = recording {
+            for audit in &finished.audits {
+                if let Err(error) = recording.append_audit(audit) {
+                    append_recording_error(result, "record parallel motion", error);
+                    break;
+                }
+            }
+        }
+        if let Some(error) = finished.error {
+            self.failure_code = Some("device_error".into());
+            let merged = match &*result {
+                Err(original) => format!("{original}; {error}"),
+                Ok(()) => error,
+            };
+            *result = Err(merged);
+        }
+        if let Err(error) = self.rebuild_selected_motion() {
+            append_recording_error(result, "restore motion ownership", error);
+        }
+        // Display only (never recorded by a monitor): the executor's own last
+        // readback, not the pre-run registered state; idle polling refreshes.
+        self.state.position = finished.position;
     }
     fn set_phase(&mut self, phase: Phase, send: &mpsc::SyncSender<Event>) {
         self.state.phase = phase.into();
@@ -1397,9 +1561,24 @@ impl Session {
     fn acquire(
         &mut self,
         source: Source,
+        config: HardwareConfig,
+        plan: &Plan,
+        output: Option<&Path>,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> Result<(), String> {
+        self.acquire_run(source, config, plan, output, false, cancel, send)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn acquire_run(
+        &mut self,
+        source: Source,
         mut config: HardwareConfig,
         plan: &Plan,
         output: Option<&Path>,
+        // Signal Monitor only: read until Stop instead of `n_points`.
+        until_stop: bool,
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
@@ -1407,7 +1586,24 @@ impl Session {
             return Err("Demo scans require measurement coordinates; raw inputs need actual controller calibration".into());
         }
         let requested_config = config.clone();
-        let targets = plan.targets()?;
+        if until_stop && plan.workflow != Workflow::SignalMonitor {
+            return Err("Until Stop is available only for Signal Monitor".into());
+        }
+        // Until Stop validates one template point and derives each later
+        // target from it, so no target list grows with the run.
+        let targets = if until_stop {
+            Plan {
+                n_points: 1,
+                ..plan.clone()
+            }
+            .targets()?
+        } else {
+            plan.targets()?
+        };
+        // A Signal Monitor never reads, records or aligns a T/X/Y position.
+        let monitor = plan.workflow == Workflow::SignalMonitor;
+        // Hardware monitor: selected connected axes, decided after connecting.
+        let mut handoff = [false; 3];
         if matches!(source, Source::Gpib { .. })
             && plan.workflow == Workflow::SignalMonitor
             && plan.interval_s < 0.01
@@ -1452,6 +1648,20 @@ impl Session {
             }
             self.connect(config, devices)
                 .inspect_err(|_| self.failure_code = Some("device_error".into()))?;
+            if monitor {
+                handoff = self.monitor_handoff_axes();
+            }
+            if handoff.iter().any(|axis| *axis) {
+                // Dry run before creating any output: every selected axis must
+                // be exclusively claimable. Claims are released immediately;
+                // the real handoff happens when measuring starts.
+                self.rig
+                    .as_ref()
+                    .ok_or("Motion axes are not connected")
+                    .map_err(str::to_owned)
+                    .and_then(|rig| rig.split_exclusive(handoff).map(drop))
+                    .inspect_err(|_| self.failure_code = Some("protection".into()))?;
+            }
             if plan.workflow != Workflow::SignalMonitor {
                 let rig = self.rig.as_mut().ok_or("Motion not connected")?;
                 for (p, t) in physical.iter_mut().zip(&targets) {
@@ -1567,12 +1777,26 @@ impl Session {
                 .map(|recording| {
                     let mut context = self.recording_context(source, context_config);
                     context["delay_csv_format"] = serde_json::json!(delay_csv_format);
+                    if monitor {
+                        context["signal_monitor_motion"] = serde_json::json!({
+                            "position": "not read or recorded by the monitor; blank in the main CSV, no position_read events, no final position",
+                            "parallel_axes": {"t": handoff[0], "x": handoff[1], "y": handoff[2]},
+                            "motion": "handed-off axes are owned exclusively by a separate executor; GUI moves are recorded as parallel_move events",
+                        });
+                        if until_stop {
+                            context["signal_monitor_length"] = serde_json::json!({
+                                "mode": "until_stop",
+                                "n_points": "not used; the monitor reads until Stop, so a cancelled status is its normal end",
+                            });
+                        }
+                    }
                     recording.set_context(&context)
                 })
                 .transpose()
                 .map(|_| ())
         });
-        self.state.total = targets.len();
+        // Until Stop has no planned total; the GUI shows rows only.
+        self.state.total = if until_stop { 0 } else { targets.len() };
         self.state.rows = 0;
         self.state.phase = Phase::Measuring.into();
         let _ = send.send(Event::State(Box::new(self.state.clone())));
@@ -1581,13 +1805,36 @@ impl Session {
             self.state.position = Position::default();
             self.live.started = start;
         }
+        if monitor {
+            // Never carry a pre-run readback into a monitor row or event.
+            self.state.position = Position::default();
+        }
+        let context_result = context_result.and_then(|()| {
+            if !handoff.iter().any(|axis| *axis) {
+                return Ok(());
+            }
+            self.start_parallel_motion(handoff, start)
+                .inspect_err(|_| self.failure_code = Some("protection".into()))
+        });
         let acquisition_started = context_result.is_ok();
         let mut result = context_result.and_then(|()| {
             (|| {
-                for (index, target) in targets.iter().enumerate() {
+                let count = if until_stop { usize::MAX } else { targets.len() };
+                for index in 0..count {
                     if cancel.load(Ordering::Acquire) {
                         return Ok(());
                     }
+                    let derived;
+                    let (target, point_physical) = if until_stop {
+                        derived = Target {
+                            fast: index as f64 * plan.interval_s,
+                            ..targets[0]
+                        };
+                        (&derived, physical[0])
+                    } else {
+                        (&targets[index], physical[index])
+                    };
+                    self.check_parallel_motion()?;
                     if plan.workflow != Workflow::SignalMonitor {
                         let phase = if plan.workflow.is_2d()
                             && (index == 0 || target.line != targets[index - 1].line)
@@ -1624,7 +1871,7 @@ impl Session {
                             result.inspect_err(|_| self.failure_code = Some("device_error".into()))?;
                         }
                         let first = index == 0 || target.line != targets[index - 1].line;
-                        for movement in scan_moves(plan, physical[index], first, index == 0) {
+                        for movement in scan_moves(plan, point_physical, first, index == 0) {
                             self.set_phase(Phase::moving([movement.axis]), send);
                             let (movement_result,window,_) = timing::observe(start, || self.move_live(movement.target, movement.approach, cancel, send));
                             if let Some(recording)=&mut csv {
@@ -1635,7 +1882,7 @@ impl Session {
                             movement_result.inspect_err(|_| self.failure_code = Some("device_error".into()))?;
                         }
                     } else if plan.workflow != Workflow::SignalMonitor {
-                        self.state.position.physical = physical[index];
+                        self.state.position.physical = point_physical;
                     }
                     if matches!(source, Source::Demo) {
                         self.live.demo_coordinates = if plan.workflow == Workflow::SignalMonitor {
@@ -1658,7 +1905,7 @@ impl Session {
                     let mut unit_context_before=None;
                     let (signal, exchanges, captured) = match source {
                         Source::Gpib { model, .. } => {
-                            if let Some(rig) = &mut self.rig {
+                            if !monitor && let Some(rig) = &mut self.rig {
                                 let ((position, position_exchanges), window, _) = timing::observe(start, || rig.position_recorded());
                                 point_timing.position = Some(window);
                                 if let Some(recording) = &mut csv {
@@ -1787,7 +2034,7 @@ impl Session {
                         recording: Box::new(SampleRecording {
                             run_id: csv.as_ref().map(|r| r.run_id().to_owned()).unwrap_or_default(), point_index:index+1,
                             signal_unit, quality_flags, power_w,
-                            canonical_target:std::array::from_fn(|i| physical[index][i].map(|v| v-plan.zero[i])),
+                            canonical_target:std::array::from_fn(|i| point_physical[i].map(|v| v-plan.zero[i])),
                             delay_csv_format,
                         }),
                         timing: Box::new(point_timing),
@@ -1795,9 +2042,7 @@ impl Session {
                         elapsed: captured.duration_since(start).as_secs_f64(),
                         target: *target,
                         signal,
-                        position: if matches!(source, Source::Demo)
-                            && plan.workflow == Workflow::SignalMonitor
-                        {
+                        position: if monitor {
                             Position::default()
                         } else {
                             self.state.position.clone()
@@ -1843,6 +2088,8 @@ impl Session {
                     });
                     let _ = send.try_send(Event::Sample(sample));
                     if let Some(error) = status_failure { self.failure_code = Some("device_error".into()); return Err(format!("Lock-in status: {error}")); }
+                    // Between points only: parallel motion never runs here.
+                    self.record_parallel_audits(csv.as_mut())?;
                 }
                 if !cancel.load(Ordering::Acquire)
                     && matches!(source, Source::Gpib { .. })
@@ -1862,10 +2109,13 @@ impl Session {
                 Ok(())
             })()
         });
+        // Join the parallel executor and return its axes before the normal
+        // cleanup, so a Stop or failure STOPs every connected axis as before.
+        self.finish_parallel_motion(&mut result, csv.as_mut(), cancel);
         if acquisition_started && (result.is_err() || cancel.load(Ordering::Acquire)) {
             self.stop_acquisition(&mut result, csv.as_mut(), cancel, send, start);
         }
-        self.finalize_acquisition(result, csv, output, source, cancel, send)
+        self.finalize_acquisition(result, csv, output, source, !monitor, cancel, send)
     }
     fn replay(
         &mut self,

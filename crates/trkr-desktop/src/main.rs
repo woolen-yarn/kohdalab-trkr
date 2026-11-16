@@ -38,18 +38,32 @@ fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.as_slice() {
         #[cfg(feature = "gui-interaction-tests")]
-        [flag] if flag == "--gui-interaction-tests" => eframe::run_native(
-            "KohdaLab TRKR · GUI trial · SIMULATED",
-            eframe::NativeOptions {
-                viewport: eframe::egui::ViewportBuilder::default()
-                    .with_icon(app_icon())
-                    .with_inner_size([1566., 900.])
-                    .with_min_inner_size([1566., 700.]),
-                ..Default::default()
-            },
-            Box::new(|cc| Ok(Box::new(ui::App::new_gui_interaction(cc)?))),
-        )
-        .map_err(|e| e.to_string()),
+        [flag]
+            if matches!(
+                flag.as_str(),
+                "--gui-interaction-tests" | "--alignment-jog-simulation"
+            ) =>
+        {
+            let alignment = flag == "--alignment-jog-simulation";
+            eframe::run_native(
+                "KohdaLab TRKR · GUI trial · SIMULATED",
+                eframe::NativeOptions {
+                    viewport: eframe::egui::ViewportBuilder::default()
+                        .with_icon(app_icon())
+                        .with_inner_size([1566., 900.])
+                        .with_min_inner_size([1566., 700.]),
+                    ..Default::default()
+                },
+                Box::new(move |cc| {
+                    Ok(Box::new(if alignment {
+                        ui::App::new_alignment_jog_trial(cc)?
+                    } else {
+                        ui::App::new_gui_interaction(cc)?
+                    }))
+                }),
+            )
+            .map_err(|e| e.to_string())
+        }
         [flag] if flag == "--stdio" => stdio(),
         [flag] if flag == "--gui-api" => remote::Server::start().and_then(|server| {
             run_gui_with_api(
@@ -133,6 +147,11 @@ fn layout_capture(
         "alignment-scanner",
         "alignment-delay-options",
         "alignment-scanner-options",
+        "alignment-monitor",
+        "alignment-scanner-monitor",
+        "alignment-power-monitor",
+        "alignment-motion-only",
+        "alignment-recording-settings",
         "measurement-settings",
         "multiple-devices",
         "add-device",
@@ -353,7 +372,7 @@ fn profile_json(path: &std::path::Path) -> Result<(), String> {
 fn cli(args: &[String]) -> Result<(), String> {
     if args == ["--help"] || args == ["-h"] {
         println!(
-            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated|alignment-delay|alignment-scanner]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
+            "KohdaLab TRKR\n--gui-api [--config FILE] GUI with local Python control\n--stdio JSON-lines controller API\n--gui-smoke NEW_DIRECTORY\n--gui-layout-smoke NEW_DIRECTORY WIDTH HEIGHT [devices-expanded|right-collapsed|rotated|alignment-delay|alignment-scanner|alignment-monitor]\n--profile-json FILE\n--demo-csv FILE [--workflow signal_monitor|trkr|srkr|strkr|srkr_2d]"
         );
         return Ok(());
     }
