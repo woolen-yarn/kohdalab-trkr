@@ -350,7 +350,10 @@ enum Intent {
     },
     /// A refused move: say why instead of sending anything.
     Note(String),
-    Stop,
+    Stop {
+        kind: MotionKind,
+        id: String,
+    },
 }
 
 /// Shared mutable context for one alignment frame. Grouping this state keeps
@@ -1099,16 +1102,27 @@ impl App {
                     self.alignment_cancel_hold();
                     self.alignment.delete_panel = Some((kind, id));
                 }
-                Intent::Stop if self.alignment.jog_simulation.is_some() => {
+                Intent::Stop { .. } if self.alignment.jog_simulation.is_some() => {
                     self.alignment_cancel_hold()
                 }
-                Intent::Stop => {
-                    self.alignment.pressed = None;
-                    self.alignment.held.take();
-                    // Unlike tab/focus cleanup, an explicit Stop must cancel
-                    // an ordinary Step or End operation as well as a hold.
-                    self.controller.release_hold();
-                    self.note("Alignment stop requested");
+                Intent::Stop { kind, id } => {
+                    if self.snapshot.running || self.controller.parallel_motion().is_some() {
+                        let matches = self
+                            .settings
+                            .workflow_device_ids(Workflow::SignalMonitor)
+                            .is_ok_and(|ids| match kind {
+                                MotionKind::Delay => ids.delay == id,
+                                MotionKind::Scanner => ids.scanner == id,
+                            });
+                        if matches && self.controller.stop_parallel_move(kind) {
+                            self.note("Alignment move stop requested");
+                        }
+                    } else {
+                        self.alignment.pressed = None;
+                        self.alignment.held.take();
+                        self.controller.release_hold();
+                        self.note("Alignment stop requested");
+                    }
                 }
             }
         }
@@ -1207,7 +1221,10 @@ impl App {
             ui.separator();
             ui.horizontal(|ui| {
                 if ui.button("Stop").clicked() {
-                    intents.push(Intent::Stop);
+                    intents.push(Intent::Stop {
+                        kind: target.kind,
+                        id: target.id.clone(),
+                    });
                 }
                 if ui.button("Close").clicked() {
                     self.alignment.options = None;
@@ -1532,7 +1549,10 @@ fn draw_delay_card(
     )
     .clicked()
     {
-        render.intents.push(Intent::Stop);
+        render.intents.push(Intent::Stop {
+            kind: MotionKind::Delay,
+            id: panel.option.id.clone(),
+        });
     }
     label(
         render.ui,
@@ -1708,7 +1728,10 @@ fn draw_scanner_card(
     )
     .clicked()
     {
-        render.intents.push(Intent::Stop);
+        render.intents.push(Intent::Stop {
+            kind: MotionKind::Scanner,
+            id: panel.option.id.clone(),
+        });
     }
 }
 

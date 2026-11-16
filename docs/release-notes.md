@@ -1,21 +1,18 @@
-# KohdaLab TRKR 1.0.1
+# KohdaLab TRKR 1.0.2
 
-The common Python SDK can stop a specified measurement and check its terminal receipt. / 共通Python SDKで測定を指定し、停止結果を確認できます。
+## Alignment and measurement / アライメントと測定
 
-TRKR combines lock-in signal acquisition with delay-stage and spatial scanning. The Signal Monitor can use the lock-in independently. Lock-in settings are shown according to the connected model and read back from the instrument.
-TRKRはロックイン信号取得と遅延・空間ステージ走査を行うアプリです。Signal Monitorではロックイン単体で測定できます。設定項目は接続機種に応じて表示し、設定値を実機から読み戻します。
-
-See [hardware verification / 実機検証](validation/v1-hardware-results.md) for connection methods, tested operations, and remaining coverage. See the [control API / 外部制御API](reference/control-api.md) for programmatic operation.
+- Alignment groups the Signal and Power monitors above the Delay Stage and Scanner controls. Motion Only expands the selected motion controls. / Alignmentの上段にSignal・Power Monitor、下段にDelay StageとScannerを配置しました。Motion Onlyでは選択中の軸操作を拡大できます。
+- Signal Monitor supports a fixed point count or continuous recording. Handed-off axes can move while hardware recording continues. A motion card's Stop cancels its active move. The monitor's Stop ends recording. / Signal Monitorで点数指定と連続記録を選べます。制御を引き渡した軸は実機記録中も動かせます。機器カードのStopは移動を止め、MonitorのStopは記録を終了します。
+- Hover over measured points or map cells to see their coordinates and signal values. Finite runs estimate their remaining time from completed points and scan structure. / 測定点やマップの測定済みセルにカーソルを合わせると座標と信号値を表示します。有限の測定では完了点と走査構成から残り時間を見積もります。
+- Windows position readouts fit within their controls. CONEX relative steps check the reported position against the controller target before issuing motion. / Windowsで位置表示のはみ出しを修正しました。CONEXの相対Stepは、実位置とコントローラーの目標を照合してから移動指令を送ります。
 
 ## Packages / 配布形式
-
-Ubuntu x86_64 packaging is pending build verification.
-Ubuntu x86_64版はビルド検証待ちです。
 
 | OS | Installer / インストーラー | Portable / ポータブル |
 | --- | --- | --- |
 | Windows x64 | Setup.exe | ZIP |
-| macOS Apple Silicon | DMG, drag to Applications / Applicationsへドラッグ | ZIP containing the app / アプリを含むZIP |
+| macOS Apple Silicon | DMG | ZIP |
+| Ubuntu 24.04 x64 | DEB | tar.gz |
 
-The Windows installer uses `C:\Program Files\Kohdalab\KohdaLab TRKR`. User settings default to `~/.kohdalab/trkr/config/config.json`.
-Windowsのインストール先は上記のProgram Files配下です。既定の設定ファイルはユーザーディレクトリ配下に保存されます。
+Windows Setup installs under `C:\Program Files\Kohdalab\KohdaLab TRKR`. User settings default to `~/.kohdalab/trkr/config/config.json`. / Windowsのインストール先はProgram Files配下です。既定の設定ファイルはユーザーディレクトリに保存されます。

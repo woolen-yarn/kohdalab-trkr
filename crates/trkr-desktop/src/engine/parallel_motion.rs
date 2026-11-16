@@ -47,6 +47,8 @@ pub struct ParallelMotionStatus {
     /// New requests are accepted only while the monitor is measuring.
     pub accepting: bool,
     pub moving: bool,
+    #[serde(skip)]
+    pub(crate) active_axes: [bool; 3],
     /// Last readback of the owned axes.
     pub position: Position,
     /// Latched failure; every later request of this run is refused.
@@ -64,7 +66,8 @@ struct Shared {
     status: Mutex<ParallelMotionStatus>,
     requests: Sender<ParallelMove>,
     /// Immediate abort for the in-flight move: global Stop or failure cleanup.
-    abort: Arc<AtomicBool>,
+    abort: AtomicBool,
+    move_cancel: AtomicBool,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -89,10 +92,29 @@ impl Slot {
     /// measurement worker to notice cancellation.
     pub(crate) fn abort(&self) {
         if let Some(shared) = self.current() {
-            lock(&shared.status).accepting = false;
+            let mut status = lock(&shared.status);
+            status.accepting = false;
             shared.abort.store(true, Ordering::Release);
+            shared.move_cancel.store(true, Ordering::Release);
         }
     }
+    pub(crate) fn stop_move(&self, axes: [bool; 3]) -> bool {
+        let Some(shared) = self.current() else {
+            return false;
+        };
+        let status = lock(&shared.status);
+        let matches = status.moving
+            && status
+                .active_axes
+                .iter()
+                .zip(axes)
+                .any(|(&active, selected)| active && selected);
+        if matches {
+            shared.move_cancel.store(true, Ordering::Release);
+        }
+        matches
+    }
+
     /// Hand one move to the executor. At most one move is accepted at a time;
     /// nothing is queued behind a running move.
     pub(crate) fn request(&self, request: ParallelMove) -> Result<(), String> {
@@ -104,6 +126,8 @@ impl Slot {
         if shared.abort.load(Ordering::Acquire) {
             return Err("Stop requested; no parallel move was sent".into());
         }
+        shared.move_cancel.store(false, Ordering::Release);
+        status.active_axes = request.targets.map(|target| target.is_some());
         status.moving = true;
         if shared.requests.send(request).is_err() {
             status.moving = false;
@@ -183,7 +207,8 @@ impl Executor {
                 ..Default::default()
             }),
             requests,
-            abort: Arc::new(AtomicBool::new(global.load(Ordering::Acquire))),
+            abort: AtomicBool::new(global.load(Ordering::Acquire)),
+            move_cancel: AtomicBool::new(false),
         });
         let worker = shared.clone();
         let thread = thread::Builder::new()
@@ -235,6 +260,7 @@ impl Executor {
         lock(&self.shared.status).accepting = false;
         if abort {
             self.shared.abort.store(true, Ordering::Release);
+            self.shared.move_cancel.store(true, Ordering::Release);
         }
         // Dropping the returned rig releases the exclusive claims.
         let clean = thread.join().map(drop).is_ok();
@@ -320,16 +346,19 @@ fn execute(
         status.last_error = Some(error);
         return;
     }
-    let abort = &*shared.abort;
+    let move_cancel = &shared.move_cancel;
     let mut before = None;
     let (result, window, _) = timing::observe(origin, || {
-        if global.load(Ordering::Acquire) || abort.load(Ordering::Acquire) {
+        if global.load(Ordering::Acquire)
+            || shared.abort.load(Ordering::Acquire)
+            || move_cancel.load(Ordering::Acquire)
+        {
             return Err("motion cancelled".to_owned());
         }
         before = Some(rig.confirm_stationary()?);
         let mut progress = |position: Position| -> Result<(), String> {
             if global.load(Ordering::Acquire) {
-                abort.store(true, Ordering::Release);
+                move_cancel.store(true, Ordering::Release);
             }
             lock(&shared.status).position = position;
             Ok(())
@@ -337,7 +366,7 @@ fn execute(
         rig.move_to_with_progress(
             request.targets,
             request.approach,
-            abort,
+            move_cancel,
             Some(&mut progress),
         )
     });
@@ -359,7 +388,12 @@ fn execute(
             // The driver has already sent STOP for a started move. Confirm the
             // stationary state independently; never infer it from the text.
             let (stationary, check, _) = timing::observe(origin, || rig.confirm_stationary());
-            event["status"] = json!("failed");
+            let clean_stop = move_cancel.load(Ordering::Acquire)
+                && !shared.abort.load(Ordering::Acquire)
+                && !global.load(Ordering::Acquire)
+                && error == "motion cancelled"
+                && stationary.is_ok();
+            event["status"] = json!(if clean_stop { "cancelled" } else { "failed" });
             event["error"] = json!(error);
             event["stationary_check"] = json!({"timing":check,"position":stationary.as_ref().ok(),
                 "error":stationary.as_ref().err()});
@@ -372,8 +406,10 @@ fn execute(
                     status.fault = Some(format!("{error}; stationary check: {check}"));
                 }
             }
-            status.fault.get_or_insert(error.clone());
-            status.last_error = Some(error);
+            if !clean_stop {
+                status.fault.get_or_insert(error.clone());
+            }
+            status.last_error = (!clean_stop).then_some(error);
             status.moving = false;
             status.finished += 1;
         }

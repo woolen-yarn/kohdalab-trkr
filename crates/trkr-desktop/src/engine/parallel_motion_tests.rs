@@ -521,6 +521,38 @@ fn global_stop_aborts_an_in_flight_move_and_sends_stop() {
 }
 
 #[test]
+fn scanner_stop_cancels_only_the_move_and_allows_another() {
+    let (x, y) = (Sim::with_addresses(&[1]), Sim::with_addresses(&[1]));
+    x.axis(1, |axis| axis.move_polls = u32::MAX);
+    let (_remaining, owned) = two_port_rig(&x, &y)
+        .split_exclusive([false, true, false])
+        .unwrap();
+    let slot = Slot::default();
+    let global = Arc::new(AtomicBool::new(false));
+    let executor = Executor::spawn(&slot, owned, global.clone(), Instant::now()).unwrap();
+    slot.request(x_move(2.0)).unwrap();
+    wait_for("motion start", || x.axis(1, |axis| axis.state == "28"));
+    assert!(!slot.stop_move([true, false, false]));
+    assert!(slot.stop_move([false, true, true]));
+    wait_for("motion stop", || {
+        slot.status().is_some_and(|s| s.finished == 1)
+    });
+    let status = slot.status().unwrap();
+    assert!(status.accepting && status.fault.is_none() && !status.moving);
+    assert!(!global.load(Ordering::Acquire));
+    assert!(x.commands().iter().any(|command| command == "1ST"));
+    x.axis(1, |axis| axis.move_polls = 0);
+    slot.request(x_move(3.0)).unwrap();
+    wait_for("next move", || {
+        slot.status().is_some_and(|s| s.finished == 2)
+    });
+    let finished = executor.finish(false);
+    assert!(finished.error.is_none());
+    assert_eq!(finished.audits[0]["status"], "cancelled");
+    assert_eq!(finished.audits[1]["status"], "complete");
+}
+
+#[test]
 fn dropping_an_executor_joins_it_and_releases_ownership() {
     let (x, y) = (Sim::with_addresses(&[1]), Sim::with_addresses(&[1]));
     let mut rig = two_port_rig(&x, &y);

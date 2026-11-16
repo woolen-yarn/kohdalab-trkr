@@ -703,6 +703,12 @@ impl Controller {
         }
         Ok(())
     }
+    pub fn stop_parallel_move(&self, kind: MotionKind) -> bool {
+        self.parallel.stop_move(match kind {
+            MotionKind::Delay => [true, false, false],
+            MotionKind::Scanner => [false, true, true],
+        })
+    }
     pub fn stop(&self) {
         self.cancel.store(true, Ordering::Release);
         self.parallel.abort();
