@@ -508,34 +508,10 @@ impl App {
         else {
             ui.put(
                 rect,
-                egui::Label::new("Add a power meter in Devices to view live power"),
+                egui::Label::new("Add a power meter in Devices to view power"),
             );
             return;
         };
-        let live = self.alignment_workspace.power_live;
-        let toggle = precision::rect(rect.right() - 110., rect.top(), 110., 26.);
-        let connected = self
-            .power_meter_status(&id)
-            .is_some_and(|status| status.connected);
-        if ui
-            .add_enabled_ui(connected || live, |ui| {
-                ui.put(
-                    toggle,
-                    egui::Button::new(if live { "Stop Live" } else { "Show Live" }),
-                )
-            })
-            .inner
-            .clicked()
-        {
-            self.alignment_workspace.power_live = !live;
-        }
-        if !self.alignment_workspace.power_live {
-            ui.put(
-                precision::rect(rect.left(), rect.top(), 200., 26.),
-                egui::Label::new("Live off"),
-            );
-            return;
-        }
         let status = self.power_meter_status(&id);
         let reading = status.and_then(|status| status.reading.as_ref());
         let active = status.is_some_and(|status| status.connected && status.error.is_none())
@@ -552,18 +528,9 @@ impl App {
         } else {
             "WAITING"
         };
-        let mut points = self.power_history_points(&id, active);
         let current = reading.map(|reading| reading.corrected_w);
-        let maximum = points
-            .iter()
-            .fold(current.unwrap_or(0.).abs(), |extent, p| {
-                extent.max(p[1].abs())
-            });
-        let (scale, prefix) = presentation::metric_divisor(maximum);
-        for point in &mut points {
-            point[1] /= scale;
-        }
-        let heading = precision::rect(rect.left(), rect.top(), rect.width() - 120., 30.);
+        let (scale, prefix) = presentation::metric_divisor(current.unwrap_or(0.).abs());
+        let heading = precision::rect(rect.left(), rect.top(), rect.width(), 30.);
         ui.scope_builder(egui::UiBuilder::new().max_rect(heading), |ui| {
             ui.horizontal(|ui| {
                 let value = current
@@ -581,18 +548,6 @@ impl App {
                 ui.weak(state);
             });
         });
-        let plot = egui::Rect::from_min_max(rect.min + Vec2::new(0., 33.), rect.max);
-        super::alignment_workspace::draw_recent_trend(
-            ui,
-            plot,
-            egui::Id::new(("alignment-power", id)),
-            (
-                "Power",
-                &format!("{prefix}W"),
-                points,
-                crate::live_view::TEAL,
-            ),
-        );
     }
 
     fn power_history_points(&self, id: &str, active: bool) -> Vec<[f64; 2]> {

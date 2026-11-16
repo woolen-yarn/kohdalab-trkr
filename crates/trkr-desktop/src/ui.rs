@@ -1273,9 +1273,6 @@ impl App {
         } else {
             engine::ReadingOrigin::Hardware
         };
-        if self.workflow == Workflow::SignalMonitor {
-            self.alignment_workspace.signal_live = false;
-        }
         self.trace.clear();
         self.plot_epoch = self.plot_epoch.wrapping_add(1);
         let index = Self::ix(self.workflow);

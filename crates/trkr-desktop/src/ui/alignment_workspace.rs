@@ -1,6 +1,5 @@
 use super::*;
-use crate::engine::ReadingOrigin;
-use egui_plot::{Line, Plot};
+use egui_plot::Line;
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum MonitorTab {
@@ -47,8 +46,6 @@ impl SignalChannel {
 pub(super) struct Workspace {
     pub monitor: MonitorTab,
     signal: SignalChannel,
-    pub(super) signal_live: bool,
-    pub(super) power_live: bool,
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
     device_draft: Option<super::measurement_settings::Draft>,
@@ -190,22 +187,8 @@ impl App {
         self.alignment_workspace.settings = Some(tab);
     }
 
-    fn alignment_hardware_signal_available(&self) -> bool {
-        !self.source_demo
-            && !self.demo_viewer
-            && self.snapshot.devices[0]
-            && self.live.origin() == Some(ReadingOrigin::Hardware)
-    }
-
-    fn alignment_uses_live_signal(&self) -> bool {
-        self.alignment_hardware_signal_available()
-            && !self.signal_recording()
-            && self.alignment_workspace.signal_live
-    }
-
     fn alignment_signal_monitor(&mut self, ui: &mut egui::Ui, panel: egui::Rect) {
         let recording = self.signal_recording();
-        let live_available = self.alignment_hardware_signal_available();
         let mut form = precision::Form::new(ui, &mut self.geometry, panel.min);
         form.combo(
             "alignment_signal_mode",
@@ -213,20 +196,6 @@ impl App {
             &mut self.alignment_workspace.signal,
             &SignalChannel::CHOICES,
         );
-        let live = self.alignment_workspace.signal_live;
-        if form
-            .ui
-            .add_enabled_ui(!recording && (live_available || live), |ui| {
-                ui.put(
-                    precision::rect(panel.left() + 100., panel.top(), 110., 26.),
-                    egui::Button::new(if live { "Stop Live" } else { "Show Live" }),
-                )
-            })
-            .inner
-            .clicked()
-        {
-            self.alignment_workspace.signal_live = !live;
-        }
         let settings = form.button(
             "alignment_settings_button",
             precision::rect(panel.width() - 88., 0., 88., 26.),
@@ -281,30 +250,12 @@ impl App {
     fn alignment_signal_plot(&self, ui: &mut egui::Ui, area: egui::Rect) {
         let (mode, index, name) = self.alignment_workspace.signal.display();
         let latest = self.trace.last();
-        let use_live = self.alignment_uses_live_signal();
-        let fresh = use_live && self.live.recent();
-        let base_unit = if use_live {
-            self.live.unit().unwrap_or("unknown").into()
-        } else {
-            latest.map_or_else(
-                || self.display_signal_unit(),
-                |sample| presentation::sample_signal_unit(sample).into(),
-            )
-        };
-        let live_points = use_live.then(|| {
-            self.live
-                .points_at(mode, index, 1., self.live.newest(fresh))
-        });
+        let base_unit = latest.map_or_else(
+            || self.display_signal_unit(),
+            |sample| presentation::sample_signal_unit(sample).into(),
+        );
         let (scale, unit) = if matches!(base_unit.as_str(), "A" | "V") {
-            let magnitude = if let Some(points) = &live_points {
-                points
-                    .iter()
-                    .map(|point| point[1].abs())
-                    .filter(|&value| value > 0.)
-                    .reduce(f64::max)
-            } else {
-                presentation::trace_signal_magnitude(&self.trace, mode, false)
-            };
+            let magnitude = presentation::trace_signal_magnitude(&self.trace, mode, false);
             let (scale, label) = magnitude
                 .or_else(|| qualified_lockin_sensitivity(&self.snapshot, self.model))
                 .map(presentation::voltage_scale_from_sensitivity)
@@ -322,9 +273,7 @@ impl App {
         let recording_status = self
             .signal_recording()
             .then(|| self.alignment_recording_status());
-        let source = if use_live {
-            if fresh { "Live" } else { "Stale" }
-        } else if let Some(status) = &recording_status {
+        let source = if let Some(status) = &recording_status {
             status
         } else if latest.is_some() {
             if self.source_demo {
@@ -333,39 +282,28 @@ impl App {
                 "Last recording"
             }
         } else {
-            "Live off"
+            "No recording"
         };
         let angle = mode == DisplayMode::RTheta && index == 1;
         let factor = if angle { 1. } else { scale };
         let unit = if angle { "°" } else { &unit };
-        let value = if use_live {
-            self.live.signal()
-        } else {
-            latest.map(|s| s.signal)
-        };
-        let value = value
-            .map(|signal| format!("{:.4} {unit}", mode.values(signal)[index] * factor))
+        let value = latest
+            .map(|sample| format!("{:.4} {unit}", mode.values(sample.signal)[index] * factor))
             .unwrap_or_else(|| format!("— {unit}"));
-        let points = if let Some(mut points) = live_points {
-            for point in &mut points {
-                point[1] *= factor;
-            }
-            points
-        } else {
-            self.trace
-                .iter()
-                .filter_map(|s| {
-                    let value = mode.values(s.signal)[index] * factor;
-                    ((angle
-                        || latest.is_some_and(|last| {
-                            presentation::sample_signal_unit(s)
-                                == presentation::sample_signal_unit(last)
-                        }))
-                        && value.is_finite())
-                    .then_some([s.elapsed, value])
-                })
-                .collect()
-        };
+        let points: Vec<_> = self
+            .trace
+            .iter()
+            .filter_map(|s| {
+                let value = mode.values(s.signal)[index] * factor;
+                ((angle
+                    || latest.is_some_and(|last| {
+                        presentation::sample_signal_unit(s)
+                            == presentation::sample_signal_unit(last)
+                    }))
+                    && value.is_finite())
+                .then_some([s.elapsed, value])
+            })
+            .collect();
         let color = presentation::color(index);
         let header = precision::rect(area.left(), area.top(), area.width(), 28.);
         ui.scope_builder(egui::UiBuilder::new().max_rect(header), |ui| {
@@ -380,23 +318,13 @@ impl App {
             });
         });
         let chart = egui::Rect::from_min_max(area.min + Vec2::new(0., 28.), area.max);
-        let x_label = if use_live {
-            "Time relative to latest (s)"
-        } else {
-            "Elapsed (s)"
-        };
+        let x_label = "Elapsed (s)";
         let y_label = if angle {
             "Theta (deg)".into()
         } else {
             format!("{name} ({unit})")
         };
-        let id = egui::Id::new((
-            "alignment-signal",
-            name,
-            use_live,
-            self.plot_epoch,
-            &y_label,
-        ));
+        let id = egui::Id::new(("alignment-signal", name, self.plot_epoch, &y_label));
         ui.scope_builder(
             egui::UiBuilder::new()
                 .max_rect(chart)
@@ -407,7 +335,6 @@ impl App {
                     .allow_zoom(false)
                     .allow_scroll(false)
                     .allow_drag(false)
-                    .include_x(if use_live { -30. } else { 0. })
                     .include_x(0.)
                     .label_formatter(|name, point| {
                         presentation::point_label(name, x_label, point.x, point.y)
@@ -566,65 +493,6 @@ impl App {
     }
 }
 
-pub(super) fn draw_recent_trend(
-    ui: &mut egui::Ui,
-    rect: egui::Rect,
-    id: egui::Id,
-    (name, unit, points, color): (&str, &str, Vec<[f64; 2]>, Color32),
-) {
-    ui.scope_builder(
-        egui::UiBuilder::new()
-            .max_rect(rect)
-            .layout(egui::Layout::top_down(egui::Align::Min)),
-        |ui| {
-            ui.set_clip_rect(ui.clip_rect().intersect(rect));
-            Plot::new(id)
-                .id(id)
-                .width(rect.width())
-                .height(rect.height() - 2.)
-                .show_background(false)
-                .show_axes([true, true])
-                .show_grid([true, true])
-                .allow_zoom(false)
-                .allow_scroll(false)
-                .allow_drag(false)
-                .include_x(-30.)
-                .include_x(0.)
-                .x_axis_formatter(|tick, _| format!("{} s", tick.value))
-                .y_axis_min_width(62.)
-                .label_formatter(|name, point| {
-                    presentation::point_label(name, "Time relative to latest (s)", point.x, point.y)
-                })
-                .show(ui, |plot| {
-                    plot.line(
-                        Line::new(format!("{name} ({unit})"), points)
-                            .color(color)
-                            .width(1.5_f32),
-                    )
-                });
-        },
-    );
-}
-
-#[cfg(test)]
-#[test]
-fn live_signal_requires_an_explicit_selection_and_is_hidden_during_recording() {
-    let ctx = egui::Context::default();
-    let mut app = App::with_context(&ctx, false);
-    app.enable_alignment_monitor_preview();
-    app.source_demo = false;
-    app.snapshot.devices[0] = true;
-    app.live
-        .push(trkr_core::Signal::default(), ReadingOrigin::Hardware, "V");
-    assert!(!app.trace.is_empty());
-    assert!(!app.alignment_uses_live_signal());
-    app.alignment_workspace.signal_live = true;
-    assert!(app.alignment_uses_live_signal());
-    app.snapshot.running = true;
-    app.active_workflow = Workflow::SignalMonitor;
-    assert!(!app.alignment_uses_live_signal());
-}
-
 #[cfg(test)]
 #[test]
 fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
@@ -755,32 +623,16 @@ mod tests {
     }
 
     #[test]
-    fn power_plot_requires_show_live() {
-        let mut h = Harness::builder()
-            .with_size(egui::vec2(1566., 700.))
-            .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
-        h.state_mut().enable_power_meter_preview();
-        h.run_steps(3);
-        h.get_by_label("Power Monitor").click();
-        h.run_steps(3);
-        assert!(h.query_all_by_label("Live off").next().is_some());
-        h.get_by_label("Show Live").click();
-        h.run_steps(3);
-        assert!(h.state().alignment_workspace.power_live);
-        assert!(h.query_all_by_label("Live off").next().is_none());
-        h.get_by_label("Stop Live").click();
-        h.run_steps(3);
-        assert!(h.query_all_by_label("Live off").next().is_some());
-    }
-
-    #[test]
     fn power_and_motion_only_can_be_toggled_without_changing_measurement_workflow() {
         let mut h = Harness::builder()
             .with_size(egui::vec2(1566., 700.))
             .build_eframe(|cc| App::new_alignment_jog_trial(cc).unwrap());
         h.run_steps(3);
+        assert!(h.query_all_by_label("Show Live").next().is_none());
+        h.state_mut().enable_power_meter_preview();
         h.get_by_label("Power Monitor").click();
         h.run_steps(3);
+        assert!(h.query_all_by_label("Show Live").next().is_none());
         assert!(h.state().geometry.contains_key("alignment_power_monitor"));
         let motion_height = |app: &App| app.geometry["alignment_widget"][3];
         let height = motion_height(h.state());
