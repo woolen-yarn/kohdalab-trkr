@@ -323,11 +323,7 @@ impl App {
                 })
                 .collect()
         };
-        let color = if index == 0 {
-            crate::live_view::TEAL
-        } else {
-            Color32::from_rgb(245, 183, 82)
-        };
+        let color = presentation::color(index);
         let header = precision::rect(area.left(), area.top(), area.width(), 28.);
         ui.scope_builder(egui::UiBuilder::new().max_rect(header), |ui| {
             ui.horizontal(|ui| {
@@ -341,15 +337,35 @@ impl App {
             });
         });
         let chart = egui::Rect::from_min_max(area.min + Vec2::new(0., 28.), area.max);
-        draw_monitor_trend(
-            ui,
-            chart,
-            egui::Id::new(("alignment-signal", name, use_live, self.plot_epoch)),
-            (name, unit, points, color),
-            if use_live {
-                TimeAxis::Recent
-            } else {
-                TimeAxis::Elapsed
+        let x_label = if use_live {
+            "Time relative to latest (s)"
+        } else {
+            "Elapsed (s)"
+        };
+        let y_label = if angle {
+            "Theta (deg)".into()
+        } else {
+            format!("{name} ({unit})")
+        };
+        let id = egui::Id::new(("alignment-signal", name, use_live, self.plot_epoch));
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(chart)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+            |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(chart));
+                presentation::measurement_plot(id, chart, x_label, &y_label)
+                    .allow_zoom(false)
+                    .allow_scroll(false)
+                    .allow_drag(false)
+                    .include_x(if use_live { -30. } else { 0. })
+                    .include_x(0.)
+                    .label_formatter(|name, point| {
+                        presentation::point_label(name, x_label, point.x, point.y)
+                    })
+                    .show(ui, |plot| {
+                        plot.line(presentation::measurement_series(&y_label, points, index));
+                    });
             },
         );
     }
@@ -501,18 +517,11 @@ impl App {
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum TimeAxis {
-    Recent,
-    Elapsed,
-}
-
-pub(super) fn draw_monitor_trend(
+pub(super) fn draw_recent_trend(
     ui: &mut egui::Ui,
     rect: egui::Rect,
     id: egui::Id,
     (name, unit, points, color): (&str, &str, Vec<[f64; 2]>, Color32),
-    time_axis: TimeAxis,
 ) {
     ui.scope_builder(
         egui::UiBuilder::new()
@@ -520,10 +529,6 @@ pub(super) fn draw_monitor_trend(
             .layout(egui::Layout::top_down(egui::Align::Min)),
         |ui| {
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
-            let (start, label) = match time_axis {
-                TimeAxis::Recent => (-30., "Time relative to latest (s)"),
-                TimeAxis::Elapsed => (0., "Elapsed (s)"),
-            };
             Plot::new(id)
                 .id(id)
                 .width(rect.width())
@@ -534,12 +539,12 @@ pub(super) fn draw_monitor_trend(
                 .allow_zoom(false)
                 .allow_scroll(false)
                 .allow_drag(false)
-                .include_x(start)
+                .include_x(-30.)
                 .include_x(0.)
                 .x_axis_formatter(|tick, _| format!("{} s", tick.value))
                 .y_axis_min_width(62.)
                 .label_formatter(|name, point| {
-                    crate::presentation::point_label(name, label, point.x, point.y)
+                    presentation::point_label(name, "Time relative to latest (s)", point.x, point.y)
                 })
                 .show(ui, |plot| {
                     plot.line(

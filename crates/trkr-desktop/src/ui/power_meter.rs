@@ -560,7 +560,7 @@ impl App {
             });
         });
         let plot = egui::Rect::from_min_max(rect.min + Vec2::new(0., 33.), rect.max);
-        super::alignment_workspace::draw_monitor_trend(
+        super::alignment_workspace::draw_recent_trend(
             ui,
             plot,
             egui::Id::new(("alignment-power", id)),
@@ -570,7 +570,6 @@ impl App {
                 points,
                 crate::live_view::TEAL,
             ),
-            super::alignment_workspace::TimeAxis::Recent,
         );
     }
 

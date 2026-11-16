@@ -207,7 +207,29 @@ fn offset(axis: Axis, plan: &Plan) -> f64 {
         _ => 0.,
     }
 }
-fn color(i: usize) -> Color32 {
+pub(crate) fn measurement_plot<'a>(
+    id: egui::Id,
+    rect: Rect,
+    x_label: &str,
+    y_label: &str,
+) -> Plot<'a> {
+    Plot::new(id)
+        .id(id)
+        .width(rect.width())
+        .height(rect.height())
+        .x_axis_label(x_label)
+        .y_axis_label(y_label)
+}
+
+pub(crate) fn measurement_series<'a>(
+    name: &str,
+    points: Vec<[f64; 2]>,
+    channel: usize,
+) -> Line<'a> {
+    Line::new(name, points).color(color(channel)).width(1.7_f32)
+}
+
+pub(crate) fn color(i: usize) -> Color32 {
     if i == 0 {
         Color32::from_rgb(102, 174, 255)
     } else {
@@ -336,24 +358,12 @@ impl PlotView<'_> {
             format!("{}_cor ({})", spec.axis.name(), spec.axis.unit())
         };
         let zero = offset(spec.axis, self.plan);
-        let mut plot = Plot::new((
-            self.plan.workflow.key(),
-            spec.id,
-            spec.signal,
-            spec.axis.name(),
-        ))
-        .width(rect.width())
-        .height(rect.height())
-        .x_axis_label(&label)
-        .y_axis_label(self.signal_label(spec.signal));
         let log = self.y_log && self.plan.workflow == Workflow::Trkr;
         let segments = self.line_segments(&spec, log);
         let has_data = !segments.is_empty();
-        // Empty placeholders have fixed bounds. Their memory must not become
-        // the initial zoom of a live/data plot. Modes and new runs likewise
-        // start with bounds in their own units, while preserving manual zoom
-        // during a run.
-        plot = plot.id(egui::Id::new((
+        // Keep placeholder and data bounds separate and reset zoom when the
+        // mode, units or run change.
+        let id = egui::Id::new((
             self.plan.workflow.key(),
             spec.id,
             spec.signal,
@@ -367,7 +377,9 @@ impl PlotView<'_> {
             self.epoch,
             has_data,
             log,
-        )));
+        ));
+        let signal_label = self.signal_label(spec.signal);
+        let mut plot = measurement_plot(id, rect, &label, &signal_label);
         plot = if has_data {
             plot.auto_bounds(true)
         } else {
@@ -399,11 +411,7 @@ impl PlotView<'_> {
         })
         .show(ui, |p| {
             for segment in segments {
-                p.line(
-                    Line::new(self.signal_label(spec.signal), segment)
-                        .color(color(spec.signal))
-                        .width(1.7_f32),
-                );
+                p.line(measurement_series(&signal_label, segment, spec.signal));
             }
             if log && !has_data {
                 p.text(egui_plot::Text::new(
