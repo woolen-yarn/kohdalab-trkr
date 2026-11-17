@@ -99,7 +99,7 @@ jobs:
           name: windows-gui-failure-${{ github.sha }}
           path: build/release-*/common-control-validation/gui.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
       - name: Verify installed application lifecycle without opening hardware
         shell: pwsh
         run: |
@@ -144,7 +144,7 @@ jobs:
         with:
           name: signpath-input-windows-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             build/signpath-input/kohdalab-trkr.exe
             build/signpath-input/kohdalab-trkr-demo.exe
@@ -155,14 +155,14 @@ jobs:
         with:
           name: signpath-installer-input-windows-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: build/signpath-installer/KohdaLab-TRKR-Setup.exe
       - name: Upload unsigned Windows release
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: release-windows-x64-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             dist/*.zip
             dist/*Setup.exe
@@ -201,7 +201,7 @@ jobs:
         with:
           name: release-macos-arm64-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             dist/*.zip
             dist/*Setup.exe

@@ -1,0 +1,149 @@
+name: Distribute
+'on':
+  workflow_dispatch:
+    inputs:
+      verify_only:
+        description: Build and test without creating a release
+        type: boolean
+        default: false
+        required: false
+  pull_request:
+    paths:
+    - .github/workflows/distribute.yml
+    - .github/distribution/**
+permissions:
+  contents: read
+concurrency:
+  group: distribution
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+      with:
+        python-version: '3.13'
+    - run: python -m unittest discover -s .github/distribution -p "test_*.py" -v
+  distribute:
+    runs-on: windows-2025
+    timeout-minutes: 55
+    env:
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+    - name: Verify selected branch
+      shell: bash
+      env:
+        EXPECTED_BRANCH: ${{ github.event.repository.default_branch }}
+      run: test "$GITHUB_REF" = "refs/heads/$EXPECTED_BRANCH" || test "${{ inputs.verify_only }}" = true
+    - name: Isolate Rust toolchain installation
+      shell: bash
+      run: |
+        toolchain_dir=$(mktemp -d "$RUNNER_TEMP/kohdalab-rustup.XXXXXX")
+        echo "RUSTUP_HOME=$toolchain_dir" >> "$GITHUB_ENV"
+    - name: Check out source
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Install MSYS2 UCRT64 compiler tools
+      uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e
+      with:
+        msystem: UCRT64
+        update: 'true'
+        install: make mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-python
+    - name: Build native helpers from vendored source
+      shell: msys2 {0}
+      run: bash scripts/build_native.sh
+    - name: Locate Windows resource compiler
+      shell: pwsh
+      run: |
+        $rc = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Recurse -Filter rc.exe |
+          Where-Object { $_.FullName -match '\\x64\\rc.exe$' } |
+          Sort-Object FullName | Select-Object -Last 1
+        if (-not $rc) { throw 'Windows resource compiler rc.exe was not found.' }
+        "RC=$($rc.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    - name: Build Rust application
+      shell: pwsh
+      run: cargo build --manifest-path Cargo.toml --target x86_64-pc-windows-msvc --release --locked
+    - name: Test Windows workspace without devices
+      run: cargo test --workspace --locked
+    - name: Install NSIS when absent
+      shell: pwsh
+      run: |
+        $nsis = Get-Command makensis.exe -ErrorAction SilentlyContinue
+        if (-not $nsis) {
+          choco install nsis -y --no-progress
+          $candidate = Join-Path ${env:ProgramFiles(x86)} 'NSIS\makensis.exe'
+          if (-not (Test-Path $candidate)) { throw 'NSIS installation did not provide makensis.exe.' }
+          Split-Path $candidate | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        } else {
+          Split-Path $nsis.Source | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+        }
+    - name: Prepare CI-only software OpenGL for packaged GUI validation
+      shell: pwsh
+      run: |
+        $archive = Join-Path $env:RUNNER_TEMP 'mesa3d-26.2.4-release-msvc.7z'
+        Invoke-WebRequest 'https://github.com/pal1000/mesa-dist-win/releases/download/26.2.4/mesa3d-26.2.4-release-msvc.7z' -OutFile $archive
+        if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '351fc8c8b695878ffb3eaa044b3ead08672a48b1a045e3c3e3975811df0f6695') { throw 'CI Mesa checksum mismatch' }
+        $mesa = Join-Path $env:RUNNER_TEMP 'ci-mesa'
+        & 7z x $archive "-o$mesa" -y | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw 'CI Mesa extraction failed' }
+        "KOHDALAB_CI_OPENGL_DIR=$mesa/x64" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        'GALLIUM_DRIVER=llvmpipe' | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+    - name: Package Windows portable archive and installer
+      shell: pwsh
+      run: python scripts/build_release.py --platform windows-x64 --binaries-dir target/x86_64-pc-windows-msvc/release --native-dir build/native --output dist
+    - name: Verify installed application lifecycle without opening hardware
+      shell: pwsh
+      run: |
+        $v = python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['package']['version'])"
+        ./tests/windows_install.ps1 -Installer "dist/KohdaLab-TRKR-$v-Setup.exe" -Version $v
+    - name: Verify first-party Windows product metadata
+      shell: pwsh
+      run: |
+        $v = python -c "import tomllib,pathlib; print(tomllib.loads(pathlib.Path('Cargo.toml').read_text())['workspace']['package']['version'])"
+        foreach ($file in @('target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe','target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe','build/native/kohdalab-visa-helper.exe')) {
+          $info = (Get-Item $file).VersionInfo
+          if ($info.ProductName -ne 'KohdaLab TRKR' -or $info.ProductVersion -ne $v -or $info.CompanyName -ne 'Kohdalab') { throw "Unexpected signing identity: $file" }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $file))
+          if ([Text.Encoding]::ASCII.GetString($bytes) -match '(?i)(vcruntime|msvcp)140[^\x00]*\.dll') {
+            throw "Portable binary requires an external Visual C++ runtime: $file"
+          }
+        }
+    - name: Stage exact first-party SignPath input
+      shell: pwsh
+      run: |
+        $stage = 'build/signpath-input'
+        New-Item -ItemType Directory -Force $stage | Out-Null
+        Copy-Item target/x86_64-pc-windows-msvc/release/kohdalab-trkr.exe "$stage/kohdalab-trkr.exe"
+        Copy-Item target/x86_64-pc-windows-msvc/release/kohdalab-trkr-demo.exe "$stage/kohdalab-trkr-demo.exe"
+        Copy-Item build/native/kohdalab-visa-helper.exe "$stage/kohdalab-visa-helper.exe"
+        if (Test-Path "$stage/kohdalab-gpib-helper.exe") {
+          throw 'The GPL GPIB helper must not be included in the first-party signing input.'
+        }
+        Get-FileHash "$stage/*" -Algorithm SHA256 |
+          Select-Object Path, Hash | ConvertTo-Json | Set-Content "$stage/SHA256.json" -Encoding utf8
+    - name: Stage installer signing sample separately
+      shell: pwsh
+      run: |
+        $installer = Get-ChildItem dist -Recurse -Filter '*Setup.exe' | Select-Object -First 1
+        if (-not $installer) { throw 'Release packager did not create a Windows Setup executable.' }
+        $stage = 'build/signpath-installer'
+        New-Item -ItemType Directory -Force $stage | Out-Null
+        Copy-Item $installer.FullName "$stage/KohdaLab-TRKR-Setup.exe"
+    - name: Validate publisher
+      run: python -m unittest discover -s .github/distribution -p "test_*.py" -v
+    - name: Publish verified distribution directly to Releases
+      if: ${{ !inputs.verify_only }}
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DISTRIBUTION_BRANCH: ${{ github.event.repository.default_branch }}
+        DISTRIBUTION_QUALIFICATION: Windows CI tests and package validation. Physical-device acceptance follows the separately documented model and connection matrix.
+      run: python .github/distribution/publish_distribution.py --directory dist --portable-glob "*windows-x64.zip" --alias kohdalab-trkr-windows.zip
+    if: github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+    needs: validate
