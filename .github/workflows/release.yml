@@ -93,13 +93,13 @@ jobs:
           python scripts/build_release.py --platform windows-x64
           --binaries-dir target/x86_64-pc-windows-msvc/release --native-dir build/native --output dist
       - name: Upload GUI startup diagnostics on failure
-        if: failure()
+        if: (failure()) && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: windows-gui-failure-${{ github.sha }}
           path: build/release-*/common-control-validation/gui.log
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
       - name: Verify installed application lifecycle without opening hardware
         shell: pwsh
         run: |
@@ -140,29 +140,32 @@ jobs:
           Copy-Item $installer.FullName "$stage/KohdaLab-TRKR-Setup.exe"
       - name: Upload first-party signing input (unsigned)
         id: signing-input
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: signpath-input-windows-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             build/signpath-input/kohdalab-trkr.exe
             build/signpath-input/kohdalab-trkr-demo.exe
             build/signpath-input/kohdalab-visa-helper.exe
             build/signpath-input/SHA256.json
       - name: Upload installer signing sample (unsigned)
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: signpath-installer-input-windows-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: build/signpath-installer/KohdaLab-TRKR-Setup.exe
       - name: Upload unsigned Windows release
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: release-windows-x64-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             dist/*.zip
             dist/*Setup.exe
@@ -197,11 +200,12 @@ jobs:
           python3 scripts/build_release.py --platform macos-arm64
           --binaries-dir target/release --native-dir build/native --output dist
       - name: Upload unsigned macOS release
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
         with:
           name: release-macos-arm64-${{ github.sha }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           path: |
             dist/*.zip
             dist/*Setup.exe

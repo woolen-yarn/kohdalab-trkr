@@ -77,7 +77,7 @@ jobs:
           path: ${{ runner.temp }}/promotion
           if-no-files-found: error
           overwrite: true
-          retention-days: 14
+          retention-days: ${{ github.event_name == 'pull_request' && 1 || 7 }}
           compression-level: 0
 
   draft:

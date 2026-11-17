@@ -3,7 +3,7 @@
 # KohdaLab TRKR
 
 [![CI](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/woolen-yarn/kohdalab-trkr)](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest)
+[![Release](https://img.shields.io/github/v/release/woolen-yarn/kohdalab-trkr)](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.5)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Rust desktop application for time-resolved Kerr rotation measurements, live lock-in monitoring, and stage/scanner control.
@@ -20,7 +20,7 @@ Rust desktop application for time-resolved Kerr rotation measurements, live lock
 
 ## Downloads / ダウンロード
 
-[Latest stable release / 最新安定版](https://github.com/woolen-yarn/kohdalab-trkr/releases/latest) · [v1.0.5 release notes / リリースノート](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.5)
+[Stable release / 安定版](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.5) · [v1.0.5 release notes / リリースノート](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.5)
 
 | OS / 対応環境 | Installer / インストーラー | Portable / ポータブル |
 | --- | --- | --- |
@@ -156,3 +156,5 @@ dependencies retain their own licenses; keep the accompanying notices and source
 See [redistribution terms](REDISTRIBUTION.md), [code signing](CODE_SIGNING_POLICY.md), and [privacy](PRIVACY.md).
 
 独自コードは[MITライセンス](LICENSE)です。ネイティブhelperと再配布する依存物にはそれぞれのライセンスが適用されます。権利表記と対応するソースを保持してください。[再配布条件](REDISTRIBUTION.md)・[コード署名](CODE_SIGNING_POLICY.md)・[プライバシー](PRIVACY.md)も参照してください。
+
+[One-click distribution / ワンクリック配布](DISTRIBUTION.md)
