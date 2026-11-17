@@ -24,15 +24,18 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: '1'
           TRKR_LINUX_INSTALL_DEB: '1'
         run: bash scripts/package_linux.sh
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
+          retention-days: 7
           name: trkr-linux-x86_64
           path: dist/linux/
           if-no-files-found: error
       - name: Upload failure evidence
-        if: failure()
+        if: (failure()) && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
+          retention-days: 7
           name: trkr-linux-failure-evidence
           path: |
             dist/linux/measurement-*/
