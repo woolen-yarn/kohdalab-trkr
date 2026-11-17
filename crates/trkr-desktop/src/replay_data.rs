@@ -54,6 +54,20 @@ pub fn is_raw_sidecar(path: &Path) -> bool {
 }
 
 pub fn load(path: &Path) -> Result<Dataset, String> {
+    load_cancellable(path, &|| false)
+        .map(|data| data.expect("uncancellable replay load cannot stop"))
+}
+
+/// Same parser and validation as [`load`], polled for Stop before every row
+/// and before plan inference. `Ok(None)` means a clean cancellation; no
+/// partially validated dataset is ever returned.
+pub fn load_cancellable(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<Dataset>, String> {
+    if cancelled() {
+        return Ok(None);
+    }
     let file = File::open(path).map_err(|e| format!("Open {}: {e}", path.display()))?;
     let mut reader = csv::ReaderBuilder::new().flexible(false).from_reader(file);
     let headers = reader
@@ -76,6 +90,9 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
 
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
+        if cancelled() {
+            return Ok(None);
+        }
         let row = index + 2;
         if rows.len() == MAX_FILE_ROWS {
             return Err(format!("CSV has more than {MAX_FILE_ROWS} rows"));
@@ -88,6 +105,9 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
     }
     if rows.is_empty() {
         return Err("CSV has no measurement rows".into());
+    }
+    if cancelled() {
+        return Ok(None);
     }
 
     let workflow = rows[0].workflow;
@@ -156,7 +176,7 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
             row.into_sample(&plan, line)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Dataset { plan, samples })
+    Ok(Some(Dataset { plan, samples }))
 }
 
 #[derive(Clone)]
@@ -896,6 +916,24 @@ mod tests {
                 assert!(signal.x_v.is_nan() && signal.y_v.is_nan());
             }
         }
+    }
+
+    #[test]
+    fn cancellable_load_stops_between_rows_and_before_plan_inference() {
+        let file = csv("measurement,target_elapsed_s,elapsed_s,X,Y,R,Theta_deg\n\
+             signal_monitor,0,0,1,0,1,0\n\
+             signal_monitor,1,1,1,0,1,0\n");
+        // Polls: open, row 1, row 2, plan inference. Stop at each in turn.
+        for stop_at in 1..=4 {
+            let polls = std::cell::Cell::new(0);
+            let result = load_cancellable(file.path(), &|| {
+                polls.set(polls.get() + 1);
+                polls.get() >= stop_at
+            });
+            assert!(matches!(result, Ok(None)), "stop at poll {stop_at}");
+            assert_eq!(polls.get(), stop_at);
+        }
+        assert_eq!(load(file.path()).unwrap().samples.len(), 2);
     }
 
     #[test]

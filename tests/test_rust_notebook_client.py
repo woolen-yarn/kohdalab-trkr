@@ -155,6 +155,28 @@ def test_run_warns_when_native_sample_events_were_dropped() -> None:
         client.run({}, {}, {"type": "demo"})
 
 
+def test_run_waits_for_finished_even_if_last_job_is_changed_concurrently() -> None:
+    # A raw move() sent from another thread right after run's command would
+    # flip _last_job; run() must still wait for its own ``finished`` event.
+    finished = {"event": "finished", "data": {"Ok": [3, None]}}
+    module, client, sent = _fake_native_client([
+        _state(True, "Preparing"),
+        _state(False, "Stopped"),
+        finished,
+    ])
+    original_send = client.send
+
+    def send(command: dict) -> None:
+        original_send(command)
+        if command["command"] == "run":
+            client._last_job = "move"
+
+    client.send = send
+    events = client.run({}, {}, {"type": "demo"})
+    assert sent[-1]["command"] == "run"
+    assert events[-1] == finished
+
+
 def test_notebook_runs_native_workflows_recovers_errors_and_stops(
     tmp_path: Path,
 ) -> None:

@@ -1076,6 +1076,10 @@ class Client:
         """
         if getattr(self, "_last_job", None) in _STATE_TERMINATED_COMMANDS:
             return self._wait_state_terminal(timeout)
+        return self._wait_acquisition_finished(timeout)
+
+    def _wait_acquisition_finished(self, timeout: float | None) -> list[dict[str, Any]]:
+        """Drain an acquisition job (``run``/``replay``) through ``finished``."""
         deadline = self._validate_timeout(timeout)
         timed_out = False
         result: list[dict[str, Any]] = []
@@ -1102,7 +1106,8 @@ class Client:
                         f"{dropped} native sample events were dropped from this event list "
                         "(full queue); the CSV recording is unaffected",
                         RuntimeWarning,
-                        stacklevel=2,
+                        # Caller of wait_for_finished()/run(), one frame up.
+                        stacklevel=3,
                     )
                 if failure is not None:
                     raise RuntimeError(failure)
@@ -1252,7 +1257,9 @@ class Client:
                     "output": None if output is None else str(output),
                 }
             )
-            return self.wait_for_finished()
+            # Always the acquisition terminal (``finished``), never inferred
+            # from ``_last_job``, which a concurrent raw send() could change.
+            return self._wait_acquisition_finished(None)
 
     def close(self) -> None:
         if self._process.poll() is None:

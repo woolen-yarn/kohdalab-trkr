@@ -67,9 +67,11 @@ pub(super) struct Workspace {
 
 /// Everything the cached signal points depend on. Appends change `len` and
 /// `last_elapsed`; front trimming changes `first_elapsed`; Clear bumps the
-/// plot epoch.
+/// plot epoch. `workflow` guards view switches, which swap `trace` with a
+/// saved per-workflow trace without bumping the epoch.
 #[derive(Clone, PartialEq)]
 struct SignalPointsKey {
+    workflow: Workflow,
     epoch: u64,
     len: usize,
     first_elapsed: u64,
@@ -368,6 +370,7 @@ impl App {
             .map(|sample| format!("{:.4} {unit}", mode.values(sample.signal)[index] * factor))
             .unwrap_or_else(|| format!("— {unit}"));
         let key = SignalPointsKey {
+            workflow: self.workflow,
             epoch: self.plot_epoch,
             len: self.trace.len(),
             first_elapsed: self.trace.first().map_or(0, |s| s.elapsed.to_bits()),
@@ -685,6 +688,32 @@ fn signal_plot_points_are_reused_until_the_trace_changes() {
         changed_key.angle,
     );
     assert_eq!(points, &expected);
+    drop(cache);
+    let stale = expected;
+
+    // A view switch swaps in another workflow's trace without an epoch bump.
+    // Same len, first/last elapsed and last signal; only interior points
+    // differ, so only the workflow in the key can invalidate the cache.
+    let mut other = app.trace.clone();
+    assert!(other.len() >= 3, "preview trace needs an interior sample");
+    other[1].signal.x_v += 1.;
+    other[1].signal.r_v += 1.;
+    let previous = app.workflow;
+    let other_workflow = Workflow::ALL.into_iter().find(|w| *w != previous).unwrap();
+    app.saved_traces[App::ix(previous)] = std::mem::replace(&mut app.trace, other);
+    app.workflow = other_workflow;
+    let (switched_key, _) = frame(&app);
+    assert!(switched_key.workflow == other_workflow);
+    let cache = app.alignment_workspace.signal_points.borrow();
+    let expected = signal_points(
+        &app.trace,
+        switched_key.mode,
+        switched_key.index,
+        f64::from_bits(switched_key.factor),
+        switched_key.angle,
+    );
+    assert_ne!(expected, stale, "switch fixture must change plotted points");
+    assert_eq!(&cache.as_ref().unwrap().1, &expected);
 }
 
 #[cfg(all(test, feature = "gui-interaction-tests"))]

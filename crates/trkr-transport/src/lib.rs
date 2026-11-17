@@ -126,6 +126,10 @@ struct Session {
     _lease: Option<Arc<File>>,
     poisoned: bool,
     cancelled_reply_deadline: Option<Instant>,
+    /// Address written in the EXIT frame on drop. Direct helpers use
+    /// [`HELPER_EXIT_ADDRESS`]; an instrument-hub proxy is bound to one
+    /// address and receives exactly that address.
+    exit_address: u8,
 }
 
 #[derive(Default)]
@@ -242,7 +246,10 @@ impl Gpib {
             "--address".to_owned(),
             address.to_string(),
         ];
-        Self::spawn_process(&hub, address, &args, "instrument hub", None)
+        let gpib = Self::spawn_process(&hub, address, &args, "instrument hub", None)?;
+        // The proxy is bound to `--address`; never send it another address.
+        gpib.session()?.exit_address = address;
+        Ok(gpib)
     }
 
     fn spawn_process(
@@ -533,6 +540,7 @@ impl Session {
             _lease: lease,
             poisoned: false,
             cancelled_reply_deadline: None,
+            exit_address: HELPER_EXIT_ADDRESS,
         };
         let startup = session.receive(STARTUP_TIMEOUT)?;
         let (status, payload) = parse_frame(&startup)?;
@@ -719,9 +727,14 @@ impl Session {
 /// Valid for every helper revision: the native 82357B/NI helper requires
 /// address 1–30 on every request (address 0 was rejected as "Invalid GPIB
 /// request", so it never exited cleanly), and the VISA helper accepts 0–30.
-/// EXIT ignores the address.
-const HELPER_EXIT_FRAME: &[u8] = b"EXIT 1 1000 -\n";
+/// Direct helpers ignore the EXIT address. Hub proxies use their own bound
+/// address instead (see `Gpib::spawn_hub_proxy`).
+const HELPER_EXIT_ADDRESS: u8 = 1;
 const HELPER_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+fn exit_frame(address: u8) -> String {
+    format!("EXIT {address} 1000 -\n")
+}
 
 impl Drop for Session {
     fn drop(&mut self) {
@@ -730,7 +743,9 @@ impl Drop for Session {
             let _ = self.child.wait();
             return;
         }
-        let _ = self.input.write_all(HELPER_EXIT_FRAME);
+        let _ = self
+            .input
+            .write_all(exit_frame(self.exit_address).as_bytes());
         let _ = self.input.flush();
         // EXIT performs REN off and closes the adapter; give that bounded
         // time before falling back to kill. A pending cancelled reply only
@@ -1405,11 +1420,9 @@ mod tests {
             );
             thread::sleep(Duration::from_millis(10));
         }
-        assert!(
-            std::str::from_utf8(HELPER_EXIT_FRAME)
-                .unwrap()
-                .starts_with("EXIT 1 ")
-        );
+        // Direct helpers keep the fixed, always-valid address; only hub
+        // proxies substitute their own bound address.
+        assert_eq!(exit_frame(HELPER_EXIT_ADDRESS), "EXIT 1 1000 -\n");
     }
 
     #[test]
@@ -1845,7 +1858,7 @@ while IFS= read -r line; do
   case "$line" in
     *6669727374) : > "$KOHDALAB_TRKR_HUB_TEST_QUERY"; sleep 0.2; printf 'KIV\tOK\t6f6c64\n' ;;
     QUERY*) printf 'KIV\tOK\t6672657368\n' ;;
-    EXIT*) exit 0 ;;
+    EXIT*) printf '%s\n' "$line" >> "$KOHDALAB_TRKR_HUB_TEST_EXITS"; exit 0 ;;
   esac
 done
 "#
@@ -1868,6 +1881,7 @@ done
                     dir.path().join("query-seen"),
                 )
                 .env("KOHDALAB_TRKR_HUB_TEST_ARGS", dir.path().join("args"))
+                .env("KOHDALAB_TRKR_HUB_TEST_EXITS", dir.path().join("exits"))
                 .env(
                     "KOHDALAB_INSTRUMENT_HUB_CONFIG",
                     if case == "empty_config" {
@@ -1892,6 +1906,16 @@ done
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            if case == "healthy" {
+                // Three proxies were dropped (two in the loop, one at the
+                // end); each received EXIT for its own bound address only.
+                let exits = std::fs::read_to_string(dir.path().join("exits")).unwrap();
+                assert_eq!(
+                    exits.lines().collect::<Vec<_>>(),
+                    ["EXIT 12 1000 -"; 3],
+                    "{exits}"
+                );
+            }
         }
     }
 

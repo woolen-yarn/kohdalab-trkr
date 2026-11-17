@@ -2159,7 +2159,13 @@ impl Session {
         // positions, and run_id/point_index provenance. Only pre-schema
         // files without that column use the legacy signal-only reader below.
         if crate::replay_data::has_measurement_column(path)? {
-            let data = crate::replay_data::load(path)?;
+            // Parsing a large recording is polled for Stop (per row and before
+            // plan inference); a cancelled load ends as a clean Stop.
+            let Some(data) =
+                crate::replay_data::load_cancellable(path, &|| cancel.load(Ordering::Acquire))?
+            else {
+                return Ok(());
+            };
             for sample in data.samples {
                 if cancel.load(Ordering::Acquire)
                     || !self.emit_replay_sample(sample, interval, cancel, send)
@@ -2545,6 +2551,30 @@ mod recording_integration_tests {
         assert_eq!(session.state.rows, 6);
         assert_eq!(session.state.dropped_samples, 5);
         assert!(matches!(events.try_recv(), Ok(Event::Sample(_))));
+    }
+
+    #[test]
+    fn pre_cancelled_stdio_replay_stops_cleanly_before_emitting_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = strkr_recording(dir.path());
+        let mut session = Session::default();
+        let cancel = AtomicBool::new(true);
+        let (send, events) = mpsc::sync_channel(64);
+        session.replay(&output, 0.0, &cancel, &send).unwrap();
+        drop(send);
+        assert_eq!(session.state.rows, 0);
+        assert!(events.into_iter().next().is_none());
+        // The same parser still validates and returns the full dataset.
+        let polls = std::cell::Cell::new(0);
+        let data = crate::replay_data::load_cancellable(&output, &|| {
+            polls.set(polls.get() + 1);
+            false
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(data.samples.len(), 6);
+        // Before opening, once per row, and before plan inference.
+        assert_eq!(polls.get(), 1 + 6 + 1);
     }
 
     #[test]
