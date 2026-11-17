@@ -1294,10 +1294,17 @@ impl App {
             self.note("Choose a CSV file to replay");
             return;
         }
+        let interval = self.replay_interval_s;
+        if !crate::replay_data::valid_replay_interval(interval) {
+            self.note("Replay interval must be between 0 and 3600 s");
+            return;
+        }
         match std::env::current_exe().and_then(|exe| {
             std::process::Command::new(exe)
                 .arg("--demo")
                 .arg(path)
+                .arg("--interval")
+                .arg(interval.to_string())
                 .spawn()
         }) {
             Ok(_) => self.note("Opened CSV demo"),
@@ -1472,6 +1479,11 @@ impl App {
                             ));
                         }
                         Err(e) => self.notify(crate::ui_feedback::NoticeKind::Error, e),
+                    }
+                    // The terminal State precedes Finished, so this is the
+                    // job's final count. Recording is unaffected.
+                    if let Some(message) = dropped_samples_notice(self.snapshot.dropped_samples) {
+                        self.notify(crate::ui_feedback::NoticeKind::Info, message);
                     }
                 }
                 Event::Error(e) => {
@@ -4692,6 +4704,16 @@ fn lockin_health_text(settings: &Value) -> Option<&'static str> {
     }
 }
 
+/// Live display gaps are reported, never hidden; CSV rows are unaffected.
+fn dropped_samples_notice(dropped: usize) -> Option<String> {
+    (dropped > 0).then(|| {
+        format!(
+            "{dropped} live sample{} not shown (display queue full) · recording unaffected",
+            if dropped == 1 { " was" } else { "s were" }
+        )
+    })
+}
+
 fn step_progress(completed: usize, total: usize) -> String {
     if total == 0 {
         "-".into()
@@ -4924,3 +4946,20 @@ fn panel_toggle_button(right: bool, size: Vec2) -> impl egui::Widget {
 #[cfg(all(test, feature = "dev-diagnostics"))]
 #[path = "ui/dev_diagnostics_tests.rs"]
 mod dev_diagnostics_tests;
+
+#[cfg(test)]
+mod dropped_samples_notice_tests {
+    #[test]
+    fn dropped_samples_are_reported_only_when_present() {
+        assert_eq!(super::dropped_samples_notice(0), None);
+        assert_eq!(
+            super::dropped_samples_notice(1).unwrap(),
+            "1 live sample was not shown (display queue full) · recording unaffected"
+        );
+        assert!(
+            super::dropped_samples_notice(5)
+                .unwrap()
+                .starts_with("5 live samples were not shown")
+        );
+    }
+}

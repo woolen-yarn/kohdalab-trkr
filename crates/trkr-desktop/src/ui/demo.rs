@@ -7,6 +7,38 @@ use crate::{
 use std::sync::mpsc::{self, Receiver};
 
 type Loaded = Result<Vec<(PathBuf, Dataset)>, String>;
+
+/// One analysis CSV per measurement from a replay folder. A native
+/// recording's `*.raw.csv` sidecar is skipped: it belongs to its analysis CSV
+/// and would otherwise be reported as a second dataset for the same tab.
+fn discover_folder(dir: &std::path::Path) -> Loaded {
+    let mut paths = std::fs::read_dir(dir)
+        .map_err(|e| format!("Demo CSV folder: {e}"))?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")))
+        .filter(|p| !replay_data::is_raw_sidecar(p))
+        .collect::<Vec<_>>();
+    paths.sort();
+    let mut loaded = Vec::new();
+    for path in paths {
+        let data = replay_data::load(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        if data.plan.workflow == Workflow::SignalMonitor {
+            continue;
+        }
+        if loaded
+            .iter()
+            .any(|(_, d): &(PathBuf, Dataset)| d.plan.workflow == data.plan.workflow)
+        {
+            return Err(format!(
+                "Multiple {} CSVs in folder; choose one with Browse",
+                data.plan.workflow.name()
+            ));
+        }
+        loaded.push((path, data));
+    }
+    Ok(loaded)
+}
 #[derive(Default)]
 pub(super) struct Replay {
     pub paths: [PathBuf; 5],
@@ -21,6 +53,13 @@ pub(super) struct Replay {
     clock: Option<Instant>,
 }
 impl App {
+    /// Replay pacing requested by the main window's Replay CSV menu. Loaded
+    /// datasets keep this Wait (see `demo_tick`), so it reaches the player.
+    pub fn set_demo_interval(&mut self, interval_s: f64) {
+        for plan in &mut self.plans {
+            plan.interval_s = interval_s;
+        }
+    }
     pub fn open_demo(&mut self, path: Option<PathBuf>) {
         if let Some(path) = path {
             if path.is_dir() {
@@ -45,35 +84,7 @@ impl App {
         self.demo.expected = None;
         self.demo.discover = true;
         std::thread::spawn(move || {
-            let result = (|| {
-                let mut paths = std::fs::read_dir(&dir)
-                    .map_err(|e| format!("Demo CSV folder: {e}"))?
-                    .filter_map(Result::ok)
-                    .map(|e| e.path())
-                    .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("csv")))
-                    .collect::<Vec<_>>();
-                paths.sort();
-                let mut loaded = Vec::new();
-                for path in paths {
-                    let data =
-                        replay_data::load(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                    if data.plan.workflow == Workflow::SignalMonitor {
-                        continue;
-                    }
-                    if loaded
-                        .iter()
-                        .any(|(_, d): &(PathBuf, Dataset)| d.plan.workflow == data.plan.workflow)
-                    {
-                        return Err(format!(
-                            "Multiple {} CSVs in folder; choose one with Browse",
-                            data.plan.workflow.name()
-                        ));
-                    }
-                    loaded.push((path, data));
-                }
-                Ok(loaded)
-            })();
-            let _ = tx.send(result);
+            let _ = tx.send(discover_folder(&dir));
         });
     }
     pub(super) fn demo_select(&mut self, workflow: Workflow, path: PathBuf) {
@@ -529,5 +540,32 @@ impl App {
             return (1., "V");
         }
         presentation::voltage_scale_from_sensitivity(self.demo.magnitude[Self::ix(self.workflow)])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_replay_selects_analysis_csv_and_skips_raw_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("trkr_run.csv");
+        let plan = Plan {
+            workflow: Workflow::Trkr,
+            fast_range: trkr_core::Range {
+                min: 0.0,
+                max: 2.0,
+                step: 1.0,
+            },
+            ..Default::default()
+        };
+        assert_eq!(crate::engine::demo_csv(plan, &output).unwrap(), 3);
+        assert!(output.with_extension("raw.csv").is_file());
+        let loaded = discover_folder(dir.path()).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].0, output);
+        assert_eq!(loaded[0].1.plan.workflow, Workflow::Trkr);
+        assert_eq!(loaded[0].1.samples.len(), 3);
     }
 }

@@ -123,6 +123,11 @@ pub struct Snapshot {
     pub lockin: Value,
     pub rows: usize,
     pub total: usize,
+    /// Live `sample` events of the current job that a full event channel
+    /// could not accept. Display/event stream only: CSV rows and `rows` are
+    /// unaffected, and the non-blocking send never delays Stop.
+    #[serde(default)]
+    pub dropped_samples: usize,
     /// Resolved delay scale for the currently connected rig.  It is cleared
     /// whenever the motion configuration or connection changes.
     #[serde(default)]
@@ -865,6 +870,7 @@ fn controller_with_mode(read_only: bool) -> Controller {
                 session.state.phase = Phase::Preparing.into();
                 session.state.rows = 0;
                 session.state.total = 0;
+                session.state.dropped_samples = 0;
                 let _ = send.send(Event::State(Box::new(session.state.clone())));
             }
             let mut result = if remote_id.is_some() {
@@ -2107,7 +2113,7 @@ impl Session {
                         Source::Demo => ReadingOrigin::Demo,
                         _ => ReadingOrigin::Hardware,
                     });
-                    let _ = send.try_send(Event::Sample(sample));
+                    self.publish_sample(sample, send);
                     if let Some(error) = status_failure { self.failure_code = Some("device_error".into()); return Err(format!("Lock-in status: {error}")); }
                     // Between points only: parallel motion never runs here.
                     self.record_parallel_audits(csv.as_mut())?;
@@ -2145,8 +2151,29 @@ impl Session {
         cancel: &AtomicBool,
         send: &SyncSender<Event>,
     ) -> Result<(), String> {
-        if !interval.is_finite() || !(0.0..=3600.).contains(&interval) {
+        if !crate::replay_data::valid_replay_interval(interval) {
             return Err("Invalid replay interval".into());
+        }
+        // Documented recordings (with `measurement`) use the same parser as
+        // the GUI replay, preserving scan axes, line index, readback
+        // positions, and run_id/point_index provenance. Only pre-schema
+        // files without that column use the legacy signal-only reader below.
+        if crate::replay_data::has_measurement_column(path)? {
+            // Parsing a large recording is polled for Stop (per row and before
+            // plan inference); a cancelled load ends as a clean Stop.
+            let Some(data) =
+                crate::replay_data::load_cancellable(path, &|| cancel.load(Ordering::Acquire))?
+            else {
+                return Ok(());
+            };
+            for sample in data.samples {
+                if cancel.load(Ordering::Acquire)
+                    || !self.emit_replay_sample(sample, interval, cancel, send)
+                {
+                    break;
+                }
+            }
+            return Ok(());
         }
         let mut reader = csv::Reader::from_path(path).map_err(|e| e.to_string())?;
         let headers = reader.headers().map_err(|e| e.to_string())?.clone();
@@ -2223,11 +2250,7 @@ impl Session {
                 physical: [get("t_ps"), get("x_um"), get("y_um")],
                 ..Default::default()
             };
-            self.state.signal = Some(signal);
-            self.state.signal_origin = Some(ReadingOrigin::Replay);
-            self.state.position = position.clone();
-            self.state.rows += 1;
-            let _ = send.try_send(Event::Sample(Sample {
+            let sample = Sample {
                 recording: Box::new(SampleRecording {
                     power_w: get("sample_power_W").or_else(|| get("power_W")),
                     signal_unit: text("signal_unit")
@@ -2244,12 +2267,34 @@ impl Session {
                 target,
                 signal,
                 position,
-            }));
-            if !wait_until(Instant::now() + Duration::from_secs_f64(interval), cancel) {
+            };
+            if !self.emit_replay_sample(sample, interval, cancel, send) {
                 break;
             }
         }
         Ok(())
+    }
+    /// Publish one replayed row and wait the replay interval; false on Stop.
+    fn emit_replay_sample(
+        &mut self,
+        sample: Sample,
+        interval: f64,
+        cancel: &AtomicBool,
+        send: &SyncSender<Event>,
+    ) -> bool {
+        self.state.signal = Some(sample.signal);
+        self.state.signal_origin = Some(ReadingOrigin::Replay);
+        self.state.position = sample.position.clone();
+        self.state.rows += 1;
+        self.publish_sample(sample, send);
+        wait_until(Instant::now() + Duration::from_secs_f64(interval), cancel)
+    }
+    /// Never blocks (Stop must stay responsive); a rejected event is counted
+    /// in the snapshot instead of disappearing silently.
+    fn publish_sample(&mut self, sample: Sample, send: &SyncSender<Event>) {
+        if send.try_send(Event::Sample(sample)).is_err() {
+            self.state.dropped_samples = self.state.dropped_samples.saturating_add(1);
+        }
     }
 }
 fn filtered(config: &MotionConfig, mask: &[bool; 4]) -> MotionConfig {
@@ -2430,6 +2475,135 @@ mod recording_integration_tests {
         );
         assert_eq!(events[3]["event"], "finished");
         assert_eq!(events[3]["status"], "complete");
+    }
+
+    fn strkr_recording(dir: &Path) -> PathBuf {
+        let output = dir.join("strkr.csv");
+        let plan = Plan {
+            workflow: Workflow::Strkr,
+            fast: Axis::T,
+            slow: Axis::X,
+            fast_range: trkr_core::Range {
+                min: 0.0,
+                max: 2.0,
+                step: 1.0,
+            },
+            slow_range: trkr_core::Range {
+                min: 0.0,
+                max: 1.0,
+                step: 1.0,
+            },
+            ..Default::default()
+        };
+        assert_eq!(demo_csv(plan, &output).unwrap(), 6);
+        assert!(output.with_extension("raw.csv").is_file());
+        output
+    }
+
+    fn stdio_replay(path: &Path) -> Vec<Sample> {
+        let mut session = Session::default();
+        let cancel = AtomicBool::new(false);
+        let (send, events) = mpsc::sync_channel(64);
+        session.replay(path, 0.0, &cancel, &send).unwrap();
+        drop(send);
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                Event::Sample(sample) => Some(sample),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stdio_replay_shares_gui_parser_axes_lines_and_provenance() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = strkr_recording(dir.path());
+        let gui = crate::replay_data::load(&output).unwrap();
+        let stdio = stdio_replay(&output);
+        assert_eq!(stdio.len(), gui.samples.len());
+        assert_eq!(
+            stdio.iter().map(|s| s.target.line).collect::<Vec<_>>(),
+            [0, 0, 0, 1, 1, 1]
+        );
+        for (a, b) in stdio.iter().zip(&gui.samples) {
+            assert_eq!(a.target.fast, b.target.fast);
+            assert_eq!(a.target.slow, b.target.slow);
+            assert_eq!(a.target.line, b.target.line);
+            assert_eq!(a.target.corrected, b.target.corrected);
+            assert_eq!(a.recording.run_id, b.recording.run_id);
+            assert_eq!(a.recording.point_index, b.recording.point_index);
+            assert_eq!(a.position.physical, b.position.physical);
+        }
+        assert!(!stdio[0].recording.run_id.is_empty());
+        assert_eq!(stdio[5].recording.point_index, 6);
+    }
+
+    #[test]
+    fn full_event_queue_counts_dropped_samples_without_blocking() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = strkr_recording(dir.path());
+        let mut session = Session::default();
+        let cancel = AtomicBool::new(false);
+        // Capacity 1 and nobody reading: a blocking send would hang here.
+        let (send, events) = mpsc::sync_channel(1);
+        session.replay(&output, 0.0, &cancel, &send).unwrap();
+        assert_eq!(session.state.rows, 6);
+        assert_eq!(session.state.dropped_samples, 5);
+        assert!(matches!(events.try_recv(), Ok(Event::Sample(_))));
+    }
+
+    #[test]
+    fn pre_cancelled_stdio_replay_stops_cleanly_before_emitting_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = strkr_recording(dir.path());
+        let mut session = Session::default();
+        let cancel = AtomicBool::new(true);
+        let (send, events) = mpsc::sync_channel(64);
+        session.replay(&output, 0.0, &cancel, &send).unwrap();
+        drop(send);
+        assert_eq!(session.state.rows, 0);
+        assert!(events.into_iter().next().is_none());
+        // The same parser still validates and returns the full dataset.
+        let polls = std::cell::Cell::new(0);
+        let data = crate::replay_data::load_cancellable(&output, &|| {
+            polls.set(polls.get() + 1);
+            false
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(data.samples.len(), 6);
+        // Before opening, once per row, and before plan inference.
+        assert_eq!(polls.get(), 1 + 6 + 1);
+    }
+
+    #[test]
+    fn stdio_replay_keeps_legacy_signal_only_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.csv");
+        std::fs::write(
+            &path,
+            "X_V,Y_V,R_V,Theta_deg,t_ps\n0.1,0,0.1,0,5\n0.2,0,0.2,0,6\n",
+        )
+        .unwrap();
+        assert!(!crate::replay_data::has_measurement_column(&path).unwrap());
+        let samples = stdio_replay(&path);
+        assert_eq!(samples.len(), 2);
+        assert_eq!(samples[1].signal.x_v, 0.2);
+        assert_eq!(samples[1].position.physical[0], Some(6.));
+        assert_eq!(samples[1].recording.signal_unit, "V");
+    }
+
+    #[test]
+    fn raw_sidecar_is_not_a_replay_dataset() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = strkr_recording(dir.path());
+        assert!(crate::replay_data::is_raw_sidecar(
+            &output.with_extension("raw.csv")
+        ));
+        assert!(crate::replay_data::is_raw_sidecar(Path::new("A.RAW.CSV")));
+        assert!(!crate::replay_data::is_raw_sidecar(&output));
+        assert!(!crate::replay_data::is_raw_sidecar(Path::new("raw.csv")));
     }
 }
 

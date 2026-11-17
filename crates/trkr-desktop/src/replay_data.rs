@@ -17,7 +17,57 @@ pub struct Dataset {
     pub samples: Vec<Sample>,
 }
 
+/// Replay pacing accepted by both the stdio `replay` command and the demo
+/// viewer's `--interval` option.
+pub fn valid_replay_interval(interval_s: f64) -> bool {
+    interval_s.is_finite() && (0.0..=3600.).contains(&interval_s)
+}
+
+/// Parse the demo viewer's `--interval SECONDS` value.
+pub fn parse_replay_interval(value: &str) -> Result<f64, String> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|interval| valid_replay_interval(*interval))
+        .ok_or_else(|| "Replay interval must be a number of seconds between 0 and 3600".into())
+}
+
+/// True when the CSV header uses the documented replay schema. Files without
+/// `measurement` predate it and are only readable by the legacy stdio reader.
+pub fn has_measurement_column(path: &Path) -> Result<bool, String> {
+    let file = File::open(path).map_err(|e| format!("Open {}: {e}", path.display()))?;
+    let mut reader = csv::ReaderBuilder::new().flexible(true).from_reader(file);
+    Ok(reader
+        .headers()
+        .map_err(|e| format!("Read CSV header: {e}"))?
+        .iter()
+        .any(|name| name.trim_start_matches('\u{feff}').trim() == "measurement"))
+}
+
+/// A native recording's raw-sample sidecar (`<run>.raw.csv`). It is evidence
+/// for its analysis CSV, never a separate replay dataset.
+pub fn is_raw_sidecar(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.to_ascii_lowercase().ends_with(".raw.csv"))
+}
+
 pub fn load(path: &Path) -> Result<Dataset, String> {
+    load_cancellable(path, &|| false)
+        .map(|data| data.expect("uncancellable replay load cannot stop"))
+}
+
+/// Same parser and validation as [`load`], polled for Stop before every row
+/// and before plan inference. `Ok(None)` means a clean cancellation; no
+/// partially validated dataset is ever returned.
+pub fn load_cancellable(
+    path: &Path,
+    cancelled: &dyn Fn() -> bool,
+) -> Result<Option<Dataset>, String> {
+    if cancelled() {
+        return Ok(None);
+    }
     let file = File::open(path).map_err(|e| format!("Open {}: {e}", path.display()))?;
     let mut reader = csv::ReaderBuilder::new().flexible(false).from_reader(file);
     let headers = reader
@@ -40,6 +90,9 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
 
     let mut rows = Vec::new();
     for (index, record) in reader.records().enumerate() {
+        if cancelled() {
+            return Ok(None);
+        }
         let row = index + 2;
         if rows.len() == MAX_FILE_ROWS {
             return Err(format!("CSV has more than {MAX_FILE_ROWS} rows"));
@@ -52,6 +105,9 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
     }
     if rows.is_empty() {
         return Err("CSV has no measurement rows".into());
+    }
+    if cancelled() {
+        return Ok(None);
     }
 
     let workflow = rows[0].workflow;
@@ -120,7 +176,7 @@ pub fn load(path: &Path) -> Result<Dataset, String> {
             row.into_sample(&plan, line)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(Dataset { plan, samples })
+    Ok(Some(Dataset { plan, samples }))
 }
 
 #[derive(Clone)]
@@ -227,7 +283,20 @@ fn parse_row(
     let r = number_alias("R", "R_V")?;
     let theta = number("Theta_deg")?;
     let flags = get("quality_flags").unwrap_or_default();
-    let signal = if flags.split('|').any(|f| f == "signal_xy_only") {
+    let signal = if flags.split('|').any(|f| f == "voltage_unavailable") {
+        // Non-voltage (A/unknown) reading: the recorder blanks the voltage
+        // columns and keeps the real reading/unit in raw.csv. Replay the point
+        // with the components marked unacquired (NaN → null), never as 0 V.
+        if r.is_some_and(|r| r < 0.) {
+            return Err(format!("Row {row_number}: R_V must be non-negative"));
+        }
+        Signal {
+            x_v: x.unwrap_or(f64::NAN),
+            y_v: y.unwrap_or(f64::NAN),
+            r_v: r.unwrap_or(f64::NAN),
+            theta_deg: theta.unwrap_or(f64::NAN),
+        }
+    } else if flags.split('|').any(|f| f == "signal_xy_only") {
         Signal::from_pair(
             trkr_core::DisplayMode::Xy,
             x.ok_or("Missing measured X")?,
@@ -757,6 +826,16 @@ mod tests {
         assert_eq!(data.plan.fast_range.step, 3.);
     }
     #[test]
+    fn replay_interval_option_matches_stdio_bounds() {
+        assert_eq!(parse_replay_interval("0.25"), Ok(0.25));
+        assert_eq!(parse_replay_interval("0"), Ok(0.));
+        assert_eq!(parse_replay_interval("3600"), Ok(3600.));
+        for invalid in ["-0.1", "3600.5", "NaN", "inf", "", "fast"] {
+            assert!(parse_replay_interval(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
     fn rejects_bad_csv() {
         let mut r = row("trkr", "t", "");
         r[16] = "not-a-number".into();
@@ -837,5 +916,55 @@ mod tests {
                 assert!(signal.x_v.is_nan() && signal.y_v.is_nan());
             }
         }
+    }
+
+    #[test]
+    fn cancellable_load_stops_between_rows_and_before_plan_inference() {
+        let file = csv("measurement,target_elapsed_s,elapsed_s,X,Y,R,Theta_deg\n\
+             signal_monitor,0,0,1,0,1,0\n\
+             signal_monitor,1,1,1,0,1,0\n");
+        // Polls: open, row 1, row 2, plan inference. Stop at each in turn.
+        for stop_at in 1..=4 {
+            let polls = std::cell::Cell::new(0);
+            let result = load_cancellable(file.path(), &|| {
+                polls.set(polls.get() + 1);
+                polls.get() >= stop_at
+            });
+            assert!(matches!(result, Ok(None)), "stop at poll {stop_at}");
+            assert_eq!(polls.get(), stop_at);
+        }
+        assert_eq!(load(file.path()).unwrap().samples.len(), 2);
+    }
+
+    #[test]
+    fn non_voltage_rows_replay_as_unacquired_never_zero_volts() {
+        // Shape written by recording::analysis_row for A/unknown readings:
+        // X/Y/R blank, unit and flags retained, other rows unaffected.
+        let file = csv(
+            "measurement,target_elapsed_s,elapsed_s,run_id,point_index,signal_unit,X,Y,R,Theta_deg,quality_flags\n\
+             signal_monitor,0,0,run-a,1,A,,,,12.5,ok|voltage_unavailable\n\
+             signal_monitor,1,1,run-a,2,unknown,,,,,signal_xy_only|voltage_unavailable\n\
+             signal_monitor,2,2,run-a,3,V,1e-6,2e-6,2.2360679e-6,63.4349,ok\n",
+        );
+        let data = load(file.path()).unwrap();
+        assert_eq!(data.samples.len(), 3);
+        let [current, unknown, volts] = [0, 1, 2].map(|i| &data.samples[i]);
+        for sample in [current, unknown] {
+            let s = sample.signal;
+            assert!(s.x_v.is_nan() && s.y_v.is_nan() && s.r_v.is_nan());
+            assert_eq!(s.acquired_pair(), None);
+            assert_ne!(s.x_v, 0.);
+        }
+        assert_eq!(current.signal.theta_deg, 12.5);
+        assert!(unknown.signal.theta_deg.is_nan());
+        assert_eq!(current.recording.signal_unit, "A");
+        assert_eq!(unknown.recording.signal_unit, "unknown");
+        assert_eq!(current.recording.quality_flags, "ok|voltage_unavailable");
+        assert_eq!(current.recording.run_id, "run-a");
+        assert_eq!(unknown.recording.point_index, 2);
+        assert_eq!(volts.signal.x_v, 1e-6);
+        // Serialized for stdio/remote consumers as null, not 0.
+        let json = serde_json::to_value(current.signal).unwrap();
+        assert!(json["x_v"].is_null() && json["r_v"].is_null());
     }
 }

@@ -93,7 +93,7 @@ Signal Monitor、TRKR、SRKR、STRKR、SRKR 2Dは、`prepared["plans"]` の `sig
 
 CSVを保存する場合は `run(..., output="new_run.csv")` と指定します。同名ファイルは上書きしません。実機で使う際は、Notebookの表示した設定と計画を確認した上で `HARDWARE` を明示的に変更します。原点復帰は自動で行いません。
 
-`run()` は同期処理です。並列の測定ジョブは同じクライアント内で直列化します。生の移動命令は `move(...)` の後に `wait_for_finished()` で完了を待ちます。
+`run()` は同期処理です。並列の測定ジョブは同じクライアント内で直列化します。移動は通常 `move_and_wait(..., timeout=300.0)` を使います。この移動自身の終了状態まで待ち、失敗（STOP失敗を含む）は `RuntimeError`、`stop()` による中断は `NativeStopped`、時間切れはStop要求後に `NativeTimeoutError` を送出します。送信だけの `move(...)` は従来どおりで、その後の `wait_for_finished(timeout=...)` も同じ終了状態で戻ります。プロトコルに要求IDはないため、ジョブは呼び出し側で直列化してください。
 
 ## Alignment from Python / PythonからのAlignment
 
@@ -314,7 +314,7 @@ Select `signal_monitor`, `trkr`, `srkr`, `strkr`, or `srkr_2d` in `prepared["pla
 
 To save CSV, specify `run(..., output="new_run.csv")`. Existing files are not overwritten. Before hardware use, review the displayed profile and plan, then explicitly change `HARDWARE`. Homing is not automatic.
 
-`run()` is synchronous, and concurrent acquisition jobs within one client are serialized. After a raw `move(...)` command, use `wait_for_finished()` to wait for completion.
+`run()` is synchronous, and concurrent acquisition jobs within one client are serialized. For positioning, the normal path is `move_and_wait(..., timeout=300.0)`: it waits for that move's own terminal state and raises `RuntimeError` on failure (including STOP failures), `NativeStopped` when `stop()` cancelled it, and `NativeTimeoutError` after requesting Stop on timeout. The send-only `move(...)` is unchanged; a following `wait_for_finished(timeout=...)` returns on the same terminal state. The protocol has no request IDs, so serialize jobs in the caller.
 
 ## 0.4 CSV migration / CSV移行
 

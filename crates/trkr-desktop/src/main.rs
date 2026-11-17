@@ -81,8 +81,13 @@ fn main() -> eframe::Result {
         [option, path] if option == "--config" => run_gui_profile(path, false),
         [flag] if flag == "--gpib-resources" => trkr_transport::available_gpib_resources()
             .map(|resources| println!("{}", serde_json::json!({"resources":resources}))),
-        [flag] if flag == "--demo" => run_demo(None, None),
-        [flag, path] if flag == "--demo" => run_demo(Some(path.into()), None),
+        [flag] if flag == "--demo" => run_demo(None, None, None),
+        [flag, path] if flag == "--demo" => run_demo(Some(path.into()), None, None),
+        // Replay CSV menu: carries its Interval (s) into the viewer's Wait.
+        [flag, path, option, interval] if flag == "--demo" && option == "--interval" => {
+            replay_data::parse_replay_interval(interval)
+                .and_then(|interval| run_demo(Some(path.into()), None, Some(interval)))
+        }
         [flag, dir] if flag == "--gui-smoke" => gui_smoke(dir.into()),
         [flag, dir, width, height] if flag == "--gui-layout-smoke" => {
             layout_capture(dir.into(), width, height, "")
@@ -97,7 +102,7 @@ fn main() -> eframe::Result {
             } else {
                 std::fs::create_dir_all(&output)
                     .map_err(|e| e.to_string())
-                    .and_then(|_| run_demo(Some(data.into()), Some(output)))
+                    .and_then(|_| run_demo(Some(data.into()), Some(output), None))
             }
         }
         [flag, path] if flag == "--profile-json" => profile_json(std::path::Path::new(path)),
@@ -405,6 +410,7 @@ fn cli(args: &[String]) -> Result<(), String> {
 fn run_demo(
     path: Option<std::path::PathBuf>,
     smoke: Option<std::path::PathBuf>,
+    interval_s: Option<f64>,
 ) -> Result<(), String> {
     eframe::run_native(
         "KohdaLab TRKR — DEMO MODE — NO HARDWARE",
@@ -417,6 +423,9 @@ fn run_demo(
         },
         Box::new(move |cc| {
             let mut app = ui::App::new(cc, true);
+            if let Some(interval_s) = interval_s {
+                app.set_demo_interval(interval_s);
+            }
             app.open_demo(path);
             if let Some(output) = smoke {
                 app.enable_demo_smoke(output);

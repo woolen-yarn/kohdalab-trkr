@@ -126,6 +126,10 @@ struct Session {
     _lease: Option<Arc<File>>,
     poisoned: bool,
     cancelled_reply_deadline: Option<Instant>,
+    /// Address written in the EXIT frame on drop. Direct helpers use
+    /// [`HELPER_EXIT_ADDRESS`]; an instrument-hub proxy is bound to one
+    /// address and receives exactly that address.
+    exit_address: u8,
 }
 
 #[derive(Default)]
@@ -242,7 +246,10 @@ impl Gpib {
             "--address".to_owned(),
             address.to_string(),
         ];
-        Self::spawn_process(&hub, address, &args, "instrument hub", None)
+        let gpib = Self::spawn_process(&hub, address, &args, "instrument hub", None)?;
+        // The proxy is bound to `--address`; never send it another address.
+        gpib.session()?.exit_address = address;
+        Ok(gpib)
     }
 
     fn spawn_process(
@@ -533,6 +540,7 @@ impl Session {
             _lease: lease,
             poisoned: false,
             cancelled_reply_deadline: None,
+            exit_address: HELPER_EXIT_ADDRESS,
         };
         let startup = session.receive(STARTUP_TIMEOUT)?;
         let (status, payload) = parse_frame(&startup)?;
@@ -716,6 +724,18 @@ impl Session {
     }
 }
 
+/// Valid for every helper revision: the native 82357B/NI helper requires
+/// address 1–30 on every request (address 0 was rejected as "Invalid GPIB
+/// request", so it never exited cleanly), and the VISA helper accepts 0–30.
+/// Direct helpers ignore the EXIT address. Hub proxies use their own bound
+/// address instead (see `Gpib::spawn_hub_proxy`).
+const HELPER_EXIT_ADDRESS: u8 = 1;
+const HELPER_EXIT_GRACE: Duration = Duration::from_secs(2);
+
+fn exit_frame(address: u8) -> String {
+    format!("EXIT {address} 1000 -\n")
+}
+
 impl Drop for Session {
     fn drop(&mut self) {
         if self.poisoned {
@@ -723,9 +743,15 @@ impl Drop for Session {
             let _ = self.child.wait();
             return;
         }
-        let _ = self.input.write_all(b"EXIT 0 1000 -\n");
+        let _ = self
+            .input
+            .write_all(exit_frame(self.exit_address).as_bytes());
         let _ = self.input.flush();
-        for _ in 0..20 {
+        // EXIT performs REN off and closes the adapter; give that bounded
+        // time before falling back to kill. A pending cancelled reply only
+        // delays EXIT within the same bound.
+        let deadline = Instant::now() + HELPER_EXIT_GRACE;
+        while Instant::now() < deadline {
             if self.child.try_wait().ok().flatten().is_some() {
                 return;
             }
@@ -1369,6 +1395,37 @@ mod tests {
     }
 
     #[test]
+    fn drop_sends_exit_frame_accepted_by_strict_native_helper() {
+        // Mirrors kohdalab_gpib_helper.cpp request validation: every request,
+        // including EXIT, needs address 1-30 and timeout 1-3600000.
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("strict-native.sh");
+        let exited = dir.path().join("clean-exit.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile read -r operation address timeout payload; do\n case \"$address\" in ''|*[!0-9]*) printf 'KIV\\tERR\\t-\\n'; continue ;; esac\n if [ \"$address\" -lt 1 ] || [ \"$address\" -gt 30 ] || [ \"$timeout\" -lt 1 ]; then printf 'KIV\\tERR\\t-\\n'; continue; fi\n if [ \"$operation\" = EXIT ]; then : > '{}'; printf 'KIV\\tOK\\t-\\n'; exit 0; fi\n printf 'KIV\\tOK\\t6f6b\\n'\ndone\n",
+                exited.display(),
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        assert_eq!(gpib.query("A?").unwrap(), "ok");
+        drop(gpib);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !exited.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "helper was killed instead of exiting via EXIT"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        // Direct helpers keep the fixed, always-valid address; only hub
+        // proxies substitute their own bound address.
+        assert_eq!(exit_frame(HELPER_EXIT_ADDRESS), "EXIT 1 1000 -\n");
+    }
+
+    #[test]
     fn native_pool_shares_one_helper_across_addresses_and_releases_on_last_drop() {
         let _guard = TEST_LEASE.lock().unwrap();
         let dir = tempfile::tempdir().unwrap();
@@ -1801,7 +1858,7 @@ while IFS= read -r line; do
   case "$line" in
     *6669727374) : > "$KOHDALAB_TRKR_HUB_TEST_QUERY"; sleep 0.2; printf 'KIV\tOK\t6f6c64\n' ;;
     QUERY*) printf 'KIV\tOK\t6672657368\n' ;;
-    EXIT*) exit 0 ;;
+    EXIT*) printf '%s\n' "$line" >> "$KOHDALAB_TRKR_HUB_TEST_EXITS"; exit 0 ;;
   esac
 done
 "#
@@ -1824,6 +1881,7 @@ done
                     dir.path().join("query-seen"),
                 )
                 .env("KOHDALAB_TRKR_HUB_TEST_ARGS", dir.path().join("args"))
+                .env("KOHDALAB_TRKR_HUB_TEST_EXITS", dir.path().join("exits"))
                 .env(
                     "KOHDALAB_INSTRUMENT_HUB_CONFIG",
                     if case == "empty_config" {
@@ -1848,6 +1906,16 @@ done
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
+            if case == "healthy" {
+                // Three proxies were dropped (two in the loop, one at the
+                // end); each received EXIT for its own bound address only.
+                let exits = std::fs::read_to_string(dir.path().join("exits")).unwrap();
+                assert_eq!(
+                    exits.lines().collect::<Vec<_>>(),
+                    ["EXIT 12 1000 -"; 3],
+                    "{exits}"
+                );
+            }
         }
     }
 
