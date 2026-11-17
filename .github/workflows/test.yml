@@ -61,7 +61,18 @@ jobs:
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --locked -- -D warnings
       - name: Test Rust workspace
+        if: runner.os != 'macOS'
         run: cargo test --manifest-path Cargo.toml --workspace --locked
+      - name: Test Rust workspace without concurrent timing assertion on macOS
+        if: runner.os == 'macOS'
+        run: >-
+          cargo test --manifest-path Cargo.toml --workspace --locked --
+          --skip engine::tests::monitor_hands_off_every_connected_axis_and_records_no_position
+      - name: Test isolated Signal Monitor timing on macOS
+        if: runner.os == 'macOS'
+        run: >-
+          cargo test --manifest-path Cargo.toml --locked --bin kohdalab-trkr
+          engine::tests::monitor_hands_off_every_connected_axis_and_records_no_position -- --exact
       - name: Test actual GUI interactions without hardware
         run: cargo test --manifest-path Cargo.toml --locked --features gui-interaction-tests --bin kohdalab-trkr ui::gui_interaction_tests::tests
       - name: Test optional development diagnostics without hardware
