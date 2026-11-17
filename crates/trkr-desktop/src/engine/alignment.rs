@@ -3,6 +3,10 @@ use super::*;
 use std::sync::Mutex;
 
 pub const HOLD_LEASE: Duration = Duration::from_millis(300);
+/// Same exact string the motion layer reports for a clean cancellation, so the
+/// worker's `expected_stop_error` turns a Jog release / Stop into `Stopped`
+/// instead of an error notification.
+const ALIGNMENT_CANCELLED: &str = "motion cancelled";
 #[derive(Clone, Default)]
 pub struct HoldLease(Arc<Mutex<Option<Instant>>>);
 impl HoldLease {
@@ -281,8 +285,13 @@ impl Session {
             loop {
                 if cancel.load(Ordering::Acquire) || (jog && !hold.alive()) {
                     cancel.store(true, Ordering::Release);
-                    entry.rig.stop()?;
-                    return Err("Cancelled".into());
+                    // A normal Jog release / Stop is a clean cancellation only
+                    // after STOP succeeded; a STOP failure stays a real error.
+                    entry
+                        .rig
+                        .stop()
+                        .map_err(|stop| format!("Cancelled; STOP failed: {stop}"))?;
+                    return Err(ALIGNMENT_CANCELLED.into());
                 }
                 entry.state.phase = if matches!(action, AlignmentAction::Initialize { .. }) {
                     "Initializing"
@@ -394,8 +403,12 @@ impl Session {
             self.project_alignment_readback(kind, &id, position);
         }
         // A cancellation is only clean after STOP completed.  Do not present
-        // a failed STOP as a harmless ready-state cancellation.
-        entry.state.phase = if matches!(&result, Err(error) if error == "Cancelled") {
+        // a failed STOP as a harmless ready-state cancellation. The exact
+        // cancellation strings are produced only when STOP succeeded or no
+        // motion was started; "...; stop failed: ..." never matches.
+        let clean_cancel = cancel.load(Ordering::Acquire)
+            && matches!(&result, Err(error) if expected_stop_error(error));
+        entry.state.phase = if clean_cancel {
             "Ready"
         } else if result.is_err() {
             "Error"
@@ -642,6 +655,70 @@ mod tests {
             *log.lock().unwrap(),
             vec!["1TPU", "1TPU", "1STU", "1TS", "1TPU"]
         );
+        assert!(error.starts_with("Cancelled; STOP failed: "));
+        assert!(!expected_stop_error(&error));
+    }
+
+    #[test]
+    fn jog_release_and_stop_are_clean_cancellations_with_ready_card() {
+        for (action, cancelled) in [
+            // Jog whose hold lease was never renewed (button released).
+            (
+                AlignmentAction::Jog {
+                    axis: 1,
+                    amount: 1.,
+                    unit: AlignmentUnit::Native,
+                },
+                false,
+            ),
+            // Step stopped by the operator before any travel.
+            (
+                AlignmentAction::Step {
+                    axis: 1,
+                    amount: 1.,
+                    unit: AlignmentUnit::Native,
+                },
+                true,
+            ),
+        ] {
+            let log = Arc::new(Mutex::new(Vec::new()));
+            let motion = alignment_motion();
+            let rig = MotionRig::open_with_bus_factory(&motion, {
+                let log = log.clone();
+                move |_, _, _, _, _, _| {
+                    Ok(Box::new(AlignmentBus {
+                        log: log.clone(),
+                        position_reads: 0,
+                        fail_position_read: 0,
+                        fail_stop: false,
+                        position: 1.,
+                    }))
+                }
+            })
+            .unwrap();
+            let mut session = alignment_session(rig, motion);
+            let cancel = AtomicBool::new(cancelled);
+            let (send, _) = std::sync::mpsc::sync_channel(16);
+            let error = session
+                .alignment(
+                    MotionKind::Scanner,
+                    "alignment-scanner".into(),
+                    action,
+                    &cancel,
+                    &send,
+                )
+                .unwrap_err();
+            // The worker maps exactly this to Ok/Stopped, no error notice.
+            assert!(expected_stop_error(&error), "{error}");
+            assert!(cancel.load(Ordering::Acquire));
+            assert!(log.lock().unwrap().iter().any(|command| command == "1STU"));
+            let entry = session
+                .connections
+                .motions
+                .get(&(MotionKind::Scanner, "alignment-scanner".into()))
+                .unwrap();
+            assert_eq!(entry.state.phase, "Ready");
+        }
     }
     fn move_to_session(log: &Arc<Mutex<Vec<String>>>) -> Session {
         // Nontrivial U-axis projection: reversed, scaled and offset.

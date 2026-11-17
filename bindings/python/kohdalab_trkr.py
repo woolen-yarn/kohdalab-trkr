@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 import uuid
+import warnings
 import weakref
 from pathlib import Path
 from typing import Any, Iterator
@@ -98,6 +99,10 @@ class GuiClient:
 
     _RUN_STATES = {"running", "completed", "stopped", "error"}
     _MAX_RESPONSE_BYTES = 1_048_576
+    # GUI-side lease (remote.rs LEASE). Transient transport failures are
+    # retried only while the last confirmed renewal is still inside it.
+    _LEASE_S = 6.0
+    _RETRY_INTERVAL_S = 0.25
 
     def __init__(
         self,
@@ -126,6 +131,8 @@ class GuiClient:
         self._owns = False
         self._acquire_attempted = False
         self._ownership_lost = False
+        # Monotonic time at which the last confirmed renewal request was sent.
+        self._lease_renewed_at: float | None = None
         self._heartbeat_stop = threading.Event()
         self._heartbeat_thread: threading.Thread | None = None
         self._heartbeat_finalizer = weakref.finalize(
@@ -278,19 +285,25 @@ class GuiClient:
         stop_event = self._heartbeat_stop
 
         def keep_alive() -> None:
-            while not stop_event.wait(1.0):
+            interval = 1.0
+            while not stop_event.wait(interval):
                 client = client_ref()
                 if client is None:
                     return
                 try:
-                    result = client._control(client._request("heartbeat"))
-                    if not result["owned"]:
-                        client._ownership_lost = True
-                        client._owns = False
+                    if stop_event.is_set():
                         return
+                    if not client._renew_lease()["owned"]:
+                        return
+                    interval = 1.0
+                except GuiTransportError:
+                    # Transient (timeout, refused, malformed reply): retry
+                    # sooner while the lease is still valid; once it expired
+                    # _renew_lease has marked ownership lost.
+                    if client._ownership_lost:
+                        return
+                    interval = client._RETRY_INTERVAL_S
                 except RuntimeError:
-                    client._ownership_lost = True
-                    client._owns = False
                     return
                 finally:
                     del client
@@ -299,6 +312,39 @@ class GuiClient:
             target=keep_alive, name="trkr-gui-heartbeat", daemon=True
         )
         self._heartbeat_thread.start()
+
+    def _lease_valid(self) -> bool:
+        renewed = getattr(self, "_lease_renewed_at", None)
+        return renewed is not None and time.monotonic() - renewed < self._LEASE_S
+
+    def _mark_ownership_lost(self) -> None:
+        self._ownership_lost = True
+        self._owns = False
+
+    def _renew_lease(self) -> dict[str, Any]:
+        """Send one heartbeat; classify confirmed loss vs a transient failure.
+
+        Raises ``GuiTransportError`` (ownership kept) only while the last
+        confirmed lease is still valid.  A GUI rejection, ``owned: false``, or a
+        transport failure past the lease marks ownership lost.
+        """
+        sent_at = time.monotonic()
+        try:
+            result = self._control(self._request("heartbeat"))
+        except GuiTransportError:
+            if self._lease_valid() and not self._ownership_lost:
+                raise
+            self._mark_ownership_lost()
+            raise
+        except RuntimeError:
+            self._mark_ownership_lost()
+            raise
+        self._owns = result["owned"]
+        if not self._owns:
+            self._ownership_lost = True
+        else:
+            self._lease_renewed_at = sent_at
+        return result
 
     def _stop_heartbeat(self) -> None:
         self._heartbeat_stop.set()
@@ -314,9 +360,12 @@ class GuiClient:
         if self._ownership_lost:
             raise GuiOwnershipError("GUI control was revoked; create a new GuiClient to retry", "ownership_lost")
         payload = {} if label is None else {"label": label}
+        sent_at = time.monotonic()
         result = self._control(self._request("acquire", **payload, **self._stop_policy))
         self._acquire_attempted = True
         self._owns = result["owned"]
+        if self._owns:
+            self._lease_renewed_at = sent_at
         if self._owns and any(self._stop_policy.values()) and result.get("stop_policy") != self._stop_policy:
             try:
                 self.release()
@@ -327,17 +376,13 @@ class GuiClient:
         return result
 
     def heartbeat(self) -> dict[str, Any]:
-        """Refresh a lease immediately; normal use refreshes it every second."""
-        try:
-            result = self._control(self._request("heartbeat"))
-        except RuntimeError:
-            self._ownership_lost = True
-            self._owns = False
-            raise
-        self._owns = result["owned"]
-        if not self._owns:
-            self._ownership_lost = True
-        return result
+        """Refresh a lease immediately; normal use refreshes it every second.
+
+        A transport failure while the last confirmed lease is still valid
+        raises ``GuiTransportError`` but keeps ownership; a GUI rejection,
+        ``owned: false``, or a failure after the lease expired loses it.
+        """
+        return self._renew_lease()
 
     def release(self, *, _reason: str = "disconnect") -> dict[str, Any] | None:
         """Release control; apply the explicitly selected stop conditions."""
@@ -633,12 +678,34 @@ class GuiClient:
         if not math.isfinite(poll_interval) or poll_interval <= 0:
             raise ValueError("poll_interval must be positive and finite")
 
+    def _poll_result(self, run_id: str, deadline: float | None) -> dict[str, Any]:
+        """Read one receipt, retrying transient transport failures.
+
+        Retries stop once ownership is confirmed lost, the lease (or, without
+        ownership, one lease period since this poll began) has expired, or the
+        caller's deadline passed; the last transport error is then raised.
+        Only a receipt actually returned by the GUI is ever reported.
+        """
+        began = time.monotonic()
+        while True:
+            try:
+                return self.result(run_id)
+            except GuiTransportError:
+                now = time.monotonic()
+                if self._owns:
+                    retry = self._lease_valid() and not self._ownership_lost
+                else:
+                    retry = now - began < self._LEASE_S
+                if not retry or (deadline is not None and now >= deadline):
+                    raise
+                time.sleep(self._RETRY_INTERVAL_S)
+
     def _wait(self, run_id: str, *, timeout: float | None, poll_interval: float,
               accept_stopped: bool, stop_on_timeout: bool) -> dict[str, Any]:
         self._validate_wait(timeout, poll_interval)
         deadline = None if timeout is None else time.monotonic() + timeout
         while True:
-            record = self.result(run_id)
+            record = self._poll_result(run_id, deadline)
             if record["status"] == "completed" or (accept_stopped and record["status"] == "stopped"):
                 return record
             if record["status"] == "stopped":
@@ -675,7 +742,7 @@ class GuiClient:
         A timeout is not proof of stopped hardware. Errors preserve their code.
         """
         self._validate_wait(timeout, poll_interval)
-        record = self.result(run_id)
+        record = self._poll_result(run_id, None if timeout is None else time.monotonic() + timeout)
         if record["status"] == "running":
             self.stop(run_id)
         return self._wait(run_id, timeout=timeout, poll_interval=poll_interval,
@@ -890,6 +957,30 @@ def _process_options() -> dict[str, Any]:
     return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
+class NativeStopped(RuntimeError):
+    """A native positioning job ended in the ``Stopped`` phase (Stop/cancel)."""
+
+    def __init__(self, message: str, events: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.events = events
+
+
+class NativeTimeoutError(RuntimeError, TimeoutError):
+    """No terminal native state arrived in time; Stop was requested."""
+
+    def __init__(self, message: str, events: list[dict[str, Any]]) -> None:
+        super().__init__(message)
+        self.events = events
+
+
+# Native positioning jobs report completion through their terminal ``state``
+# event (``running`` false after the job's own ``running`` true state). Only
+# acquisition jobs (``run``/``replay``) emit ``finished``.
+_STATE_TERMINATED_COMMANDS = frozenset({"move", "initialize"})
+# After a timeout, Stop is sent and the terminal state is awaited this long.
+_STOP_DRAIN_S = 15.0
+
+
 class Client:
     def __init__(self, binary: str | Path | None = None) -> None:
         self._process = subprocess.Popen(  # noqa: S603 - explicitly selected native executable
@@ -906,6 +997,8 @@ class Client:
             raise RuntimeError("Could not start portable TRKR controller")
         self._write_lock = threading.Lock()
         self._job_lock = threading.Lock()
+        self._last_job: str | None = None
+        self._unsynced: str | None = None
         self._events: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._reader = threading.Thread(target=self._read_events, daemon=True)
         self._reader.start()
@@ -932,26 +1025,89 @@ class Client:
                 raise RuntimeError("Native controller stdin is unavailable")
             self._process.stdin.write(json.dumps(command, separators=(",", ":")) + "\n")
             self._process.stdin.flush()
+        kind = command.get("command")
+        if kind in _STATE_TERMINATED_COMMANDS or kind in {"run", "replay"}:
+            self._last_job = str(kind)
 
     def events(self) -> Iterator[dict[str, Any]]:
         while (event := self._events.get()) is not None:
             yield event
 
-    def wait_for_finished(self) -> list[dict[str, Any]]:
-        """Drain one native job through its terminal ``finished`` event.
+    def _next_event(self, deadline: float | None) -> dict[str, Any] | None:
+        """Return the next event, ``None`` at end of stream; raise queue.Empty at deadline."""
+        if deadline is None:
+            return self._events.get()
+        return self._events.get(timeout=max(0.0, deadline - time.monotonic()))
+
+    def _check_synced(self) -> None:
+        reason = getattr(self, "_unsynced", None)
+        if reason is not None:
+            raise RuntimeError(f"{reason}; close and reopen the native client")
+
+    def _request_stop_after_timeout(self) -> float:
+        try:
+            self.stop()
+        except (BrokenPipeError, OSError, RuntimeError):
+            pass
+        return time.monotonic() + _STOP_DRAIN_S
+
+    @staticmethod
+    def _validate_timeout(timeout: float | None) -> float | None:
+        if timeout is None:
+            return None
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("timeout must be a positive finite number of seconds or None")
+        return time.monotonic() + timeout
+
+    def wait_for_finished(self, timeout: float | None = None) -> list[dict[str, Any]]:
+        """Drain one native job through its terminal event.
+
+        Acquisition jobs (``run``/``replay``) end with ``finished``.  A raw
+        ``move``/``initialize`` sent through :meth:`send` or :meth:`move` ends
+        with its terminal ``state`` event instead; this method follows the last
+        job command sent through this client (see :meth:`move_and_wait`).
 
         ``stop()`` remains safe to call from another notebook cell or thread
         while this method is waiting.  Native errors are drained through the
         terminal event before they are raised, so they cannot leak into the
-        next command's event stream.
+        next command's event stream.  With ``timeout``, Stop is requested when
+        it expires and :class:`NativeTimeoutError` is raised after the job's
+        terminal event (or a bounded grace period) has been drained.
         """
+        if getattr(self, "_last_job", None) in _STATE_TERMINATED_COMMANDS:
+            return self._wait_state_terminal(timeout)
+        deadline = self._validate_timeout(timeout)
+        timed_out = False
         result: list[dict[str, Any]] = []
         failure: str | None = None
-        for event in self.events():
+        dropped: object = 0
+        while True:
+            try:
+                event = self._next_event(deadline)
+            except queue.Empty:
+                if timed_out:
+                    self._unsynced = "Native job did not finish after Stop"
+                    raise NativeTimeoutError(self._unsynced, result) from None
+                timed_out = True
+                deadline = self._request_stop_after_timeout()
+                continue
+            if event is None:
+                break
             result.append(event)
+            if event.get("event") == "state" and isinstance(event.get("data"), dict):
+                dropped = event["data"].get("dropped_samples", 0)
             if event.get("event") == "finished":
+                if isinstance(dropped, int) and dropped > 0:
+                    warnings.warn(
+                        f"{dropped} native sample events were dropped from this event list "
+                        "(full queue); the CSV recording is unaffected",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
                 if failure is not None:
                     raise RuntimeError(failure)
+                if timed_out:
+                    raise NativeTimeoutError("Native job timed out; Stop was requested", result)
                 return result
             if event.get("event") == "rejected":
                 raise RuntimeError(
@@ -960,6 +1116,58 @@ class Client:
             if event.get("event") == "error":
                 failure = str(event.get("data", "native controller error"))
         raise RuntimeError("Portable TRKR controller closed before finishing")
+
+    def _wait_state_terminal(self, timeout: float | None) -> list[dict[str, Any]]:
+        """Wait for a positioning job's own ``running`` true -> false state pair.
+
+        The native protocol has no request identifiers; correlation relies on
+        jobs being serialized by the caller.  Idle refresh ``state``/``error``
+        events emitted before the job starts are kept but not interpreted.
+        """
+        deadline = self._validate_timeout(timeout)
+        timed_out = False
+        started = False
+        failure: str | None = None
+        events: list[dict[str, Any]] = []
+        while True:
+            try:
+                event = self._next_event(deadline)
+            except queue.Empty:
+                if timed_out:
+                    self._unsynced = "Native move did not reach a terminal state after Stop"
+                    raise NativeTimeoutError(self._unsynced, events) from None
+                timed_out = True
+                deadline = self._request_stop_after_timeout()
+                continue
+            if event is None:
+                raise RuntimeError("Portable TRKR controller closed before the move finished")
+            events.append(event)
+            kind = event.get("event")
+            if kind == "rejected":
+                raise RuntimeError(
+                    str(event.get("data", "native controller rejected command"))
+                )
+            if kind == "error" and started:
+                failure = str(event.get("data", "native controller error"))
+            if kind != "state":
+                continue
+            data = event.get("data")
+            if not isinstance(data, dict):
+                continue
+            if data.get("running") is True:
+                started = True
+                continue
+            if not started:
+                continue
+            phase = data.get("phase")
+            if phase == "Complete" and failure is None:
+                # Completed before the Stop (if any) took effect.
+                return events
+            if failure is not None or phase not in {"Complete", "Stopped"}:
+                raise RuntimeError(failure or f"Native move ended in phase {phase!r}")
+            if timed_out:
+                raise NativeTimeoutError("Native move timed out; Stop was requested", events)
+            raise NativeStopped("Native move was stopped before completion", events)
 
     def connect(self, config: dict[str, Any], devices: list[str]) -> None:
         self.send({"command": "connect", "config": config, "devices": devices})
@@ -987,6 +1195,31 @@ class Client:
             }
         )
 
+    def move_and_wait(
+        self,
+        config: dict[str, Any],
+        targets: list[float | None],
+        coordinate: str = "measurement",
+        zero: list[float] | None = None,
+        approach: list[bool] | None = None,
+        *,
+        timeout: float | None = 300.0,
+    ) -> list[dict[str, Any]]:
+        """Move like :meth:`move` and wait for that move's terminal state.
+
+        Returns the drained events on ``Complete``.  Raises ``RuntimeError``
+        for a rejected or failed move (including STOP failures),
+        :class:`NativeStopped` if ``stop()`` cancelled it, and
+        :class:`NativeTimeoutError` if ``timeout`` expired (Stop is requested
+        and the terminal state drained first).  Jobs are serialized with
+        :meth:`run` by this client's job lock.
+        """
+        self._validate_timeout(timeout)
+        with self._job_lock:
+            self._check_synced()
+            self.move(config, targets, coordinate=coordinate, zero=zero, approach=approach)
+            return self._wait_state_terminal(timeout)
+
     def read(self) -> None:
         self.send({"command": "read"})
 
@@ -1009,6 +1242,7 @@ class Client:
         overlapping jobs from different Python threads.
         """
         with self._job_lock:
+            self._check_synced()
             self.send(
                 {
                     "command": "run",

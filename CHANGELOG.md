@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.5
+
+- Report completion, failure and cancellation for Python stdio moves, and tolerate transient GUI control timeouts within the existing lease.
+- Preserve clean Alignment cancellation and close native GPIB helpers gracefully.
+- Preserve scan axes and recorded metadata during replay, and exclude raw companion files from folder playback.
+- Honor GUI replay timing, display missing voltage readings as unavailable, and report dropped display samples.
+
 ## 1.0.4
 
 - Fix All Connect after stopping a recording or operation.

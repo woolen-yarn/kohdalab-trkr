@@ -716,6 +716,13 @@ impl Session {
     }
 }
 
+/// Valid for every helper revision: the native 82357B/NI helper requires
+/// address 1–30 on every request (address 0 was rejected as "Invalid GPIB
+/// request", so it never exited cleanly), and the VISA helper accepts 0–30.
+/// EXIT ignores the address.
+const HELPER_EXIT_FRAME: &[u8] = b"EXIT 1 1000 -\n";
+const HELPER_EXIT_GRACE: Duration = Duration::from_secs(2);
+
 impl Drop for Session {
     fn drop(&mut self) {
         if self.poisoned {
@@ -723,9 +730,13 @@ impl Drop for Session {
             let _ = self.child.wait();
             return;
         }
-        let _ = self.input.write_all(b"EXIT 0 1000 -\n");
+        let _ = self.input.write_all(HELPER_EXIT_FRAME);
         let _ = self.input.flush();
-        for _ in 0..20 {
+        // EXIT performs REN off and closes the adapter; give that bounded
+        // time before falling back to kill. A pending cancelled reply only
+        // delays EXIT within the same bound.
+        let deadline = Instant::now() + HELPER_EXIT_GRACE;
+        while Instant::now() < deadline {
             if self.child.try_wait().ok().flatten().is_some() {
                 return;
             }
@@ -1366,6 +1377,39 @@ mod tests {
         let mut gpib = Gpib::open(&helper, 7).unwrap();
         assert_eq!(gpib.query("READ?").unwrap(), "READY?");
         gpib.write("CONF").unwrap();
+    }
+
+    #[test]
+    fn drop_sends_exit_frame_accepted_by_strict_native_helper() {
+        // Mirrors kohdalab_gpib_helper.cpp request validation: every request,
+        // including EXIT, needs address 1-30 and timeout 1-3600000.
+        let _guard = TEST_LEASE.lock().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let helper = dir.path().join("strict-native.sh");
+        let exited = dir.path().join("clean-exit.txt");
+        executable(
+            &helper,
+            &format!(
+                "#!/bin/sh\nprintf 'KIV\\tOK\\t-\\n'\nwhile read -r operation address timeout payload; do\n case \"$address\" in ''|*[!0-9]*) printf 'KIV\\tERR\\t-\\n'; continue ;; esac\n if [ \"$address\" -lt 1 ] || [ \"$address\" -gt 30 ] || [ \"$timeout\" -lt 1 ]; then printf 'KIV\\tERR\\t-\\n'; continue; fi\n if [ \"$operation\" = EXIT ]; then : > '{}'; printf 'KIV\\tOK\\t-\\n'; exit 0; fi\n printf 'KIV\\tOK\\t6f6b\\n'\ndone\n",
+                exited.display(),
+            ),
+        );
+        let mut gpib = Gpib::open(&helper, 12).unwrap();
+        assert_eq!(gpib.query("A?").unwrap(), "ok");
+        drop(gpib);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !exited.exists() {
+            assert!(
+                Instant::now() < deadline,
+                "helper was killed instead of exiting via EXIT"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            std::str::from_utf8(HELPER_EXIT_FRAME)
+                .unwrap()
+                .starts_with("EXIT 1 ")
+        );
     }
 
     #[test]

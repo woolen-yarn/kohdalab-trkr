@@ -320,6 +320,103 @@ def test_revoked_lease_refuses_future_mutation(api_module, server, tmp_path):
     client.close()
 
 
+def _scripted_client(api_module, script):
+    """GuiClient whose requests follow ``script[action]``: values or exceptions."""
+    client = api_module.GuiClient("unused-session.json")
+    calls = []
+    owned = {"owned": True, "client_id": client._client_id, "status": "python", "active_run": None}
+
+    def request(operation, **data):
+        calls.append(operation)
+        queue = script.get(operation)
+        item = queue.pop(0) if queue else (owned if operation in {"acquire", "heartbeat", "release"} else None)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    client._request = request
+    return client, calls
+
+
+def _receipt(status):
+    return {"id": "run-1", "status": status, "rows": 0, "output": None, "error": None, "kind": "start"}
+
+
+def test_transient_heartbeat_failure_keeps_ownership_within_lease(api_module):
+    transient = api_module.GuiTransportError("timed out", "transport")
+    client, calls = _scripted_client(api_module, {"heartbeat": [transient]})
+    client._start_heartbeat = lambda: None
+    client.acquire()
+    with pytest.raises(api_module.GuiTransportError):
+        client.heartbeat()
+    assert client._owns and not client._ownership_lost
+    assert client.heartbeat()["owned"]
+    # The same transport failure after the confirmed lease expired is a loss.
+    client._lease_renewed_at = time.monotonic() - client._LEASE_S - 0.1
+    client._request = lambda *_a, **_k: (_ for _ in ()).throw(transient)
+    with pytest.raises(api_module.GuiTransportError):
+        client.heartbeat()
+    assert client._ownership_lost and not client._owns
+    with pytest.raises(api_module.GuiOwnershipError):
+        client.move([None, 0.0, None])
+
+
+def test_confirmed_ownership_rejection_is_not_retried(api_module):
+    rejection = api_module.GuiOwnershipError("not owner", "ownership_lost")
+    client, _ = _scripted_client(api_module, {"heartbeat": [rejection]})
+    client._start_heartbeat = lambda: None
+    client.acquire()
+    with pytest.raises(api_module.GuiOwnershipError):
+        client.heartbeat()
+    assert client._ownership_lost and not client._owns
+
+
+def test_background_heartbeat_survives_one_transient_timeout(api_module):
+    transient = api_module.GuiTransportError("timed out", "transport")
+    client, calls = _scripted_client(api_module, {"heartbeat": [transient]})
+    client.acquire()
+    deadline = time.monotonic() + 3.0
+    while calls.count("heartbeat") < 2 and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert calls.count("heartbeat") >= 2
+    assert client._owns and not client._ownership_lost
+    client.close()
+
+
+def test_result_polling_retries_transient_failures_and_reports_verified_receipt(api_module):
+    transient = api_module.GuiTransportError("timed out", "transport")
+    client, calls = _scripted_client(api_module, {
+        "result": [_receipt("running"), transient, transient, _receipt("stopped")],
+        "stop": [_receipt("running")],
+    })
+    client._start_heartbeat = lambda: None
+    client._RETRY_INTERVAL_S = 0.01
+    client.acquire()
+    record = client.stop_and_wait("run-1", timeout=5.0, poll_interval=0.01)
+    assert record["status"] == "stopped"
+    assert calls.count("stop") == 1
+
+
+def test_result_polling_gives_up_after_lease_or_ownership_loss(api_module):
+    transient = api_module.GuiTransportError("timed out", "transport")
+    client, _ = _scripted_client(api_module, {"result": [transient] * 1000})
+    client._start_heartbeat = lambda: None
+    client._RETRY_INTERVAL_S = 0.01
+    client.acquire()
+    client._ownership_lost = True
+    started = time.monotonic()
+    with pytest.raises(api_module.GuiTransportError):
+        client.wait("run-1", timeout=5.0)
+    assert time.monotonic() - started < 1.0
+    # Observer (no ownership): bounded by one lease period and by the deadline.
+    observer, _ = _scripted_client(api_module, {"result": [transient] * 1000})
+    observer._RETRY_INTERVAL_S = 0.01
+    started = time.monotonic()
+    with pytest.raises(api_module.GuiTransportError):
+        observer.wait("run-1", timeout=0.2)
+    assert time.monotonic() - started < 1.0
+
+
 def test_dropped_client_stops_heartbeat_without_releasing_or_stopping(api_module):
     requests = []
     client = api_module.GuiClient("unused-session.json")

@@ -60,6 +60,48 @@ pub(super) struct Workspace {
     pub motion_only: bool,
     pub settings: Option<SettingsTab>,
     device_draft: Option<super::measurement_settings::Draft>,
+    /// Signal plot points of the last frame; rebuilt only when the trace or
+    /// its display parameters change, not on every repaint.
+    signal_points: std::cell::RefCell<Option<(SignalPointsKey, Vec<[f64; 2]>)>>,
+}
+
+/// Everything the cached signal points depend on. Appends change `len` and
+/// `last_elapsed`; front trimming changes `first_elapsed`; Clear bumps the
+/// plot epoch.
+#[derive(Clone, PartialEq)]
+struct SignalPointsKey {
+    epoch: u64,
+    len: usize,
+    first_elapsed: u64,
+    last_elapsed: u64,
+    last_signal: [u64; 4],
+    mode: DisplayMode,
+    index: usize,
+    factor: u64,
+    angle: bool,
+    unit: Option<String>,
+}
+
+fn signal_points(
+    trace: &[Sample],
+    mode: DisplayMode,
+    index: usize,
+    factor: f64,
+    angle: bool,
+) -> Vec<[f64; 2]> {
+    let latest = trace.last();
+    trace
+        .iter()
+        .filter_map(|s| {
+            let value = mode.values(s.signal)[index] * factor;
+            ((angle
+                || latest.is_some_and(|last| {
+                    presentation::sample_signal_unit(s) == presentation::sample_signal_unit(last)
+                }))
+                && value.is_finite())
+            .then_some([s.elapsed, value])
+        })
+        .collect()
 }
 
 impl App {
@@ -325,20 +367,31 @@ impl App {
         let value = latest
             .map(|sample| format!("{:.4} {unit}", mode.values(sample.signal)[index] * factor))
             .unwrap_or_else(|| format!("— {unit}"));
-        let points: Vec<_> = self
-            .trace
-            .iter()
-            .filter_map(|s| {
-                let value = mode.values(s.signal)[index] * factor;
-                ((angle
-                    || latest.is_some_and(|last| {
-                        presentation::sample_signal_unit(s)
-                            == presentation::sample_signal_unit(last)
-                    }))
-                    && value.is_finite())
-                .then_some([s.elapsed, value])
-            })
-            .collect();
+        let key = SignalPointsKey {
+            epoch: self.plot_epoch,
+            len: self.trace.len(),
+            first_elapsed: self.trace.first().map_or(0, |s| s.elapsed.to_bits()),
+            last_elapsed: latest.map_or(0, |s| s.elapsed.to_bits()),
+            last_signal: latest.map_or([0; 4], |s| {
+                [s.signal.x_v, s.signal.y_v, s.signal.r_v, s.signal.theta_deg].map(f64::to_bits)
+            }),
+            mode,
+            index,
+            factor: factor.to_bits(),
+            angle,
+            unit: latest.map(|s| presentation::sample_signal_unit(s).to_owned()),
+        };
+        let points = {
+            let mut cache = self.alignment_workspace.signal_points.borrow_mut();
+            match cache.as_ref() {
+                Some((cached, points)) if *cached == key => points.clone(),
+                _ => {
+                    let points = signal_points(&self.trace, mode, index, factor, angle);
+                    *cache = Some((key, points.clone()));
+                    points
+                }
+            }
+        };
         let y_label = if angle {
             "Theta (deg)".into()
         } else {
@@ -587,6 +640,51 @@ fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
     let bounds = egui_plot::PlotMemory::load(&ctx, id).unwrap();
     assert!(bounds.bounds().min()[0] <= 0.);
     assert!(bounds.bounds().max()[0] >= end);
+}
+
+#[cfg(test)]
+#[test]
+fn signal_plot_points_are_reused_until_the_trace_changes() {
+    let ctx = egui::Context::default();
+    let mut app = App::with_context(&ctx, false);
+    app.enable_alignment_monitor_preview();
+    let frame = |app: &App| {
+        let _ = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    Vec2::new(800., 300.),
+                )),
+                ..Default::default()
+            },
+            |ui| app.alignment_signal_plot(ui, ui.max_rect()),
+        );
+        let cache = app.alignment_workspace.signal_points.borrow();
+        let (key, points) = cache.as_ref().unwrap();
+        (key.clone(), points.as_ptr())
+    };
+    let (first_key, first_points) = frame(&app);
+    let (same_key, same_points) = frame(&app);
+    assert!(first_key == same_key);
+    assert_eq!(
+        first_points, same_points,
+        "unchanged trace rebuilt its points"
+    );
+    let mut next = app.trace.last().unwrap().clone();
+    next.elapsed += 1.;
+    app.trace.push(next);
+    let (changed_key, _) = frame(&app);
+    assert_eq!(changed_key.len, first_key.len + 1);
+    let cache = app.alignment_workspace.signal_points.borrow();
+    let points = &cache.as_ref().unwrap().1;
+    let expected = signal_points(
+        &app.trace,
+        changed_key.mode,
+        changed_key.index,
+        f64::from_bits(changed_key.factor),
+        changed_key.angle,
+    );
+    assert_eq!(points, &expected);
 }
 
 #[cfg(all(test, feature = "gui-interaction-tests"))]

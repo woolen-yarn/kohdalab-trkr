@@ -1,13 +1,11 @@
-# KohdaLab TRKR 1.0.4
+# KohdaLab TRKR 1.0.5
 
-## Alignment and connections / アライメントと接続
+## Control and replay / 制御と再生
 
-- All Connect starts a new connection attempt after Stop. / Stopを押した後もAll Connectで接続できるよう修正しました。
-- Signal Monitor and Power Monitor share the same plot height and separate Start and Stop buttons. Signal channel selection is in Settings → Acquisition. Power Monitor shows a trend after Start and holds it after Stop. / 両モニターでプロットの高さを揃え、StartとStopを分けました。SignalのチャンネルはSettings → Acquisitionで選択します。PowerのプロットはStartで更新を始め、Stopで保持します。
-- Signal Monitor saves acquired points to CSV and keeps the recording visible after Stop. / Signal MonitorはStopで取得済みの点をCSVに保存し、記録を表示したままにします。
-- Opening Device on the lock-in card also expands Settings. / 左パネルのロックインでDeviceを開くとSettingsも展開します。
-
-Power Monitor’s device choice applies to the current session. The trend shows up to the 180 most recent readings and stays visible after Stop. / Power Monitorの機器選択は現在のセッションに適用され、プロットには直近180点までを表示し、Stop後も保持します。
+- Python stdio now provides bounded move completion through `move_and_wait()`. GUI control tolerates transient communication failure within the existing lease. / Python stdioの `move_and_wait()` で移動の終端を待てます。GUI制御は既存のリース期間内に一時的な通信障害から復帰できます。
+- Alignment reports clean cancellation consistently and retains actual stop failures. Native GPIB disconnect requests graceful helper shutdown. / Alignmentの正常停止の扱いを揃え、停止失敗はエラーとして表示します。ネイティブGPIB切断時はヘルパーの正常終了を待ちます。
+- Replay retains scan axes and row metadata, skips raw companion files when opening a folder, and uses the selected playback interval. / 再生で走査軸と行情報を保持します。フォルダ再生では付随するraw CSVを除外し、選んだ再生間隔を使います。
+- Replay shows unavailable voltage data as missing. The app reports dropped display samples and reuses Alignment plot data between updates. / 電圧換算値のない記録を欠測として表示し、表示用の点が欠落した場合に通知します。Alignmentのプロット点列を更新間で再利用します。
 
 ## Packages / 配布形式
 
