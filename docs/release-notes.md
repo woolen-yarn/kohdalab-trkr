@@ -1,4 +1,18 @@
-# KohdaLab TRKR 1.0.5
+# KohdaLab TRKR 1.0.6
+
+## Changes / 変更点
+
+Report intentional continuation and targeted Stop receipts through the common Python SDK 1.0.4. Add a GUI Demo notebook and the aligned external-control bar.
+
+## Validation scope / 検証範囲
+
+The previous hardware compatibility and safety guidance remains applicable. The release software checks include simulation. New physical-device operating scenarios are outside this qualification.
+
+See SHA256SUMS.txt and the release page's platform packages. / 対応OSとSHA-256は配布ページをご覧ください。
+
+## Previous release / 前の版
+
+### KohdaLab TRKR 1.0.5
 
 ## Control and replay / 制御と再生
 

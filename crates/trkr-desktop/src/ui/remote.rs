@@ -128,6 +128,34 @@ impl Bridge {
         let cleanup = Self::control_cleanup(&state);
         kohdalab_control_protocol::receipt(&id, &kind, &state, cleanup, None, native)
     }
+    /// Common release receipt. With no active job the lease alone is returned.
+    /// A job that release asked to stop keeps `cleanup: "pending"` until its
+    /// own receipt is terminal. A job that intentionally continues under
+    /// `on_release: "continue"` needs no release cleanup: it is reported as
+    /// `continuing` with its unchanged job receipt (whose cleanup stays
+    /// `pending`), so clients neither wait for nor misreport its completion.
+    fn common_release(&self, native: Value) -> Value {
+        let Some(id) = self.active.as_deref() else {
+            return json!({"released":true,"cleanup":"verified","continuing":false,"native":native});
+        };
+        let run = self
+            .run(id)
+            .unwrap_or_else(|_| json!({"id":id,"status":"running"}));
+        let stop_requested = run["stop_requested"] == true;
+        let kind = run["kind"].as_str().unwrap_or("run").to_owned();
+        let state = run["status"].as_str().unwrap_or("running").to_owned();
+        let job = kohdalab_control_protocol::receipt(
+            id,
+            &kind,
+            &state,
+            Self::control_cleanup(&state),
+            None,
+            run,
+        );
+        json!({"released":true,"cleanup":if stop_requested {"pending"} else {"not_required"},
+            "continuing":!stop_requested,"stop_requested":stop_requested,
+            "job_id":id,"job":job,"native":native})
+    }
     fn control_cleanup(state: &str) -> &'static str {
         match state {
             "completed" | "stopped" => "verified",
@@ -394,9 +422,7 @@ impl Bridge {
                 self.tick();
                 let native = self.control();
                 return if common {
-                    Ok(
-                        json!({"released":true,"cleanup":if self.active.is_some(){"pending"}else{"verified"},"native":native}),
-                    )
+                    Ok(self.common_release(native))
                 } else {
                     Ok(native)
                 };
@@ -890,6 +916,44 @@ impl Bridge {
         self.tick();
     }
 }
+const BANNER_TITLE: &str = "External control";
+/// Existing dark semantic palette: information accent, muted detail, warning.
+const BANNER_ACCENT: Color32 = Color32::from_rgb(102, 174, 255);
+const BANNER_MUTED: Color32 = Color32::from_rgb(153, 157, 168);
+const BANNER_WARNING: Color32 = Color32::from_rgb(245, 183, 82);
+/// Banner status text and tone; `phase` is the GUI's measurement phase.
+fn banner_status(control: &Value, phase: &str) -> (String, Color32) {
+    let run = &control["active_run"];
+    let activity = match run["kind"].as_str() {
+        Some("start" | "move" | "initialize") if !phase.is_empty() => phase,
+        Some("start") => "Measuring",
+        Some("move" | "initialize" | "alignment" | "alignment_reverse") => "Moving",
+        Some("connect" | "select_devices") => "Connecting devices",
+        Some("disconnect") => "Disconnecting devices",
+        Some("set_lockin") => "Updating lock-in",
+        Some("auto_lockin") => "Lock-in auto adjustment",
+        Some("lockin_settings") => "Reading lock-in settings",
+        Some("read") => "Reading devices",
+        _ => "Waiting for commands",
+    };
+    let client = control["label"].as_str().unwrap_or("Python");
+    if control["status"] == "detached" {
+        let action = if run["stop_requested"] == true {
+            "stopping"
+        } else {
+            "finishing"
+        };
+        (
+            format!("{client} released · {action}: {activity} · GUI locked until done"),
+            BANNER_WARNING,
+        )
+    } else {
+        (
+            format!("{client} · {activity} · GUI controls locked"),
+            BANNER_MUTED,
+        )
+    }
+}
 fn bool_field(body: &Value, key: &str, default: bool) -> Result<bool, String> {
     body.get(key).map_or(Ok(default), |v| {
         v.as_bool().ok_or_else(|| format!("{key} must be boolean"))
@@ -944,38 +1008,40 @@ impl App {
             return;
         }
         let control = self.remote.as_ref().unwrap().control();
-        let detached = control["status"] == "detached";
+        let (status, tone) = banner_status(&control, self.snapshot.phase.as_str());
+        let mut stop = false;
         let mut takeover = false;
-        egui::Panel::top("python-control-status").show_inside(root, |ui| {
-            ui.horizontal(|ui| {
-                ui.colored_label(
-                    Color32::from_rgb(91, 190, 255),
-                    if detached && control["active_run"]["stop_requested"] == true {
-                        "PYTHON DISCONNECTED · Stopping current operation"
-                    } else if detached {
-                        "PYTHON DISCONNECTED · Finishing current operation"
-                    } else {
-                        "PYTHON CONTROL · GUI controls locked"
-                    },
-                );
-                let kind = control["active_run"]["kind"].as_str();
-                let activity = match kind {
-                    Some("start" | "move" | "initialize") => self.snapshot.phase.as_str(),
-                    Some("connect") => "Connecting devices",
-                    Some("disconnect") => "Disconnecting devices",
-                    Some("set_lockin") => "Updating lock-in",
-                    Some("auto_lockin") => "Lock-in auto adjustment",
-                    Some("lockin_settings") => "Reading lock-in settings",
-                    Some("read") => "Reading devices",
-                    _ => "Waiting for Python",
-                };
-                ui.label(activity);
-                if ui.button("Stop").clicked() {
-                    self.controller.stop();
-                }
-                takeover = ui.button("Take control").clicked();
+        egui::Panel::top("python-control-status")
+            .frame(
+                egui::Frame::new()
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(1.0_f32, BORDER))
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show_inside(root, |ui| {
+                // Fixed reading order: who controls, what it is doing, then
+                // the GUI's own Stop and the ownership override. Wrapping
+                // keeps Stop and Take control on screen in narrow windows.
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        egui::RichText::new(BANNER_TITLE)
+                            .strong()
+                            .color(BANNER_ACCENT),
+                    );
+                    ui.label(egui::RichText::new(status).color(tone));
+                    stop = ui.button("Stop").clicked();
+                    takeover = ui.button("Take control").clicked();
+                });
             });
-        });
+        if stop {
+            // Record the GUI request on the external job's receipt (stop
+            // reason evidence), then stop exactly as before.
+            if let Some(mut bridge) = self.remote.take() {
+                bridge.request_stop(self, "gui_stop");
+                self.remote = Some(bridge);
+            }
+            self.controller.stop();
+        }
         if takeover && let Some(mut bridge) = self.remote.take() {
             bridge.take_control(self);
             self.remote = Some(bridge);
@@ -1119,6 +1185,263 @@ mod tests {
             }
             finish(&mut app, &mut bridge);
             assert!(!bridge.locked());
+        }
+    }
+    fn common_release(bridge: &mut Bridge, app: &mut App, reason: &str) -> Value {
+        let lease = bridge.owner.as_ref().unwrap().lease.clone();
+        bridge
+            .handle(
+                app,
+                &json!({"action":"release","_control_method":"release","client_id":A,
+                    "lease":lease,"reason":reason}),
+            )
+            .unwrap()
+    }
+    #[test]
+    fn common_release_reports_intentional_continuation_with_job_evidence() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        let output = tempfile::tempdir().unwrap();
+        let id = long_demo(
+            &mut bridge,
+            &mut app,
+            json!({}),
+            &output.path().join("continue.csv"),
+        );
+        let lease = bridge.owner.as_ref().unwrap().lease.clone();
+        let released = common_release(&mut bridge, &mut app, "disconnect");
+        assert_eq!(released["released"], true);
+        // Continuation needs no release cleanup; the job's own evidence stays.
+        assert_eq!(released["continuing"], true);
+        assert_eq!(released["stop_requested"], false);
+        assert_eq!(released["cleanup"], "not_required");
+        assert_eq!(released["job_id"], id);
+        assert_eq!(released["job"]["job_id"], id);
+        assert_eq!(released["job"]["terminal"], false);
+        assert_eq!(released["job"]["cleanup"], "pending");
+        assert_eq!(released["native"]["status"], "detached");
+        // The job really continues and the GUI stays locked (unchanged policy).
+        assert_eq!(bridge.run(&id).unwrap()["stop_requested"], false);
+        assert!(bridge.locked());
+        let receipt = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"control_result","_control_method":"result","run_id":id}),
+            )
+            .unwrap();
+        assert_eq!(receipt["cleanup"], "pending");
+        // The released lease cannot stop it; GUI Stop remains available.
+        assert_eq!(
+            bridge
+                .handle(
+                    &mut app,
+                    &json!({"action":"stop","_control_method":"stop","client_id":A,
+                        "lease":lease,"run_id":id}),
+                )
+                .unwrap_err()
+                .code,
+            "ownership_lost"
+        );
+        bridge.request_stop(&app, "gui_stop");
+        finish(&mut app, &mut bridge);
+        assert!(!bridge.locked());
+        let receipt = bridge
+            .handle(
+                &mut app,
+                &json!({"action":"control_result","_control_method":"result","run_id":id}),
+            )
+            .unwrap();
+        assert_eq!(receipt["status"], "stopped");
+        assert_eq!(receipt["cleanup"], "verified");
+        assert_eq!(receipt["native"]["stop_reason"], "gui_stop");
+    }
+    #[test]
+    fn common_release_that_stops_a_job_keeps_cleanup_pending() {
+        for (policy, reason) in [
+            (json!({"stop_on_disconnect":true}), "disconnect"),
+            (json!({"stop_on_error":true}), "python_error"),
+        ] {
+            let (_dir, mut bridge) = bridge();
+            let mut app = demo_app();
+            let output = tempfile::tempdir().unwrap();
+            let id = long_demo(
+                &mut bridge,
+                &mut app,
+                policy,
+                &output.path().join("stop.csv"),
+            );
+            let released = common_release(&mut bridge, &mut app, reason);
+            assert_eq!(released["released"], true);
+            assert_eq!(released["continuing"], false);
+            assert_eq!(released["stop_requested"], true);
+            assert_eq!(released["cleanup"], "pending");
+            assert_eq!(released["job_id"], id);
+            assert_eq!(released["job"]["cleanup"], "pending");
+            assert_eq!(bridge.run(&id).unwrap()["stop_reason"], reason);
+            finish(&mut app, &mut bridge);
+            assert!(!bridge.locked());
+        }
+    }
+    #[test]
+    fn common_release_without_a_job_and_native_release_are_unchanged() {
+        let (_dir, mut bridge) = bridge();
+        let mut app = demo_app();
+        bridge
+            .handle(&mut app, &json!({"action":"acquire","client_id":A}))
+            .unwrap();
+        let released = common_release(&mut bridge, &mut app, "disconnect");
+        assert_eq!(released["released"], true);
+        assert_eq!(released["cleanup"], "verified");
+        assert_eq!(released["continuing"], false);
+        assert!(released.get("job_id").is_none());
+        assert!(!bridge.locked());
+        // Native (legacy GuiClient) release keeps its original control view.
+        bridge
+            .handle(&mut app, &json!({"action":"acquire","client_id":B}))
+            .unwrap();
+        let native = bridge
+            .handle(&mut app, &json!({"action":"release","client_id":B}))
+            .unwrap();
+        assert_eq!(native["owned"], false);
+        assert!(native.get("released").is_none());
+        assert!(native.get("continuing").is_none());
+    }
+    #[test]
+    fn banner_status_names_client_activity_and_release_state() {
+        let owned = json!({"status":"python","label":"Notebook","active_run":{"kind":"start"}});
+        let (text, tone) = banner_status(&owned, "Measuring 3/10");
+        assert_eq!(text, "Notebook · Measuring 3/10 · GUI controls locked");
+        assert_eq!(tone, BANNER_MUTED);
+        let idle = json!({"status":"python","label":null,"active_run":null});
+        assert_eq!(
+            banner_status(&idle, "").0,
+            "Python · Waiting for commands · GUI controls locked"
+        );
+        let finishing = json!({"status":"detached","label":"Python",
+            "active_run":{"kind":"start","stop_requested":false}});
+        let (text, tone) = banner_status(&finishing, "");
+        assert_eq!(
+            text,
+            "Python released · finishing: Measuring · GUI locked until done"
+        );
+        assert_eq!(tone, BANNER_WARNING);
+        let stopping = json!({"status":"detached","label":"Python",
+            "active_run":{"kind":"move","stop_requested":true}});
+        assert!(banner_status(&stopping, "").0.contains("stopping: Moving"));
+    }
+    /// Real `App` in a headless eframe harness with an active long Demo job
+    /// owned by an external client. Uses the default-test fixture (temporary
+    /// config paths, Demo source); no feature-gated sandbox is required.
+    fn banner_harness(width: f32, dir: &std::path::Path) -> egui_kittest::Harness<'static, App> {
+        let server = Server::in_directory(dir.into()).unwrap();
+        let output = dir.join("banner.csv");
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(width, 900.))
+            .build_eframe(|cc| {
+                let mut app = App::with_context(&cc.egui_ctx, false);
+                app.source_demo = true;
+                app
+            });
+        h.run_steps(2);
+        {
+            let app = h.state_mut();
+            let mut bridge = Bridge::new(server);
+            long_demo(&mut bridge, app, json!({}), &output);
+            app.remote = Some(bridge);
+        }
+        h.run_steps(2);
+        h
+    }
+    /// Topmost node whose label contains `label` (the banner is the top row;
+    /// other "Stop" buttons sit below it).
+    fn banner_rect(h: &egui_kittest::Harness<'_, App>, label: &str) -> egui::Rect {
+        use egui_kittest::kittest::Queryable;
+        h.query_all_by_label_contains(label)
+            .map(|node| node.rect())
+            .min_by(|a, b| a.top().total_cmp(&b.top()))
+            .unwrap_or_else(|| panic!("missing {label}"))
+    }
+    fn click(h: &mut egui_kittest::Harness<'_, App>, pos: egui::Pos2) {
+        h.event(egui::Event::PointerMoved(pos));
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Default::default(),
+            });
+            h.run_steps(1);
+        }
+        h.run_steps(1);
+    }
+    fn stop_banner_job(h: &mut egui_kittest::Harness<'_, App>) {
+        let app = h.state_mut();
+        if let Some(mut bridge) = app.remote.take() {
+            if bridge.active.is_some() {
+                bridge.request_stop(app, "test_cleanup");
+                finish(app, &mut bridge);
+            }
+            app.remote = Some(bridge);
+        }
+    }
+    #[test]
+    fn banner_orders_external_control_status_stop_then_take_control() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = banner_harness(1566., dir.path());
+        let row = [
+            banner_rect(&h, "External control"),
+            banner_rect(&h, "GUI controls locked"),
+            banner_rect(&h, "Stop"),
+            banner_rect(&h, "Take control"),
+        ];
+        assert!(row.windows(2).all(|w| w[0].left() < w[1].left()), "{row:?}");
+        assert!(
+            row.iter()
+                .all(|r| (r.center().y - row[0].center().y).abs() < 8.)
+        );
+        click(&mut h, row[2].center());
+        let run = h
+            .state()
+            .remote
+            .as_ref()
+            .unwrap()
+            .runs
+            .back()
+            .unwrap()
+            .clone();
+        assert_eq!(run["stop_requested"], true);
+        assert_eq!(run["stop_reason"], "gui_stop");
+        stop_banner_job(&mut h);
+    }
+    #[test]
+    fn narrow_banner_keeps_stop_and_take_control_reachable() {
+        let width = 420.;
+        for target in ["Stop", "Take control"] {
+            let dir = tempfile::tempdir().unwrap();
+            let mut h = banner_harness(width, dir.path());
+            let status = banner_rect(&h, "External control");
+            let button = banner_rect(&h, target);
+            // Fully inside the window and still in the banner (not clipped
+            // off the right edge or pushed below unrelated content).
+            assert!(
+                button.left() >= 0. && button.right() <= width,
+                "{target}: {button:?}"
+            );
+            assert!(button.top() >= status.top(), "{target}: {button:?}");
+            assert!(button.bottom() < 300., "{target}: {button:?}");
+            click(&mut h, button.center());
+            let app = h.state();
+            if target == "Stop" {
+                let run = app.remote.as_ref().unwrap().runs.back().unwrap().clone();
+                assert_eq!(run["stop_reason"], "gui_stop");
+            } else {
+                let bridge = app.remote.as_ref().unwrap();
+                assert!(
+                    bridge.revoked.contains(A),
+                    "Take control must revoke the client"
+                );
+            }
+            stop_banner_job(&mut h);
         }
     }
     #[test]

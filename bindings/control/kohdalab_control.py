@@ -94,7 +94,7 @@ def _directories(application=None) -> list[Path]:
         Path.home,
     )
     root = home / ".kohdalab"
-    applications = ("iv", "trkr", "camera", "shutter", "ple")
+    applications = ("iv", "trkr", "camera", "shutter", "ple", "slm")
     if application is not None:
         name = application.removeprefix("kohdalab-")
         applications = (name,) if name in applications else ()
@@ -509,17 +509,57 @@ class ControlClient:
 
     def _stop_job_and_wait(self, job_id, timeout, poll_interval):
         # Terminal receipts are stopped idempotently by the application; the
-        # stop ACK itself is never treated as cleanup confirmation.
+        # stop ACK itself is never treated as cleanup confirmation, and the
+        # single targeted Stop is never repeated.
         self.stop(job_id=job_id)
-        deadline = time.monotonic() + timeout
+        return self._follow_job(job_id, time.monotonic() + timeout, poll_interval)
+
+    def _follow_job(self, job_id, deadline, poll_interval):
+        """Poll exactly ``job_id`` until completed/stopped with confirmed cleanup.
+
+        A receipt may name the job doing the real work via ``linked_job_id``
+        (e.g. a PLE start ACK that completes while acquisition still runs);
+        only the final linked receipt can prove cleanup. Links are bounded and
+        followed by read-only result queries only.
+        """
+        current = job_id
+        visited = {job_id}
         while True:
-            receipt = self.result(job_id)
-            if receipt.get("job_id") not in (None, job_id):
+            receipt = self.result(current)
+            if not isinstance(receipt, dict):
+                raise ControlError(
+                    "Invalid job receipt", code="validation", request_id=current
+                )
+            # The requested job may omit its own ID (original contract); a
+            # followed link must echo exactly the ID it was reached by.
+            if receipt.get("job_id") not in (
+                (None, current) if current == job_id else (current,)
+            ):
                 raise ControlError(
                     "Receipt does not match the requested job",
                     code="validation",
-                    request_id=job_id,
+                    request_id=current,
                 )
+            linked = receipt.get("linked_job_id")
+            if linked is not None and linked != current:
+                if not isinstance(linked, str) or not linked:
+                    raise ControlError(
+                        "Invalid linked job ID", code="validation", request_id=current
+                    )
+                if linked in visited or len(visited) >= 32:
+                    raise ControlError(
+                        "Receipt link cycle", code="validation", request_id=current
+                    )
+                visited.add(linked)
+                current = linked
+                if time.monotonic() >= deadline:
+                    raise ControlError(
+                        "Stop acknowledgement is not cleanup confirmation",
+                        code="timeout",
+                        request_id=current,
+                        outcome_unknown=True,
+                    )
+                continue
             if receipt.get("terminal") is True:
                 if receipt.get("status") in (
                     "completed",
@@ -529,42 +569,110 @@ class ControlClient:
                 raise ControlError(
                     "Stop cleanup was not confirmed; inspect receipt.native",
                     code="cleanup_unconfirmed",
-                    request_id=job_id,
+                    request_id=current,
                 )
             if time.monotonic() >= deadline:
                 raise ControlError(
                     "Stop acknowledgement is not cleanup confirmation",
                     code="timeout",
-                    request_id=job_id,
+                    request_id=current,
                     outcome_unknown=True,
                 )
             time.sleep(min(poll_interval, max(0, deadline - time.monotonic())))
 
-    def release(self, *, timeout=10.0):
+    def release(self, *, timeout=10.0, reason=None):
+        """Return ownership to the GUI.
+
+        ``reason`` is sent only when given (TRKR accepts ``"disconnect"`` or
+        ``"python_error"`` for its ``stop_on_error`` policy); otherwise the
+        original cross-application request is unchanged.
+
+        A release reported as ``continuing`` (an active job intentionally keeps
+        running under the app's ``on_release`` policy) returns the application's
+        evidence unchanged at once, after checking it names the job, that job's
+        non-terminal receipt and ``cleanup: "not_required"``. Follow that job
+        with ``wait(job_id)``; to stop it, use ``stop_and_wait(job_id)``
+        *before* releasing or the GUI's Stop.
+
+        When release requests a job stop, that job's own receipt (following
+        bounded links, as in ``stop_and_wait``) must reach completed/stopped
+        with confirmed cleanup; global ownership is not awaited, so an
+        unrelated new owner neither delays nor fakes it. Without a job, status
+        must show not owned, not busy and confirmed cleanup. A timeout or
+        unconfirmed cleanup is reported rather than hidden.
+        """
         timeout = _positive(timeout, "timeout")
+        if reason is not None and (not isinstance(reason, str) or not reason):
+            raise ValueError("reason must be a non-empty string")
         with self._lock:
             if self._lease is None:
                 return {"released": True, "cleanup": "not_required"}
-            result = self._call("release")
+            if reason is None:
+                result = self._call("release")
+            else:
+                result = self._call("release", reason=reason)
             # Retire the generation while holding the same lock used by the
             # worker. A queued heartbeat cannot observe the old lease after a
             # successful release response and poison voluntary reacquisition.
             self._heartbeat_stop.set()
             self._heartbeat_generation += 1
+            if not isinstance(result, dict):
+                raise ControlError("Invalid release response", code="validation")
             deadline = time.monotonic() + timeout
+            acknowledgement = result
+            released = result.get("released") is True
+            job_id = result.get("job_id")
+            if job_id is not None and (not isinstance(job_id, str) or not job_id):
+                raise ControlError("Invalid release job ID", code="validation")
+            if released and result.get("continuing") is True:
+                # Ownership is returned either way; intentional continuation is
+                # not pending release cleanup and never a finished job.
+                self._lease = None
+                job = result.get("job")
+                if (
+                    job_id is None
+                    or result.get("cleanup") != "not_required"
+                    or not isinstance(job, dict)
+                    or job.get("job_id") not in (None, job_id)
+                    or job.get("terminal") is True
+                ):
+                    raise ControlError(
+                        "Invalid continuing release evidence",
+                        code="validation",
+                        request_id=job_id,
+                    )
+                return result
+            if job_id is not None and released:
+                # Release requested this job's stop and returned ownership;
+                # only the job's own receipt can prove its cleanup.
+                self._lease = None
+                receipt = self._follow_job(job_id, deadline, 0.05)
+                return {
+                    "released": True,
+                    "cleanup": receipt["cleanup"],
+                    "job_id": job_id,
+                    "job": receipt,
+                    # Keep the application's original release evidence.
+                    "release": acknowledgement,
+                }
             while not (
-                result.get("released") is True
+                released
+                and job_id is None
                 and result.get("cleanup") in ("verified", "not_required")
             ):
                 state = self.status()
-                if state["ownership"].get("owned") is False and state["cleanup"] in (
-                    "verified",
-                    "not_required",
+                if (
+                    job_id is None
+                    and state["ownership"].get("owned") is False
+                    and state.get("busy") is False
+                    and state["cleanup"] in ("verified", "not_required")
                 ):
                     result = {
                         "released": True,
                         "cleanup": state["cleanup"],
                         "native": state,
+                        # Keep the application's original release evidence.
+                        "release": acknowledgement,
                     }
                     break
                 if state["phase"] == "error":
@@ -579,9 +687,21 @@ class ControlClient:
             self._lease = None
             return result
 
-    def close(self):
+    def _error_release_reason(self):
+        # Send an error release reason to apps advertising a stop_on_error
+        # policy. Peers that already stop on release may ignore it.
         try:
-            return self.release()
+            description = self._description or self.describe()
+            defaults = description["safety"]["stop_policy_defaults"]
+        except (ControlError, KeyError, TypeError):
+            return None
+        if isinstance(defaults, dict) and "stop_on_error" in defaults:
+            return "python_error"
+        return None
+
+    def close(self, *, reason=None):
+        try:
+            return self.release(reason=reason)
         finally:
             self._heartbeat_stop.set()
 
@@ -591,7 +711,10 @@ class ControlClient:
 
     def __exit__(self, exc_type, exc, tb):
         try:
-            self.close()
+            if exc_type is None:
+                self.close()
+            else:
+                self.close(reason=self._error_release_reason())
         except ControlError as cleanup_error:
             if exc_type is None:
                 raise
