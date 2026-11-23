@@ -138,7 +138,9 @@ impl Bridge {
         let Some(id) = self.active.as_deref() else {
             return json!({"released":true,"cleanup":"verified","continuing":false,"native":native});
         };
-        let run = self.run(id).unwrap_or_else(|_| json!({"id":id,"status":"running"}));
+        let run = self
+            .run(id)
+            .unwrap_or_else(|_| json!({"id":id,"status":"running"}));
         let stop_requested = run["stop_requested"] == true;
         let kind = run["kind"].as_str().unwrap_or("run").to_owned();
         let state = run["status"].as_str().unwrap_or("running").to_owned();
@@ -1262,7 +1264,12 @@ mod tests {
             let (_dir, mut bridge) = bridge();
             let mut app = demo_app();
             let output = tempfile::tempdir().unwrap();
-            let id = long_demo(&mut bridge, &mut app, policy, &output.path().join("stop.csv"));
+            let id = long_demo(
+                &mut bridge,
+                &mut app,
+                policy,
+                &output.path().join("stop.csv"),
+            );
             let released = common_release(&mut bridge, &mut app, reason);
             assert_eq!(released["released"], true);
             assert_eq!(released["continuing"], false);
@@ -1388,9 +1395,20 @@ mod tests {
             banner_rect(&h, "Take control"),
         ];
         assert!(row.windows(2).all(|w| w[0].left() < w[1].left()), "{row:?}");
-        assert!(row.iter().all(|r| (r.center().y - row[0].center().y).abs() < 8.));
+        assert!(
+            row.iter()
+                .all(|r| (r.center().y - row[0].center().y).abs() < 8.)
+        );
         click(&mut h, row[2].center());
-        let run = h.state().remote.as_ref().unwrap().runs.back().unwrap().clone();
+        let run = h
+            .state()
+            .remote
+            .as_ref()
+            .unwrap()
+            .runs
+            .back()
+            .unwrap()
+            .clone();
         assert_eq!(run["stop_requested"], true);
         assert_eq!(run["stop_reason"], "gui_stop");
         stop_banner_job(&mut h);
@@ -1405,7 +1423,10 @@ mod tests {
             let button = banner_rect(&h, target);
             // Fully inside the window and still in the banner (not clipped
             // off the right edge or pushed below unrelated content).
-            assert!(button.left() >= 0. && button.right() <= width, "{target}: {button:?}");
+            assert!(
+                button.left() >= 0. && button.right() <= width,
+                "{target}: {button:?}"
+            );
             assert!(button.top() >= status.top(), "{target}: {button:?}");
             assert!(button.bottom() < 300., "{target}: {button:?}");
             click(&mut h, button.center());
@@ -1415,7 +1436,10 @@ mod tests {
                 assert_eq!(run["stop_reason"], "gui_stop");
             } else {
                 let bridge = app.remote.as_ref().unwrap();
-                assert!(bridge.revoked.contains(A), "Take control must revoke the client");
+                assert!(
+                    bridge.revoked.contains(A),
+                    "Take control must revoke the client"
+                );
             }
             stop_banner_job(&mut h);
         }
