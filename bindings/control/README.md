@@ -42,12 +42,22 @@ a failure is reported, not silently treated as success. Complete or explicitly
 stop active work before closing when that application's policy requires it.
 
 If the application reports `continuing: true` (a job intentionally keeps running
-under its `on_release` policy), `release()` returns that result unchanged at once,
-including the job's `job_id` and its still-`pending` cleanup; follow it with
-`wait(job_id)`. A released client cannot stop it, so call `stop_and_wait(job_id)`
-before releasing if it must stop. When release itself requests a stop, the SDK
-waits as before and then also requires that job's terminal receipt with verified
-cleanup; the original release acknowledgement is kept under `release`.
+under its `on_release` policy), `release()` returns that result unchanged at once
+after checking it carries the `job_id`, that job's non-terminal receipt and
+`cleanup: "not_required"` (anything else is a validation error, never success);
+follow it with `wait(job_id)`. A released client cannot stop it, so call
+`stop_and_wait(job_id)` before releasing if it must stop. When release itself
+requests a job stop, the SDK polls that job (following bounded receipt links, as
+`stop_and_wait` does) until it is completed/stopped with confirmed cleanup; it
+does not wait on global ownership, so a new owner cannot delay or fake it. The
+original release acknowledgement is kept under `release`. Without a job, status
+must show not owned, not busy and confirmed cleanup.
+
+`release(reason=...)` sends a release reason only when given. When an exception
+leaves a `with ControlClient(...)` block and the application advertises a
+`stop_on_error` policy (TRKR), the reason `python_error` is sent so that policy
+applies; other applications receive the original request. The experiment
+exception is never suppressed.
 
 Mutations use caller UUIDs and are never automatically retried on a transport
 failure. `ControlError.request_id` and `outcome_unknown` preserve ambiguity for

@@ -1013,7 +1013,7 @@ impl App {
             .frame(
                 egui::Frame::new()
                     .fill(PANEL)
-                    .stroke(egui::Stroke::new(1., BORDER))
+                    .stroke(egui::Stroke::new(1.0_f32, BORDER))
                     .inner_margin(egui::Margin::symmetric(12, 6)),
             )
             .show_inside(root, |ui| {
