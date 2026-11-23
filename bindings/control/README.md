@@ -41,6 +41,14 @@ with verified cleanup; without an ID the original app-wide stop/status wait is k
 a failure is reported, not silently treated as success. Complete or explicitly
 stop active work before closing when that application's policy requires it.
 
+If the application reports `continuing: true` (a job intentionally keeps running
+under its `on_release` policy), `release()` returns that result unchanged at once,
+including the job's `job_id` and its still-`pending` cleanup; follow it with
+`wait(job_id)`. A released client cannot stop it, so call `stop_and_wait(job_id)`
+before releasing if it must stop. When release itself requests a stop, the SDK
+waits as before and then also requires that job's terminal receipt with verified
+cleanup; the original release acknowledgement is kept under `release`.
+
 Mutations use caller UUIDs and are never automatically retried on a transport
 failure. `ControlError.request_id` and `outcome_unknown` preserve ambiguity for
 manual status/result inspection. Job wait timeout does not secretly stop or replay

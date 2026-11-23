@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Common API release reports a job that intentionally continues (`continuing: true`, with its job receipt) instead of pending cleanup; common Python SDK 1.0.4 (1.0.3 is already used by Shutter) returns at once for it, checks the job receipt when release requested Stop, and also discovers `~/.kohdalab/slm/run` read-only. Native release is unchanged. / 解放後も継続するジョブを`continuing`として報告し、共通SDKは待機せずに返します。
+- The top banner reads External control, status, Stop, then Take control; GUI Stop is recorded on the external job's receipt. / 上部バナーを「External control・状態・Stop・Take control」の順に整理しました。
+- Add `gui_simulation_notebook.ipynb` for the open GUI in Demo, and mark the other notebooks as the legacy headless workflow. / 開いているGUIをDemoで操作するNotebookを追加しました。
+
 ## 1.0.5
 
 - Report completion, failure and cancellation for Python stdio moves, and tolerate transient GUI control timeouts within the existing lease.

@@ -13,7 +13,8 @@ import pytest
 
 
 ROOT = Path(__file__).parents[1]
-NOTEBOOKS = {
+GUI_NOTEBOOK = "gui_simulation_notebook.ipynb"
+LEGACY_NOTEBOOKS = {
     "move_abs_notebook.ipynb",
     "signal_monitor_notebook.ipynb",
     "trkr_notebook.ipynb",
@@ -21,12 +22,21 @@ NOTEBOOKS = {
     "strkr_notebook.ipynb",
     "srkr_2d_notebook.ipynb",
 }
+NOTEBOOKS = LEGACY_NOTEBOOKS | {GUI_NOTEBOOK}
 
 
 def notebook_paths() -> list[Path]:
     paths = sorted((ROOT / "notebook").glob("*.ipynb"))
     assert {path.name for path in paths} == NOTEBOOKS
     return paths
+
+
+def test_legacy_notebooks_state_they_are_headless_and_point_to_gui_notebook() -> None:
+    for name in LEGACY_NOTEBOOKS:
+        notebook = json.loads((ROOT / "notebook" / name).read_text(encoding="utf-8"))
+        intro = "".join(notebook["cells"][0]["source"])
+        assert "Legacy headless workflow" in intro, name
+        assert GUI_NOTEBOOK in intro, name
 
 
 def test_notebook_cells_are_clean_and_syntactically_valid() -> None:
@@ -56,6 +66,8 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 for path in sorted((root / "notebook").glob("*.ipynb")):
+    if path.name == "gui_simulation_notebook.ipynb":
+        continue  # Requires an open GUI; covered by test_gui_notebook.py.
     notebook = json.loads(path.read_text(encoding="utf-8"))
     namespace = {"__name__": "__main__"}
     for cell in notebook["cells"]:
