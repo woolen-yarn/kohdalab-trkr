@@ -10,6 +10,7 @@ mod eta;
 #[cfg(feature = "gui-interaction-tests")]
 mod gui_interaction_tests;
 mod measurement_settings;
+mod output_profile;
 mod power_meter;
 mod remote;
 mod snapshot;
@@ -25,10 +26,10 @@ use crate::{
     presentation,
 };
 use eframe::egui::{self, Color32, Stroke, Vec2};
+use output_profile::{OutputProfile, default_output, hydrated_output, output_filename};
 use serde_json::{Value, json};
-use snapshot::copy_complete_csv;
 #[cfg(test)]
-use snapshot::{audit_record_is_in_snapshot, persist_snapshot_noclobber};
+use snapshot::{audit_record_is_in_snapshot, copy_complete_csv, persist_snapshot_noclobber};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     path::PathBuf,
@@ -45,12 +46,6 @@ const BORDER: Color32 = Color32::from_rgb(56, 58, 67);
 const TEXT: Color32 = Color32::from_rgb(235, 236, 241);
 const MAX_TRACE: usize = 50_000;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct OutputProfile {
-    dir: String,
-    filename: String,
-    auto_timestamp_suffix: bool,
-}
 #[derive(Clone, PartialEq)]
 struct StageDraft {
     model: String,
@@ -3253,36 +3248,6 @@ impl App {
             )),
         }
     }
-    fn begin_snapshot_copy(&mut self, source: PathBuf, destination: PathBuf) {
-        if self.snapshot_copy.is_some() {
-            return;
-        }
-        let (sender, receiver) = std::sync::mpsc::channel();
-        let run_active = self.snapshot.running;
-        self.note("Saving snapshot…");
-        self.snapshot_copy = Some(receiver);
-        std::thread::spawn(move || {
-            let result = copy_complete_csv(&source, &destination, run_active).map(|()| destination);
-            let _ = sender.send(result);
-        });
-    }
-    fn poll_snapshot_copy(&mut self) {
-        let Some(receiver) = &self.snapshot_copy else {
-            return;
-        };
-        let result = match receiver.try_recv() {
-            Ok(result) => result,
-            Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                Err("Snapshot copy worker closed unexpectedly".into())
-            }
-        };
-        self.snapshot_copy = None;
-        match result {
-            Ok(path) => self.note(format!("Saved snapshot: {}", path.display())),
-            Err(error) => self.note(format!("Save snapshot failed: {error}")),
-        }
-    }
     fn measure(&mut self, ui: &mut egui::Ui, area: egui::Rect) {
         use precision::{Form, rect};
         if !self.demo_viewer {
@@ -4868,61 +4833,6 @@ fn device_phase(
     } else {
         None
     }
-}
-fn default_output(workflow: Workflow) -> OutputProfile {
-    let filename = workflow.default_filename();
-    OutputProfile {
-        dir: output_dir(),
-        filename: filename.into(),
-        auto_timestamp_suffix: true,
-    }
-}
-/// Read both the nested output object written by the GUI and the flat fields
-/// written by legacy Python profiles.  Empty nested strings deliberately fall
-/// back, while an explicit nested `false` remains authoritative.
-fn hydrated_output(raw: &Value, workflow: Workflow, fallback: OutputProfile) -> OutputProfile {
-    let settings = raw.pointer(&format!("/measurements/{}", workflow.key()));
-    let output = settings.and_then(|value| value.get("output"));
-    let nonempty = |value: Option<&Value>| {
-        value
-            .and_then(Value::as_str)
-            .filter(|value| !value.trim().is_empty())
-            .map(str::to_owned)
-    };
-    let nested = |key: &str| output.and_then(|value| value.get(key));
-    OutputProfile {
-        dir: nonempty(nested("dir"))
-            .or_else(|| nonempty(nested("output_dir")))
-            .or_else(|| nonempty(settings.and_then(|value| value.get("output_dir"))))
-            .unwrap_or(fallback.dir),
-        filename: nonempty(nested("filename"))
-            .or_else(|| nonempty(settings.and_then(|value| value.get("filename"))))
-            .unwrap_or(fallback.filename),
-        auto_timestamp_suffix: nested("auto_timestamp_suffix")
-            .and_then(Value::as_bool)
-            .or_else(|| {
-                settings
-                    .and_then(|value| value.get("auto_timestamp_suffix"))
-                    .and_then(Value::as_bool)
-            })
-            .unwrap_or(fallback.auto_timestamp_suffix),
-    }
-}
-fn output_filename(profile: &OutputProfile, demo: bool) -> String {
-    let fallback = "trkr_run";
-    let name = profile.filename.trim();
-    let name = if name.is_empty() { fallback } else { name };
-    if demo && !name.to_ascii_lowercase().starts_with("demo_") {
-        format!("demo_{name}")
-    } else {
-        name.to_owned()
-    }
-}
-fn output_dir() -> String {
-    UserConfigPaths::for_current_user()
-        .results_dir()
-        .display()
-        .to_string()
 }
 #[cfg(test)]
 #[path = "ui/tests.rs"]
