@@ -574,8 +574,9 @@ impl App {
             self.alignment_workspace.power_settings = true;
         }
         if self.alignment_workspace.power_settings {
-            let dialog =
-                egui::Modal::new(egui::Id::new("alignment-power-settings")).show(ui.ctx(), |ui| {
+            let dialog = egui::Modal::new(egui::Id::unique("alignment-power-settings")).show(
+                ui.ctx(),
+                |ui| {
                     ui.heading("Power Monitor Settings");
                     let mut selected = id.clone();
                     let current = self
@@ -608,7 +609,8 @@ impl App {
                         self.alignment_workspace.power_trend = None;
                     }
                     ui.button("Done").clicked()
-                });
+                },
+            );
             if dialog.inner || dialog.should_close() {
                 self.alignment_workspace.power_settings = false;
             }
@@ -660,7 +662,7 @@ impl App {
             .and_then(|points| points.front())
             .map_or(0., |point| point[0]);
         let label = format!("P ({prefix}W)");
-        let id = egui::Id::new((
+        let id = egui::Id::unique((
             "alignment-power",
             &id,
             trend.map(|trend| trend.started),
@@ -718,7 +720,7 @@ impl App {
             ui,
             rect,
             crate::live_view::LiveChannel {
-                id: egui::Id::new(("power-meter-live", id)),
+                id: egui::Id::unique(("power-meter-live", id)),
                 name: "P".into(),
                 origin: if simulated { "SIM" } else { "MEASURED" }.into(),
                 state: if state == "SIM" { "LIVE" } else { state }.into(),

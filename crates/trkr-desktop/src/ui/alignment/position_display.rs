@@ -253,7 +253,7 @@ pub(super) fn position_graph(ui: &mut egui::Ui, rect: egui::Rect, display: &[Pos
     );
     ui.interact(
         rect,
-        ui.id().with((
+        ui.scope_id().with((
             "alignment-position",
             rect.left().to_bits(),
             rect.top().to_bits(),

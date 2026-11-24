@@ -428,18 +428,19 @@ impl App {
             && !self.python_locked();
         let mut remove = false;
         let mut cancel = false;
-        let response = egui::Modal::new(egui::Id::new("delete-alignment-panel")).show(ctx, |ui| {
-            ui.set_width(300.);
-            ui.heading("Delete alignment panel?");
-            ui.label("The device remains registered. Its connection is unchanged.");
-            ui.add_space(10.);
-            ui.horizontal(|ui| {
-                cancel = ui.button("Cancel").clicked();
-                remove = ui
-                    .add_enabled(editable, egui::Button::new("Delete"))
-                    .clicked();
+        let response =
+            egui::Modal::new(egui::Id::unique("delete-alignment-panel")).show(ctx, |ui| {
+                ui.set_width(300.);
+                ui.heading("Delete alignment panel?");
+                ui.label("The device remains registered. Its connection is unchanged.");
+                ui.add_space(10.);
+                ui.horizontal(|ui| {
+                    cancel = ui.button("Cancel").clicked();
+                    remove = ui
+                        .add_enabled(editable, egui::Button::new("Delete"))
+                        .clicked();
+                });
             });
-        });
         if remove {
             self.alignment.layout.remove(kind, &id);
             self.alignment.delete_panel = None;
@@ -1167,7 +1168,7 @@ impl App {
         };
         let locked = !self.inventory_editable();
         let mut intents = Vec::new();
-        let response = egui::Modal::new(egui::Id::new("alignment-options")).show(ctx, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("alignment-options")).show(ctx, |ui| {
             ui.set_width(310.);
             ui.heading(format!("Options · {name}"));
             ui.label("Direction keeps the displayed coordinate; no motion.");
@@ -1249,7 +1250,7 @@ impl App {
             return;
         };
         let ready = self.alignment_initialize_ready(&target);
-        let response = egui::Modal::new(egui::Id::new("alignment-initialize-motion")).show(ctx, |ui| {
+        let response = egui::Modal::new(egui::Id::unique("alignment-initialize-motion")).show(ctx, |ui| {
             ui.heading(format!("Initialize {}", target.name));
             ui.label("Initialization uses the configured reference procedure. It does not start until confirmed.");
             if target.default_home {
@@ -1907,7 +1908,7 @@ fn position_editor(
     font: f32,
 ) -> Option<f64> {
     let (field, move_rect) = coordinate_group(rect);
-    let widget = egui::Id::new(("alignment-position-edit", format!("{kind:?}"), id, axis));
+    let widget = egui::Id::unique(("alignment-position-edit", format!("{kind:?}"), id, axis));
     let is_this = |alignment: &AlignmentUi| {
         alignment.editing.as_ref().is_some_and(|edit| {
             edit.kind == kind && edit.id == id && edit.axis == axis && edit.unit == unit
@@ -1929,7 +1930,7 @@ fn position_editor(
             egui::TextEdit::singleline(&mut edit.text)
                 .id(widget)
                 .font(egui::FontId::proportional(font.min(16.)))
-                .horizontal_align(egui::Align::Center),
+                .align(egui::Align2::CENTER_TOP),
         );
         let first = edit.frames == 0;
         edit.frames = edit.frames.saturating_add(1);
@@ -2220,8 +2221,7 @@ fn motion_arrow_button(
     };
     let response =
         motion_button(render, control, "").on_hover_text(format!("{label} · {description}"));
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, arrow_enabled, &label));
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, arrow_enabled, &label));
 
     paint_arrow(
         render.ui,
@@ -2313,7 +2313,7 @@ fn status(ui: &mut egui::Ui, rect: egui::Rect, connected: bool, phase: &str) {
         );
     ui.interact(
         text_rect,
-        ui.id()
+        ui.scope_id()
             .with(("device-phase", rect.min.x.to_bits(), rect.min.y.to_bits())),
         egui::Sense::hover(),
     )
@@ -2322,7 +2322,7 @@ fn status(ui: &mut egui::Ui, rect: egui::Rect, connected: bool, phase: &str) {
 fn selector(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     selected: &mut Option<String>,
     options: &[DeviceOption],
     locked: bool,
@@ -2387,7 +2387,7 @@ fn number(ui: &mut egui::Ui, rect: egui::Rect, value: &mut f64, enabled: bool) {
 fn unit_selector(
     ui: &mut egui::Ui,
     rect: egui::Rect,
-    id: impl std::hash::Hash,
+    id: impl std::hash::Hash + std::fmt::Debug,
     unit: &mut AlignmentUnit,
     enabled: bool,
     delay: bool,
@@ -2461,7 +2461,7 @@ mod tests {
     #[test]
     fn rendered_delay_coordinate_fits_beside_move() {
         let context = egui::Context::default();
-        let _ = context.run_ui(egui::RawInput::default(), |ui| {
+        let _ = crate::headless::run_ui(&context, egui::RawInput::default(), |ui| {
             for width in [240., 400., 832.] {
                 let card = precision::rect(0., 0., width, 216.);
                 let (field, button) = coordinate_group(delay_coordinate_group(card));
@@ -2585,15 +2585,20 @@ mod tests {
         let context = egui::Context::default();
         let mut value = 1.;
         let mut frame = |events: Vec<egui::Event>, modifiers: egui::Modifiers| {
-            let _ = context.run_ui(
+            // egui 0.36 moved held modifiers from `RawInput` into the event
+            // stream; send them first so each frame keeps its own state.
+            let events = std::iter::once(egui::Event::ModifiersChanged(modifiers))
+                .chain(events)
+                .collect();
+            let _ = crate::headless::run_ui(
+                &context,
                 egui::RawInput {
                     screen_rect: Some(precision::rect(0., 0., 400., 300.)),
                     events,
-                    modifiers,
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         number(ui, precision::rect(20., 20., 100., 26.), &mut value, true);
                     });
                 },
@@ -2674,8 +2679,8 @@ mod tests {
         let mut down = false;
         let moves = MoveContext::default();
         let mut edit_seen = false;
-        let _ = context.run_ui(input, |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| {
+        let _ = crate::headless::run_ui(context, input, |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let mut render = RenderState {
                     ui,
                     alignment,
@@ -3020,15 +3025,15 @@ mod tests {
                         modifiers: Default::default(),
                     });
                 }
-                let _ = ctx.run_ui(
+                let _ = crate::headless::run_ui(
+                    &ctx,
                     egui::RawInput {
                         screen_rect: Some(area),
                         events,
                         ..Default::default()
                     },
                     |ui| {
-                        egui::CentralPanel::default()
-                            .show_inside(ui, |ui| app.alignment_view(ui, area));
+                        egui::CentralPanel::default().show(ui, |ui| app.alignment_view(ui, area));
                     },
                 );
             }
@@ -3062,15 +3067,15 @@ mod tests {
                     modifiers: Default::default(),
                 });
             }
-            let _ = ctx.run_ui(
+            let _ = crate::headless::run_ui(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(area),
                     events,
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default()
-                        .show_inside(ui, |ui| app.alignment_view(ui, area));
+                    egui::CentralPanel::default().show(ui, |ui| app.alignment_view(ui, area));
                 },
             );
         }
@@ -3299,15 +3304,19 @@ mod tests {
             let mut held_down = false;
             let mut edit_seen = false;
             let mut committed = None;
-            let _ = context.run_ui(
+            // Held modifiers are an event since egui 0.36; send them first.
+            let events = std::iter::once(egui::Event::ModifiersChanged(modifiers))
+                .chain(events)
+                .collect();
+            let _ = crate::headless::run_ui(
+                &context,
                 egui::RawInput {
                     screen_rect: Some(precision::rect(0., 0., 400., 300.)),
                     events,
-                    modifiers,
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         let mut render = RenderState {
                             ui,
                             alignment,

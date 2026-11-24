@@ -484,48 +484,41 @@ impl App {
                     self.trkr_log_y,
                 )?;
                 if !smoke.requested {
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(
-                        egui::UserData::default(),
-                    ));
+                    crate::screenshot::request(ctx);
                     smoke.requested = true;
-                } else {
-                    for event in ctx.input(|i| i.raw.events.clone()) {
-                        if let egui::Event::Screenshot { image, .. } = event {
-                            let pixels = image.pixels.iter().flat_map(|p| p.to_array()).collect();
-                            let rgba = image::RgbaImage::from_raw(
-                                image.width() as u32,
-                                image.height() as u32,
-                                pixels,
-                            )
-                            .ok_or("Invalid screenshot")?;
-                            let name = format!(
-                                "{}_{}.png",
-                                workflow.key(),
-                                if smoke.stage == 3 {
-                                    "xy"
-                                } else if smoke.stage == 5 {
-                                    "log"
-                                } else {
-                                    "rtheta"
-                                }
-                            );
-                            rgba.save(smoke.output.join(name))
-                                .map_err(|e| e.to_string())?;
-                            smoke.requested = false;
-                            smoke.frames = 0;
-                            if smoke.stage == 3 {
-                                self.mode = DisplayMode::RTheta;
-                                smoke.stage = 4;
-                            } else if workflow == Workflow::Trkr && smoke.stage == 4 {
-                                self.trkr_log_y = true;
-                                smoke.stage = 5;
-                            } else {
-                                self.trkr_log_y = false;
-                                smoke.workflow += 1;
-                                smoke.stage = 0;
-                            }
-                            break;
+                } else if let Some(image) = crate::screenshot::take(ctx) {
+                    let pixels = image.pixels.iter().flat_map(|p| p.to_array()).collect();
+                    let rgba = image::RgbaImage::from_raw(
+                        image.width() as u32,
+                        image.height() as u32,
+                        pixels,
+                    )
+                    .ok_or("Invalid screenshot")?;
+                    let name = format!(
+                        "{}_{}.png",
+                        workflow.key(),
+                        if smoke.stage == 3 {
+                            "xy"
+                        } else if smoke.stage == 5 {
+                            "log"
+                        } else {
+                            "rtheta"
                         }
+                    );
+                    rgba.save(smoke.output.join(name))
+                        .map_err(|e| e.to_string())?;
+                    smoke.requested = false;
+                    smoke.frames = 0;
+                    if smoke.stage == 3 {
+                        self.mode = DisplayMode::RTheta;
+                        smoke.stage = 4;
+                    } else if workflow == Workflow::Trkr && smoke.stage == 4 {
+                        self.trkr_log_y = true;
+                        smoke.stage = 5;
+                    } else {
+                        self.trkr_log_y = false;
+                        smoke.workflow += 1;
+                        smoke.stage = 0;
                     }
                 }
             }

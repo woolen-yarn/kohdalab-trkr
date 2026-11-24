@@ -9,6 +9,8 @@ mod file_dialog;
 mod font_selection;
 #[cfg(feature = "gui-interaction-tests")]
 mod gui_interaction;
+#[cfg(test)]
+mod headless;
 mod inventory;
 mod live;
 mod live_view;
@@ -24,6 +26,7 @@ mod remote;
 mod replay_data;
 mod replay_player;
 mod run_log;
+mod screenshot;
 mod ui;
 mod ui_feedback;
 use std::io::{BufRead, Read, Write};

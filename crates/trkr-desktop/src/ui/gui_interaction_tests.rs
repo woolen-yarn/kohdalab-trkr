@@ -115,6 +115,9 @@ mod tests {
             delta: egui::vec2(0., -40.),
             modifiers: Default::default(),
             phase: egui::TouchPhase::Move,
+            // The pre-0.37 event carried no source; keep it unspecified so
+            // no wheel- or trackpad-specific scrolling is introduced.
+            source: egui::MouseWheelSource::Unknown,
         });
         h.run_steps(3);
         let delay = h.state().geometry["inventory_delay-1"];
@@ -193,7 +196,7 @@ mod tests {
         h.run_steps(3);
         let before = h.state().geometry["trkr_wait_spin"];
         let value = h.state().plan().interval_s;
-        let id = egui::Id::new("trkr_wait_spin");
+        let id = egui::Id::unique("trkr_wait_spin");
         h.ctx.memory_mut(|m| m.request_focus(id));
         h.ctx
             .data_mut(|d| d.insert_temp(id, "not-a-number".to_owned()));

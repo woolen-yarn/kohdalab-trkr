@@ -139,13 +139,8 @@ pub fn draw_channel(ui: &mut egui::Ui, area: egui::Rect, channel: LiveChannel) -
                 .include_x(0.)
                 .include_y(0.)
                 .y_axis_formatter(move |mark, _| scale.tick(mark.value, mark.step_size))
-                .label_formatter(|name, point| {
-                    crate::presentation::point_label(
-                        name,
-                        "Time (s)",
-                        point.x,
-                        point.y / scale.factor,
-                    )
+                .label_formatter(|hover| {
+                    crate::presentation::hover_label(hover, "Time (s)", |y| y / scale.factor)
                 })
                 .show(ui, |plot| {
                     plot.line(
@@ -257,7 +252,7 @@ pub fn draw(
         ui,
         area,
         LiveChannel {
-            id: egui::Id::new(("trkr_iv_live", mode == DisplayMode::RTheta, channel)),
+            id: egui::Id::unique(("trkr_iv_live", mode == DisplayMode::RTheta, channel)),
             name: channel_name(mode, channel).into(),
             origin: origin_name(history.origin()).into(),
             state: state.into(),
@@ -304,7 +299,8 @@ mod tests {
         );
         for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
             for channel in 0..2 {
-                let _ = context.run_ui(
+                let _ = crate::headless::run_ui(
+                    &context,
                     egui::RawInput {
                         screen_rect: Some(egui::Rect::from_min_size(
                             egui::Pos2::ZERO,
@@ -313,7 +309,7 @@ mod tests {
                         ..Default::default()
                     },
                     |ui| {
-                        egui::CentralPanel::default().show_inside(ui, |ui| {
+                        egui::CentralPanel::default().show(ui, |ui| {
                             let area = egui::Rect::from_min_size(
                                 ui.max_rect().min,
                                 egui::vec2(167., 140.),

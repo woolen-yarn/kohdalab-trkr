@@ -306,7 +306,7 @@ impl App {
             let handle = ui
                 .interact(
                     handle_rect,
-                    egui::Id::new(("device-drag", &key.kind, &id)),
+                    egui::Id::unique(("device-drag", &key.kind, &id)),
                     if editable {
                         egui::Sense::drag()
                     } else {
@@ -365,7 +365,7 @@ impl App {
                                 .font(font)
                                 .frame(egui::Frame::NONE)
                                 .margin(Vec2::new(3., 0.))
-                                .vertical_align(egui::Align::Center)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .desired_width(ui.available_width())
                                 .min_size(Vec2::new(0., title_rect.height())),
                         )
@@ -524,7 +524,7 @@ impl App {
             }
             let painter = ui.ctx().layer_painter(egui::LayerId::new(
                 egui::Order::Tooltip,
-                egui::Id::new("device-drag-preview"),
+                egui::Id::unique("device-drag-preview"),
             ));
             let galley = painter.layout_no_wrap(
                 payload.title.clone(),
@@ -562,7 +562,7 @@ impl App {
         let mut accepted = false;
         let mut cancelled = false;
         let editable = self.inventory_editable();
-        let response = egui::Modal::new(egui::Id::new("device-inventory-dialog"))
+        let response = egui::Modal::new(egui::Id::unique("device-inventory-dialog"))
             .frame(egui::Frame::popup(&ctx.global_style()).fill(PANEL).inner_margin(16))
             .show(ctx, |ui| {
                 ui.set_width(360.);
@@ -942,7 +942,8 @@ mod tests {
         }
     }
     fn inventory_frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            ctx,
             egui::RawInput {
                 screen_rect: Some(precision::rect(0., 0., 400., 1000.)),
                 events,
@@ -951,7 +952,7 @@ mod tests {
             |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         app.device_inventory_cards(ui, egui::pos2(10., 10.), 350.);
                     });
             },

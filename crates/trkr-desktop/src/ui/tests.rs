@@ -27,7 +27,7 @@ fn eframe_logic_cancels_close_while_snapshot_copy_is_pending_without_drawing_ui(
         },
     );
 
-    let output = context.run_ui(input, |_| {
+    let output = crate::headless::run_ui(&context, input, |_| {
         eframe::App::logic(&mut app, &context, &mut frame)
     });
 
@@ -53,7 +53,7 @@ fn eframe_logic_releases_alignment_hold_on_focus_loss_without_drawing_ui() {
         ..Default::default()
     };
 
-    let _ = context.run_ui(input, |_| {
+    let _ = crate::headless::run_ui(&context, input, |_| {
         eframe::App::logic(&mut app, &context, &mut frame)
     });
 
@@ -1354,7 +1354,7 @@ fn render_app_frame(app: &mut App, context: &egui::Context, size: egui::Vec2) {
         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
         ..Default::default()
     };
-    let _ = context.run_ui(input, |ui| eframe::App::ui(app, ui, &mut frame));
+    let _ = crate::headless::run_ui(context, input, |ui| eframe::App::ui(app, ui, &mut frame));
 }
 
 fn geometry_rect(app: &App, key: &str) -> egui::Rect {

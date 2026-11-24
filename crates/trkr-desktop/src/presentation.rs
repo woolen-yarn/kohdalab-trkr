@@ -1,7 +1,7 @@
 //! Python-compatible plot arrangement and coordinate presentation.
 use crate::engine::Sample;
 use eframe::egui::{self, Color32, Rect, TextureHandle, TextureOptions, Vec2};
-use egui_plot::{AxisHints, Line, Plot, PlotImage, PlotPoint, VPlacement};
+use egui_plot::{AxisHints, HoverPosition, Line, Plot, PlotImage, PlotPoint, VPlacement};
 use trkr_core::{Axis, DisplayMode, Plan, Workflow};
 
 /// Per-channel raster state for a 2D scan.  The UI only appends samples (or
@@ -90,6 +90,25 @@ pub(crate) fn point_label(name: &str, x_label: &str, x: f64, y: f64) -> String {
         return String::new();
     }
     format!("{x_label}: {}\n{name}: {}", coordinate(x), coordinate(y))
+}
+
+/// Adapt egui_plot's hover callback to the existing cursor label. Near a named
+/// series the text is exactly `point_label`; away from data (formerly an empty
+/// series name) or on an unnamed series no label is shown, as before.
+pub(crate) fn hover_label(
+    hover: &HoverPosition,
+    x_label: &str,
+    y: impl Fn(f64) -> f64,
+) -> Option<String> {
+    match hover {
+        HoverPosition::NearDataPoint {
+            plot_name,
+            position,
+            ..
+        } => Some(point_label(plot_name, x_label, position.x, y(position.y)))
+            .filter(|label| !label.is_empty()),
+        HoverPosition::Elsewhere { .. } => None,
+    }
 }
 
 fn coordinate(value: f64) -> String {
@@ -409,7 +428,7 @@ impl PlotView<'_> {
         let has_data = !segments.is_empty();
         // Keep placeholder and data bounds separate and reset zoom when the
         // mode, units or run change.
-        let id = egui::Id::new((
+        let id = egui::Id::unique((
             self.plan.workflow.key(),
             spec.id,
             spec.signal,
@@ -451,9 +470,8 @@ impl PlotView<'_> {
                     }),
             ]);
         }
-        plot.label_formatter(|name, point| {
-            let y = if log { 10_f64.powf(point.y) } else { point.y };
-            point_label(name, &label, point.x, y)
+        plot.label_formatter(|hover| {
+            hover_label(hover, &label, |y| if log { 10_f64.powf(y) } else { y })
         })
         .show(ui, |p| {
             for segment in segments {
@@ -644,7 +662,7 @@ impl PlotView<'_> {
         }
         let has_data = cache.is_some();
         let mut plot = Plot::new((self.plan.workflow.key(), "map", signal))
-            .id(egui::Id::new((
+            .id(egui::Id::unique((
                 self.plan.workflow.key(),
                 "map",
                 signal,
@@ -706,7 +724,9 @@ impl PlotView<'_> {
             .expect("valid heatmap cache when data exists");
         // Match Python ImageItem.setRect(min_fast,min_slow,max-min,max-min).
         let size = Vec2::new(cache.extent.width as f32, cache.extent.height as f32);
-        let result = plot.label_formatter(|_, _| String::new()).show(ui, |p| {
+        // The plot's own label stays suppressed; the texel-exact tooltip below
+        // remains the only heatmap hover text.
+        let result = plot.label_formatter(|_| None).show(ui, |p| {
             p.image(
                 PlotImage::new(
                     self.signal_label(signal),
@@ -920,7 +940,7 @@ pub fn verify_visible_data(
         } else {
             plan.fast
         };
-        let id = egui::Id::new((
+        let id = egui::Id::unique((
             plan.workflow.key(),
             spec_id,
             signal,
@@ -966,7 +986,7 @@ pub fn verify_visible_data(
             }
         }
         if plan.workflow.is_2d() {
-            let id = egui::Id::new((
+            let id = egui::Id::unique((
                 plan.workflow.key(),
                 "map",
                 signal,
@@ -1066,7 +1086,8 @@ mod tests {
             let mut geometry = crate::precision::Geometry::new();
             for mode in [DisplayMode::Xy, DisplayMode::RTheta] {
                 for _ in 0..3 {
-                    let _ = ctx.run_ui(
+                    let _ = crate::headless::run_ui(
+                        &ctx,
                         egui::RawInput {
                             screen_rect: Some(Rect::from_min_size(
                                 egui::Pos2::ZERO,
@@ -1075,7 +1096,7 @@ mod tests {
                             ..Default::default()
                         },
                         |ui| {
-                            egui::CentralPanel::default().show_inside(ui, |ui| {
+                            egui::CentralPanel::default().show(ui, |ui| {
                                 plots(
                                     ui,
                                     &data,
@@ -1143,8 +1164,8 @@ mod tests {
                 screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(700., 400.))),
                 ..Default::default()
             };
-            let _ = ctx.run_ui(input, |ui| {
-                egui::CentralPanel::default().show_inside(ui, |ui| {
+            let _ = crate::headless::run_ui(&ctx, input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let view = PlotView {
                         epoch: 0,
                         y_log: false,
@@ -1557,6 +1578,10 @@ mod tests {
             "t_cor (ps): -0.125000\nX (V): 2.500000e-8",
         );
         assert!(point_label("", "t_cor (ps)", 1., 2.).is_empty());
+        let elsewhere = HoverPosition::Elsewhere {
+            position: PlotPoint::new(1., 2.),
+        };
+        assert_eq!(hover_label(&elsewhere, "t_cor (ps)", |y| y), None);
     }
 
     #[test]
@@ -1639,7 +1664,8 @@ mod tests {
             (DisplayMode::RTheta, false),
             (DisplayMode::Xy, true),
         ] {
-            let _ = ctx.run_ui(
+            let _ = crate::headless::run_ui(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(800., 500.))),
                     ..Default::default()

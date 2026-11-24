@@ -128,7 +128,8 @@ mod tests {
     }
     fn press(ctx: &egui::Context, modifiers: egui::Modifiers, repeat: bool) -> bool {
         // A fresh press follows a release; egui otherwise marks it as autorepeat.
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            ctx,
             egui::RawInput {
                 events: vec![egui::Event::Key {
                     key: egui::Key::Enter,
@@ -142,7 +143,8 @@ mod tests {
             |_| {},
         );
         if repeat {
-            let _ = ctx.run_ui(
+            let _ = crate::headless::run_ui(
+                ctx,
                 egui::RawInput {
                     events: vec![egui::Event::Key {
                         key: egui::Key::Enter,
@@ -157,7 +159,8 @@ mod tests {
             );
         }
         let mut result = false;
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            ctx,
             egui::RawInput {
                 events: vec![egui::Event::Key {
                     key: egui::Key::Enter,
@@ -249,13 +252,14 @@ mod tests {
             samples: Vec::new(),
         }));
         let area = precision::rect(0., 0., 850., 250.);
-        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
-            egui::CentralPanel::default().show_inside(ui, |ui| app.measure(ui, area));
+        let _ = crate::headless::run_ui(&ctx, egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| app.measure(ui, area));
         });
-        let id = egui::Id::new("trkr_wait_spin");
+        let id = egui::Id::unique("trkr_wait_spin");
         ctx.memory_mut(|m| m.request_focus(id));
         ctx.data_mut(|d| d.insert_temp(id, String::new()));
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            &ctx,
             egui::RawInput {
                 events: vec![
                     egui::Event::Text("0.37".into()),
@@ -274,7 +278,7 @@ mod tests {
                 let requested = consume(&ctx);
                 let blocked = app.start_overlay_open(&ctx)
                     || !app.start_availability(app.plan()).allows(app.plan());
-                egui::CentralPanel::default().show_inside(ui, |ui| app.measure(ui, area));
+                egui::CentralPanel::default().show(ui, |ui| app.measure(ui, area));
                 app.finish_start_shortcut(&ctx, requested, blocked);
             },
         );
