@@ -43,7 +43,14 @@ pub fn file_sha256(path: &Path) -> Result<String, String> {
         }
         digest.update(&buffer[..count]);
     }
-    Ok(format!("{:x}", digest.finalize()))
+    // sha2 0.11 digests no longer implement `LowerHex`; keep the same
+    // lowercase, zero-padded 64-character encoding byte by byte.
+    let mut hex = String::with_capacity(64);
+    for byte in digest.finalize().iter() {
+        use std::fmt::Write as _;
+        let _ = write!(hex, "{byte:02x}");
+    }
+    Ok(hex)
 }
 pub struct RawWriter {
     csv: csv::Writer<File>,
