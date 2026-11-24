@@ -2105,6 +2105,10 @@ impl Drop for CancelOnPanic {
     }
 }
 
+/// Signal Monitor keeps its read schedule while parallel moves run.
+///
+/// Run in isolation on macOS CI; see the note in `.github/workflows/test.yml`
+/// and keep its `--skip`/`--exact` filters in step if this test is renamed.
 #[cfg(unix)]
 #[test]
 fn monitor_hands_off_every_connected_axis_and_records_no_position() {
