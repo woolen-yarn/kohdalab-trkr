@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.7
+
+- Keep Stop and Take control visible together in narrow external-control banners. / 外部制御中のバナーが狭いときも、StopとTake controlを表示して操作できます。
+- Update the desktop GUI libraries together. Preserve clipboard support, notification icons and plot cursor coordinates. / GUIライブラリを一括更新し、クリップボード、通知アイコン、プロット上のカーソル座標表示を維持しました。
+- Separate measurement forms, output settings, Alignment position display and recorded-data replay into dedicated modules. / 測定フォーム、出力設定、Alignmentの位置表示、記録再生を専用モジュールに分割しました。
+- The minimum supported Rust version for source builds is now 1.95. / ソースからのビルドにはRust 1.95以上が必要です。
+
 ## 1.0.6
 
 - Common API release reports a job that intentionally continues (`continuing: true`, with its job receipt) instead of pending cleanup; common Python SDK 1.0.4 (1.0.3 is already used by Shutter) returns at once for it, checks the job receipt when release requested Stop, and also discovers `~/.kohdalab/slm/run` read-only. Native release is unchanged. / 解放後も継続するジョブを`continuing`として報告し、共通SDKは待機せずに返します。
