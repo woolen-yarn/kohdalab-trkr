@@ -1020,32 +1020,57 @@ impl App {
             )
             .show(root, |ui| {
                 // Fixed reading order: who controls, what it is doing, then
-                // the GUI's own Stop and the ownership override. Wrapping
-                // keeps Stop and Take control on screen in narrow windows.
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(
-                        egui::RichText::new(BANNER_TITLE)
-                            .strong()
-                            .color(BANNER_ACCENT),
-                    );
-                    ui.label(egui::RichText::new(status).color(tone));
-                    // egui 0.37 buttons are roomier and can be drawn wider
-                    // than the wrap check assumes, so reserve their measured
-                    // size and move Stop + Take control to the next row
-                    // together when they do not both fit before the visible
-                    // edge. Each button is drawn at exactly the size reserved.
-                    let stop_size = banner_button_size(ui, "Stop");
-                    let take_size = banner_button_size(ui, "Take control");
-                    let right = ui.max_rect().right().min(ui.clip_rect().right());
-                    let needed = stop_size.x + ui.spacing().item_spacing.x + take_size.x;
-                    if ui.cursor().min.x + needed > right {
-                        ui.end_row();
-                    }
-                    stop = ui.add_sized(stop_size, egui::Button::new("Stop")).clicked();
-                    takeover = ui
+                // the GUI's own Stop and the ownership override.
+                //
+                // The panel's own rect can be wider than the window (fixed-size
+                // content widens its claimed width), so bound the layout by
+                // the actual viewport. The frame margin is symmetric: mirror
+                // the left inset on the right edge.
+                let content = ui.ctx().content_rect();
+                let left = ui.max_rect().left();
+                let right = content.right() - (left - content.left());
+                let width = (right - left).max(0.);
+                ui.set_max_width(width);
+
+                let title = egui::RichText::new(BANNER_TITLE)
+                    .strong()
+                    .color(BANNER_ACCENT);
+                let status = egui::RichText::new(status).color(tone);
+                let gap = ui.spacing().item_spacing.x;
+                let stop_size = banner_button_size(ui, "Stop");
+                let take_size = banner_button_size(ui, "Take control");
+                let one_row = unwrapped_text_size(ui, title.clone(), egui::TextStyle::Body).x
+                    + gap
+                    + unwrapped_text_size(ui, status.clone(), egui::TextStyle::Body).x
+                    + gap
+                    + stop_size.x
+                    + gap
+                    + take_size.x
+                    <= width;
+                // Buttons are drawn at exactly their reserved size.
+                let actions = |ui: &mut egui::Ui| {
+                    let stop = ui.add_sized(stop_size, egui::Button::new("Stop")).clicked();
+                    let takeover = ui
                         .add_sized(take_size, egui::Button::new("Take control"))
                         .clicked();
-                });
+                    (stop, takeover)
+                };
+                (stop, takeover) = if one_row {
+                    ui.horizontal(|ui| {
+                        ui.label(title);
+                        ui.label(status);
+                        actions(ui)
+                    })
+                    .inner
+                } else {
+                    // Narrow: text wraps within the viewport, then Stop and
+                    // Take control get their own row, in the same order.
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(title);
+                        ui.label(status);
+                    });
+                    ui.horizontal(actions).inner
+                };
             });
         if stop {
             // Record the GUI request on the external job's receipt (stop
@@ -1072,19 +1097,24 @@ impl App {
         }
     }
 }
+/// Size of `text` laid out on one line in `style` under the current style.
+fn unwrapped_text_size(
+    ui: &egui::Ui,
+    text: impl Into<egui::WidgetText>,
+    style: egui::TextStyle,
+) -> egui::Vec2 {
+    text.into()
+        .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+        .size()
+}
 /// Size of a standard text button under the current style: unwrapped
 /// Button-font text plus button padding, at least the interact height.
 fn banner_button_size(ui: &egui::Ui, text: &str) -> egui::Vec2 {
-    let galley = egui::WidgetText::from(text).into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Button,
-    );
+    let text = unwrapped_text_size(ui, text, egui::TextStyle::Button);
     let padding = ui.spacing().button_padding;
     egui::vec2(
-        galley.size().x + 2. * padding.x,
-        (galley.size().y + 2. * padding.y).max(ui.spacing().interact_size.y),
+        text.x + 2. * padding.x,
+        (text.y + 2. * padding.y).max(ui.spacing().interact_size.y),
     )
 }
 #[cfg(test)]
@@ -1381,6 +1411,32 @@ mod tests {
         h.run_steps(2);
         h
     }
+    /// The production `python_banner` alone, rendered for the same real `App`
+    /// (test config, Demo source, real bridge with a long external Demo job)
+    /// in a stateful harness. A full eframe harness now applies the App's
+    /// minimum window size, so its viewport is not the requested width; this
+    /// fixture keeps the banner at exactly `width`.
+    fn narrow_banner_harness(
+        width: f32,
+        dir: &std::path::Path,
+    ) -> egui_kittest::Harness<'static, App> {
+        let server = Server::in_directory(dir.into()).unwrap();
+        let output = dir.join("banner.csv");
+        let mut app = App::with_context(&egui::Context::default(), false);
+        app.source_demo = true;
+        let mut bridge = Bridge::new(server);
+        long_demo(&mut bridge, &mut app, json!({}), &output);
+        app.remote = Some(bridge);
+        let mut h = egui_kittest::Harness::builder()
+            .with_size(egui::vec2(width, 900.))
+            .build_ui_state(|ui, app: &mut App| app.python_banner(ui), app);
+        // The harness owns its context: apply the same visuals and style
+        // that `App::with_context` installs on the App's context.
+        h.ctx.set_visuals(egui::Visuals::dark());
+        crate::precision::configure(&h.ctx);
+        h.run_steps(2);
+        h
+    }
     /// Topmost node whose label contains `label` (the banner is the top row;
     /// other "Stop" buttons sit below it).
     fn banner_rect(h: &egui_kittest::Harness<'_, App>, label: &str) -> egui::Rect {
@@ -1447,7 +1503,8 @@ mod tests {
         let width = 420.;
         for target in ["Stop", "Take control"] {
             let dir = tempfile::tempdir().unwrap();
-            let mut h = banner_harness(width, dir.path());
+            let mut h = narrow_banner_harness(width, dir.path());
+            assert_eq!(h.ctx.content_rect().width(), width);
             let status = banner_rect(&h, "External control");
             let button = banner_rect(&h, target);
             // Fully inside the window and still in the banner (not clipped
