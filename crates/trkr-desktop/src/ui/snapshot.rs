@@ -1,5 +1,6 @@
 //! Consistent, no-clobber snapshots of measurement CSVs and provenance.
-//! No GUI or instrument state is mutated while staging a snapshot.
+//! No GUI or instrument state is mutated while staging a snapshot; the `App`
+//! methods at the end only own the background copy worker and its notices.
 use crate::raw_csv::SnapshotState;
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -371,6 +372,41 @@ pub(super) fn persist_snapshot_noclobber(
         }
     }
     Ok(())
+}
+
+/// Background worker lifecycle for "Save snapshot". Only the pending-copy
+/// receiver and user notices change here; staging above stays GUI-free.
+impl super::App {
+    pub(super) fn begin_snapshot_copy(&mut self, source: PathBuf, destination: PathBuf) {
+        if self.snapshot_copy.is_some() {
+            return;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let run_active = self.snapshot.running;
+        self.note("Saving snapshot…");
+        self.snapshot_copy = Some(receiver);
+        std::thread::spawn(move || {
+            let result = copy_complete_csv(&source, &destination, run_active).map(|()| destination);
+            let _ = sender.send(result);
+        });
+    }
+    pub(super) fn poll_snapshot_copy(&mut self) {
+        let Some(receiver) = &self.snapshot_copy else {
+            return;
+        };
+        let result = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("Snapshot copy worker closed unexpectedly".into())
+            }
+        };
+        self.snapshot_copy = None;
+        match result {
+            Ok(path) => self.note(format!("Saved snapshot: {}", path.display())),
+            Err(error) => self.note(format!("Save snapshot failed: {error}")),
+        }
+    }
 }
 #[cfg(test)]
 mod tests {
