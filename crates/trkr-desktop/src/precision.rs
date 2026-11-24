@@ -111,10 +111,10 @@ impl<'a> Form<'a> {
                 ui.put(
                     r,
                     egui::TextEdit::singleline(value)
-                        .id(egui::Id::new(name))
+                        .id(egui::Id::unique(name))
                         .margin(Vec2::new(4., 2.))
                         .min_size(r.size())
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .desired_width(r.width()),
                 )
             })
@@ -122,7 +122,7 @@ impl<'a> Form<'a> {
     }
     pub fn path(&mut self, name: &str, local: Rect, value: &mut String) {
         let r = self.at(name, local);
-        let id = egui::Id::new((name, "path_edit"));
+        let id = egui::Id::unique((name, "path_edit"));
         let editing = self.ui.ctx().data_mut(|data| data.get_temp::<PathEdit>(id));
         self.ui
             .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
@@ -133,17 +133,17 @@ impl<'a> Form<'a> {
                     editing
                 } else {
                     ui.ctx().data_mut(|data| data.remove::<PathEdit>(id));
-                    ui.memory_mut(|memory| memory.surrender_focus(egui::Id::new(name)));
+                    ui.memory_mut(|memory| memory.surrender_focus(egui::Id::unique(name)));
                     None
                 };
                 if let Some(editing) = editing {
                     let response = ui.put(
                         r,
                         egui::TextEdit::singleline(value)
-                            .id(egui::Id::new(name))
+                            .id(egui::Id::unique(name))
                             .margin(Vec2::new(4., 2.))
                             .min_size(r.size())
-                            .vertical_align(egui::Align::Center)
+                            .align(egui::Align2::LEFT_CENTER)
                             .desired_width(r.width()),
                     );
                     if matches!(editing, PathEdit::Opening) {
@@ -201,10 +201,10 @@ impl<'a> Form<'a> {
                 ui.put(
                     text_rect,
                     egui::TextEdit::singleline(value)
-                        .id(egui::Id::new((name, "text")))
+                        .id(egui::Id::unique((name, "text")))
                         .margin(Vec2::new(4., 2.))
                         .min_size(text_rect.size())
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .desired_width(text_rect.width()),
                 );
                 let arrow_rect = Rect::from_min_max(Pos2::new(text_rect.max.x, r.min.y), r.max);
@@ -249,7 +249,7 @@ impl<'a> Form<'a> {
         enabled: bool,
     ) {
         let r = self.at(name, local);
-        let id = egui::Id::new(name);
+        let id = egui::Id::unique(name);
         self.ui
             .scope_builder(egui::UiBuilder::new().max_rect(r), |ui| {
                 if !enabled || !self.enabled {
@@ -274,7 +274,7 @@ impl<'a> Form<'a> {
                         .id(id)
                         .margin(Vec2::new(4., 2.))
                         .min_size(field.size())
-                        .vertical_align(egui::Align::Center)
+                        .align(egui::Align2::LEFT_CENTER)
                         .desired_width(field.width()),
                 );
                 numeric_feedback(ui, field, &response, &text);
@@ -640,9 +640,10 @@ mod tests {
     fn focused_number_cannot_change_with_arrow_keys_when_disabled() {
         let ctx = egui::Context::default();
         let mut value = 5.;
-        let id = egui::Id::new("locked-number");
+        let id = egui::Id::unique("locked-number");
         ctx.memory_mut(|m| m.request_focus(id));
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            &ctx,
             egui::RawInput {
                 events: vec![egui::Event::Key {
                     key: egui::Key::ArrowUp,
@@ -654,7 +655,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let mut geometry = Geometry::new();
                     Form::new(ui, &mut geometry, Pos2::ZERO).number(
                         "locked-number",
@@ -673,8 +674,9 @@ mod tests {
     fn number_increment_never_commits_infinity() {
         let ctx = egui::Context::default();
         let mut value = f64::MAX;
-        ctx.memory_mut(|m| m.request_focus(egui::Id::new("overflow-number")));
-        let _ = ctx.run_ui(
+        ctx.memory_mut(|m| m.request_focus(egui::Id::unique("overflow-number")));
+        let _ = crate::headless::run_ui(
+            &ctx,
             egui::RawInput {
                 events: vec![egui::Event::Key {
                     key: egui::Key::ArrowUp,
@@ -686,7 +688,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                egui::CentralPanel::default().show_inside(ui, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| {
                     let mut geometry = Geometry::new();
                     Form::new(ui, &mut geometry, Pos2::ZERO).number(
                         "overflow-number",
@@ -716,10 +718,10 @@ mod tests {
         second: &mut String,
         enabled: bool,
     ) {
-        let _ = context.run_ui(input, |ui| {
+        let _ = crate::headless::run_ui(context, input, |ui| {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show_inside(ui, |ui| {
+                .show(ui, |ui| {
                     if !enabled {
                         ui.disable();
                     }
@@ -772,7 +774,7 @@ mod tests {
             &mut second,
         );
         draw_paths(&context, Default::default(), &mut first, &mut second);
-        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("first_path"))));
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::unique("first_path"))));
         assert_eq!(first, "/long/configs/experiment.json");
         draw_paths(
             &context,
@@ -793,8 +795,8 @@ mod tests {
             &mut second,
         );
         draw_paths(&context, Default::default(), &mut first, &mut second);
-        assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("first_path"))));
-        assert!(context.memory(|memory| memory.has_focus(egui::Id::new("second_path"))));
+        assert!(!context.memory(|memory| memory.has_focus(egui::Id::unique("first_path"))));
+        assert!(context.memory(|memory| memory.has_focus(egui::Id::unique("second_path"))));
 
         draw_paths(
             &context,
@@ -812,9 +814,9 @@ mod tests {
             &mut first,
             &mut second,
         );
-        assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("second_path"))));
+        assert!(!context.memory(|memory| memory.has_focus(egui::Id::unique("second_path"))));
         draw_paths(&context, Default::default(), &mut first, &mut second);
-        assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("second_path"))));
+        assert!(!context.memory(|memory| memory.has_focus(egui::Id::unique("second_path"))));
     }
     #[test]
     fn path_editor_releases_focus_on_escape_and_parent_disable() {
@@ -830,7 +832,7 @@ mod tests {
                 &mut second,
             );
             draw_paths(&context, Default::default(), &mut first, &mut second);
-            assert!(context.memory(|memory| memory.has_focus(egui::Id::new("first_path"))));
+            assert!(context.memory(|memory| memory.has_focus(egui::Id::unique("first_path"))));
             let mut input = egui::RawInput::default();
             if !disable {
                 input.events.push(egui::Event::Key {
@@ -843,7 +845,7 @@ mod tests {
             }
             draw_enabled_paths(&context, input, &mut first, &mut second, !disable);
             draw_paths(&context, Default::default(), &mut first, &mut second);
-            assert!(!context.memory(|memory| memory.has_focus(egui::Id::new("first_path"))));
+            assert!(!context.memory(|memory| memory.has_focus(egui::Id::unique("first_path"))));
             assert_eq!(first, "C:\\Profiles\\measurement.json");
         }
     }
@@ -893,7 +895,8 @@ mod tests {
     fn fixed_text_edit_has_exact_requested_outer_rectangle() {
         let context = egui::Context::default();
         let mut measured = None;
-        let _ = context.run_ui(
+        let _ = crate::headless::run_ui(
+            &context,
             egui::RawInput {
                 screen_rect: Some(rect(0., 0., 1440., 820.)),
                 ..Default::default()
@@ -901,7 +904,7 @@ mod tests {
             |ui| {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
-                    .show_inside(ui, |ui| {
+                    .show(ui, |ui| {
                         let r = rect(100., 100., 209., 26.);
                         let mut text = "0.000".to_owned();
                         measured = Some(
@@ -910,7 +913,7 @@ mod tests {
                                 egui::TextEdit::singleline(&mut text)
                                     .margin(Vec2::new(4., 2.))
                                     .min_size(r.size())
-                                    .vertical_align(egui::Align::Center)
+                                    .align(egui::Align2::LEFT_CENTER)
                                     .desired_width(r.width()),
                             )
                             .rect,

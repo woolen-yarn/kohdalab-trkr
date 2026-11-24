@@ -400,7 +400,7 @@ impl App {
         } else {
             format!("{name} ({unit})")
         };
-        let id = egui::Id::new(("alignment-signal", name, self.plot_epoch, &y_label));
+        let id = egui::Id::unique(("alignment-signal", name, self.plot_epoch, &y_label));
         draw_monitor_plot(
             ui,
             area,
@@ -434,7 +434,7 @@ impl App {
         let mut close = false;
         let mut next = tab;
         let dialog =
-            egui::Modal::new(egui::Id::new("alignment-monitor-settings")).show(ctx, |ui| {
+            egui::Modal::new(egui::Id::unique("alignment-monitor-settings")).show(ctx, |ui| {
                 ui.set_width(390.);
                 ui.heading("Signal Monitor Settings");
                 ui.horizontal(|ui| {
@@ -604,9 +604,7 @@ pub(super) fn draw_monitor_plot(
                 .allow_scroll(false)
                 .allow_drag(false)
                 .include_x(x_origin)
-                .label_formatter(|name, point| {
-                    presentation::point_label(name, x_label, point.x, point.y)
-                })
+                .label_formatter(|hover| presentation::hover_label(hover, x_label, |y| y))
                 .show(ui, |plot| {
                     plot.line(presentation::measurement_series(
                         y_label,
@@ -629,7 +627,8 @@ fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
     }
     let end = app.trace.last().unwrap().elapsed;
     assert!(end > 60.);
-    let _ = ctx.run_ui(
+    let _ = crate::headless::run_ui(
+        &ctx,
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
@@ -639,7 +638,7 @@ fn signal_monitor_plot_includes_start_and_samples_older_than_thirty_seconds() {
         },
         |ui| app.alignment_signal_plot(ui, ui.max_rect()),
     );
-    let id = egui::Id::new(("alignment-signal", "X", app.plot_epoch, "X (µV)"));
+    let id = egui::Id::unique(("alignment-signal", "X", app.plot_epoch, "X (µV)"));
     let bounds = egui_plot::PlotMemory::load(&ctx, id).unwrap();
     assert!(bounds.bounds().min()[0] <= 0.);
     assert!(bounds.bounds().max()[0] >= end);
@@ -652,7 +651,8 @@ fn signal_plot_points_are_reused_until_the_trace_changes() {
     let mut app = App::with_context(&ctx, false);
     app.enable_alignment_monitor_preview();
     let frame = |app: &App| {
-        let _ = ctx.run_ui(
+        let _ = crate::headless::run_ui(
+            &ctx,
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,

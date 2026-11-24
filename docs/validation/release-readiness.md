@@ -29,12 +29,13 @@ This work was released in 0.5.5. / この作業は0.5.5で公開されました�
 
 ## Dependency boundary / 依存の残件
 
-The application now uses egui/eframe 0.34.3, plot 0.35 and notify 0.22, with
-Rust 1.92 as the minimum. Font selection uses `read-fonts`; the renderer uses the
+The application now uses egui/eframe 0.37, plot 0.38, kittest 0.37 and
+notify 0.24 (all on egui 0.37), with Rust 1.95 as the minimum. The eframe
+remote `inspection` feature stays disabled. Font selection uses `read-fonts`; the renderer uses the
 maintained font stack. The rejected Workflow prototype is archived outside the
 application workspace, so its old GUI dependencies are not shipped.
 
-アプリをegui/eframe 0.34.3、plot 0.35、notify 0.22へ移行し、最低Rust版を1.92としました。
+アプリをegui/eframe 0.37、plot 0.38、kittest 0.37、notify 0.24(いずれもegui 0.37)へ移行し、最低Rust版を1.95としました。eframeの遠隔`inspection`機能は無効のままです。
 フォント選択は`read-fonts`、描画は保守中のフォント基盤を使用します。
 非採用のWorkflow試作はアプリのworkspace外へ保存し、旧GUI依存を配布に含めません。
 

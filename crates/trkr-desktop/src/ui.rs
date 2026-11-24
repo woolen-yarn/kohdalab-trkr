@@ -1485,31 +1485,28 @@ impl App {
         smoke: &Smoke,
         name: &str,
     ) -> Result<bool, String> {
-        for event in ctx.input(|input| input.raw.events.clone()) {
-            if let egui::Event::Screenshot { image, .. } = event {
-                std::fs::create_dir_all(&smoke.output).map_err(|e| e.to_string())?;
-                let bytes: Vec<u8> = image
-                    .pixels
-                    .iter()
-                    .flat_map(|pixel| pixel.to_array())
-                    .collect();
-                let rgba =
-                    image::RgbaImage::from_raw(image.width() as u32, image.height() as u32, bytes)
-                        .ok_or("invalid screenshot pixels")?;
-                rgba.save(smoke.output.join(name))
-                    .map_err(|e| e.to_string())?;
-                std::fs::write(
-                    smoke.output.join(name).with_extension("json"),
-                    serde_json::to_vec_pretty(
-                        &json!({"workflow":self.workflow.key(),"geometry":self.geometry}),
-                    )
-                    .map_err(|e| e.to_string())?,
-                )
-                .map_err(|e| e.to_string())?;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        let Some(image) = crate::screenshot::take(ctx) else {
+            return Ok(false);
+        };
+        std::fs::create_dir_all(&smoke.output).map_err(|e| e.to_string())?;
+        let bytes: Vec<u8> = image
+            .pixels
+            .iter()
+            .flat_map(|pixel| pixel.to_array())
+            .collect();
+        let rgba = image::RgbaImage::from_raw(image.width() as u32, image.height() as u32, bytes)
+            .ok_or("invalid screenshot pixels")?;
+        rgba.save(smoke.output.join(name))
+            .map_err(|e| e.to_string())?;
+        std::fs::write(
+            smoke.output.join(name).with_extension("json"),
+            serde_json::to_vec_pretty(
+                &json!({"workflow":self.workflow.key(),"geometry":self.geometry}),
+            )
+            .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(true)
     }
     fn smoke_tick(&mut self, ctx: &egui::Context) {
         let Some(mut smoke) = self.smoke.take() else {
@@ -1566,7 +1563,7 @@ impl App {
                     self.mode = DisplayMode::Xy;
                     smoke.requested = true;
                     smoke.stage = SmokeStage::CaptureXy;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                    crate::screenshot::request(ctx);
                 }
             }
             SmokeStage::CaptureXy => match self.save_smoke_screenshot(ctx, &smoke, "xy.png") {
@@ -1583,7 +1580,7 @@ impl App {
                 smoke.rtheta_frames = smoke.rtheta_frames.saturating_add(1);
                 if smoke.rtheta_frames >= 3 && !smoke.requested {
                     smoke.requested = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                    crate::screenshot::request(ctx);
                 }
                 if smoke.requested {
                     match self.save_smoke_screenshot(ctx, &smoke, "rtheta.png") {
@@ -1660,7 +1657,7 @@ impl App {
                 frames = frames.saturating_add(1);
                 if frames >= 3 && !requested {
                     requested = true;
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                    crate::screenshot::request(ctx);
                 }
                 let name = format!("layout_{}.png", workflow.key());
                 match self.save_smoke_screenshot(ctx, &smoke, &name) {
@@ -2820,7 +2817,7 @@ impl App {
                     form.ui
                         .interact(
                             readout.translate(rect.min.to_vec2()),
-                            egui::Id::new(("motion-native", i, row)),
+                            egui::Id::unique(("motion-native", i, row)),
                             egui::Sense::hover(),
                         )
                         .on_hover_text(native);
@@ -2935,7 +2932,7 @@ impl App {
                     rect.width() - 113.,
                     24.,
                 ),
-                egui::Id::new(("motion-setting-feedback", &feedback_key)),
+                egui::Id::unique(("motion-setting-feedback", &feedback_key)),
                 egui::Sense::hover(),
             )
             .on_hover_text(help);
@@ -2990,7 +2987,7 @@ impl App {
         };
         let name = ["Stage (t)", "Scanner X", "Scanner Y"][axis];
         let cc = axis > 0 && initialization_homes(axis, &self.scanner_model);
-        egui::Modal::new(egui::Id::new("initialize-motion")).show(ctx, |ui| {
+        egui::Modal::new(egui::Id::unique("initialize-motion")).show(ctx, |ui| {
             ui.heading(format!("Initialize {name}"));
             if cc {
                 ui.checkbox(&mut self.initialize_skip_home, "Skip HOME (already referenced)");
@@ -3289,7 +3286,7 @@ impl App {
         }
         ui.interact(
             area,
-            egui::Id::new("session-mode-menu"),
+            egui::Id::unique("session-mode-menu"),
             egui::Sense::hover(),
         )
         .context_menu(|ui| {
@@ -3497,12 +3494,12 @@ impl App {
         ui.interact(
             precision::rect(154. + (width - 44.).max(0.), 0., 138., 20.)
                 .translate(area.min.to_vec2()),
-            egui::Id::new("eta-help"),
+            egui::Id::unique("eta-help"),
             egui::Sense::hover(),
         ).on_hover_text("Estimated time to finish acquiring points. Uses completed points, including waits and reads. For 2D scans, the first estimate uses point pace until the first measured line change. Return-to-zero and finalization are shown as separate phases.");
         ui.interact(
             area,
-            egui::Id::new("plot-options-menu"),
+            egui::Id::unique("plot-options-menu"),
             egui::Sense::hover(),
         )
         .context_menu(|ui| {
@@ -3729,7 +3726,7 @@ impl eframe::App for App {
         let python_locked = self.python_locked();
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::from_rgb(18, 19, 23)))
-            .show_inside(root, |ui| {
+            .show(root, |ui| {
                 if python_locked || self.pending_device_selection.is_some() {
                     ui.disable();
                 }

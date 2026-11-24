@@ -1018,7 +1018,7 @@ impl App {
                     .stroke(egui::Stroke::new(1.0_f32, BORDER))
                     .inner_margin(egui::Margin::symmetric(12, 6)),
             )
-            .show_inside(root, |ui| {
+            .show(root, |ui| {
                 // Fixed reading order: who controls, what it is doing, then
                 // the GUI's own Stop and the ownership override. Wrapping
                 // keeps Stop and Take control on screen in narrow windows.
@@ -1029,8 +1029,22 @@ impl App {
                             .color(BANNER_ACCENT),
                     );
                     ui.label(egui::RichText::new(status).color(tone));
-                    stop = ui.button("Stop").clicked();
-                    takeover = ui.button("Take control").clicked();
+                    // egui 0.37 buttons are roomier and can be drawn wider
+                    // than the wrap check assumes, so reserve their measured
+                    // size and move Stop + Take control to the next row
+                    // together when they do not both fit before the visible
+                    // edge. Each button is drawn at exactly the size reserved.
+                    let stop_size = banner_button_size(ui, "Stop");
+                    let take_size = banner_button_size(ui, "Take control");
+                    let right = ui.max_rect().right().min(ui.clip_rect().right());
+                    let needed = stop_size.x + ui.spacing().item_spacing.x + take_size.x;
+                    if ui.cursor().min.x + needed > right {
+                        ui.end_row();
+                    }
+                    stop = ui.add_sized(stop_size, egui::Button::new("Stop")).clicked();
+                    takeover = ui
+                        .add_sized(take_size, egui::Button::new("Take control"))
+                        .clicked();
                 });
             });
         if stop {
@@ -1057,6 +1071,21 @@ impl App {
             self.remember_config_path();
         }
     }
+}
+/// Size of a standard text button under the current style: unwrapped
+/// Button-font text plus button padding, at least the interact height.
+fn banner_button_size(ui: &egui::Ui, text: &str) -> egui::Vec2 {
+    let galley = egui::WidgetText::from(text).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    let padding = ui.spacing().button_padding;
+    egui::vec2(
+        galley.size().x + 2. * padding.x,
+        (galley.size().y + 2. * padding.y).max(ui.spacing().interact_size.y),
+    )
 }
 #[cfg(test)]
 mod tests {

@@ -310,7 +310,7 @@ impl App {
         let mut accepted = false;
         let mut cancelled = false;
         let locked = self.python_locked() || self.snapshot.running || self.controller.has_pending();
-        let response = egui::Modal::new(egui::Id::new("measurement_settings"))
+        let response = egui::Modal::new(egui::Id::unique("measurement_settings"))
             .frame(
                 egui::Frame::popup(&ctx.global_style())
                     .fill(PANEL)
@@ -473,13 +473,14 @@ mod tests {
         app.device_expanded = [true, false, true, false];
         let draw = |app: &mut App| {
             app.geometry.clear();
-            let _ = ctx.run_ui(
+            let _ = crate::headless::run_ui(
+                &ctx,
                 egui::RawInput {
                     screen_rect: Some(precision::rect(0., 0., 400., 2400.)),
                     ..Default::default()
                 },
                 |ui| {
-                    egui::CentralPanel::default().show_inside(ui, |ui| {
+                    egui::CentralPanel::default().show(ui, |ui| {
                         app.device_inventory_cards(ui, egui::pos2(10., 10.), 328.);
                     });
                 },

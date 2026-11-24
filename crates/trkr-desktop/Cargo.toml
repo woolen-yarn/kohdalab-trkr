@@ -17,8 +17,15 @@ trkr-motion.workspace = true
 kohdalab-control-protocol.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-eframe = { version = "^0.34.3", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "accesskit"] }
-egui_plot = "^0.35.0"
+# eframe 0.37 made the clipboard optional; enable it explicitly so text
+# fields keep native copy/paste with `default-features = false`. The
+# `inspection` feature (remote inspection server) is intentionally not enabled.
+eframe = { version = "^0.37.0", default-features = false, features = ["glow", "default_fonts", "x11", "wayland", "accesskit", "clipboard"] }
+# Feature unifier only (code uses `eframe::egui`): egui 0.37 no longer bundles
+# the emoji/symbol fallback that egui 0.34 shipped by default, which toast
+# icons such as "ℹ" need. This restores that same fallback font set.
+egui = { version = "^0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
+egui_plot = "^0.38.0"
 csv = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.11"
@@ -51,7 +58,7 @@ version = "=0.20.0"
 optional = true
 
 [dev-dependencies]
-egui_kittest = { version = "=0.34.0", default-features = false, features = ["eframe"] }
+egui_kittest = { version = "=0.37.0", default-features = false, features = ["eframe"] }
 
 [dependencies.egui-notify]
-version = "=0.22.0"
+version = "=0.24.0"
