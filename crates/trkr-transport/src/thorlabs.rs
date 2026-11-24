@@ -161,7 +161,11 @@ impl ThorlabsMeter {
     }
 }
 
+// Intentional FFI exemption from the workspace `unsafe_code = "deny"`: this
+// Windows-only module dynamically loads the vendor TLPM/TLPMX DLL and calls its
+// C ABI (plus test doubles for that ABI). Keep unsafe confined to this module.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 mod windows {
     use super::*;
     use libloading::Library;

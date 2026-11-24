@@ -59,7 +59,10 @@ fn run(arguments: Vec<std::ffi::OsString>) -> Result<(), String> {
         .map_err(|error| format!("Start {}: {error}", APPLICATION))
 }
 
+// Intentional FFI exemption from the workspace `unsafe_code = "deny"`: the
+// Windows demo launcher reports errors through user32 `MessageBoxW`.
 #[cfg(windows)]
+#[allow(unsafe_code)]
 fn show_error(message: &str) {
     use std::os::windows::ffi::OsStrExt;
 
@@ -75,6 +78,7 @@ fn show_error(message: &str) {
 }
 
 #[cfg(windows)]
+#[allow(unsafe_code)]
 #[link(name = "user32")]
 unsafe extern "system" {
     fn MessageBoxW(

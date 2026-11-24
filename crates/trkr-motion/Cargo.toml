@@ -5,6 +5,9 @@ edition = "2024"
 license = "MIT"
 rust-version.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 fs2 = "0.4"
 serde = { version = "1", features = ["derive"] }

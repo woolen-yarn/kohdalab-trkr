@@ -8,6 +8,13 @@ edition = "2024"
 license = "MIT"
 rust-version = "1.92"
 
+# Every member opts in with `[lints] workspace = true`. Unsafe code is denied by
+# default; the only exemptions are narrow, item-level `#[allow(unsafe_code)]`
+# on documented Windows FFI (Thorlabs TLPM/TLPMX driver loading and the demo
+# launcher's MessageBoxW). Clippy stays strict through `-D warnings` in CI.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 # Preserve the original f64 when re-reading raw/provenance JSON and API values.
