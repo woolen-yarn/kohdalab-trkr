@@ -29,11 +29,11 @@ jobs:
           toolchain_dir=$(mktemp -d "$RUNNER_TEMP/kohdalab-rustup.XXXXXX")
           echo "RUSTUP_HOME=$toolchain_dir" >> "$GITHUB_ENV"
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up Python for the thin notebook bridge checks
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.13'
       - name: Install Python test runner
@@ -60,6 +60,18 @@ jobs:
       - name: Lint Rust workspace
         if: runner.os == 'Linux'
         run: cargo clippy --manifest-path Cargo.toml --workspace --all-targets --locked -- -D warnings
+      # Authoritative note for the macOS split below.
+      # engine::tests::monitor_hands_off_every_connected_axis_and_records_no_position
+      # is #[cfg(unix)], so it runs on Linux and macOS only (Windows has no such
+      # case). It asserts that every Signal Monitor read stays within 50 ms of
+      # its 0.1 s schedule while simulated delay/scanner moves run concurrently.
+      # On hosted macOS runners, contention from the rest of the parallel suite
+      # can delay thread scheduling beyond that budget, so macOS skips it in the
+      # workspace run and re-runs it alone with --exact. Isolation reduces that
+      # scheduler contention but cannot eliminate it: the isolated run can still
+      # occasionally fail on delayed runner scheduling. The assertion and its
+      # timing budget are deliberately unchanged; Linux runs it in the normal
+      # parallel suite.
       - name: Test Rust workspace
         if: runner.os != 'macOS'
         run: cargo test --manifest-path Cargo.toml --workspace --locked
@@ -83,13 +95,49 @@ jobs:
       - name: Test packaging, bridge, and layout checks
         run: python -m pytest tests
 
+  minimum-rust:
+    # The workspace `rust-version` is a claim, so verify it against Cargo.lock.
+    # The pinned default toolchain in rust-toolchain.toml is left untouched;
+    # only this job overrides it with `cargo +<rust-version>`.
+    name: Minimum supported Rust (locked)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Isolate Rust toolchain installation
+        shell: bash
+        run: |
+          toolchain_dir=$(mktemp -d "$RUNNER_TEMP/kohdalab-rustup.XXXXXX")
+          echo "RUSTUP_HOME=$toolchain_dir" >> "$GITHUB_ENV"
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Linux GUI build libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev
+      - name: Install the declared minimum Rust toolchain
+        shell: bash
+        run: |
+          msrv=$(sed -n 's/^rust-version = "\([0-9.]*\)"$/\1/p' Cargo.toml)
+          if [ -z "$msrv" ]; then
+            echo 'Workspace rust-version was not found in Cargo.toml.' >&2
+            exit 1
+          fi
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+          rustup toolchain install "$msrv" --profile minimal --no-self-update
+      - name: Check workspace with locked dependencies on the minimum Rust
+        run: cargo "+$MSRV" check --manifest-path Cargo.toml --workspace --all-targets --all-features --locked
+      - name: Test workspace with locked dependencies on the minimum Rust
+        run: cargo "+$MSRV" test --manifest-path Cargo.toml --workspace --locked
+
   dependency-audit:
     name: Dependency advisories
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install pinned RustSec auditor

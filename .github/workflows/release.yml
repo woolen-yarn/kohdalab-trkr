@@ -38,7 +38,7 @@ jobs:
           toolchain_dir=$(mktemp -d "$RUNNER_TEMP/kohdalab-rustup.XXXXXX")
           echo "RUSTUP_HOME=$toolchain_dir" >> "$GITHUB_ENV"
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install MSYS2 UCRT64 compiler tools
@@ -94,7 +94,7 @@ jobs:
           --binaries-dir target/x86_64-pc-windows-msvc/release --native-dir build/native --output dist
       - name: Upload GUI startup diagnostics on failure
         if: (failure()) && github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-gui-failure-${{ github.sha }}
           path: build/release-*/common-control-validation/gui.log
@@ -141,7 +141,7 @@ jobs:
       - name: Upload first-party signing input (unsigned)
         id: signing-input
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signpath-input-windows-${{ github.sha }}
           if-no-files-found: error
@@ -153,7 +153,7 @@ jobs:
             build/signpath-input/SHA256.json
       - name: Upload installer signing sample (unsigned)
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: signpath-installer-input-windows-${{ github.sha }}
           if-no-files-found: error
@@ -161,7 +161,7 @@ jobs:
           path: build/signpath-installer/KohdaLab-TRKR-Setup.exe
       - name: Upload unsigned Windows release
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-windows-x64-${{ github.sha }}
           if-no-files-found: error
@@ -188,7 +188,7 @@ jobs:
           toolchain_dir=$(mktemp -d "$RUNNER_TEMP/kohdalab-rustup.XXXXXX")
           echo "RUSTUP_HOME=$toolchain_dir" >> "$GITHUB_ENV"
       - name: Check out source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Build native helper from vendored source
@@ -201,7 +201,7 @@ jobs:
           --binaries-dir target/release --native-dir build/native --output dist
       - name: Upload unsigned macOS release
         if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-macos-arm64-${{ github.sha }}
           if-no-files-found: error

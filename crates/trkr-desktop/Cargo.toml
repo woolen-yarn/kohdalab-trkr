@@ -7,6 +7,9 @@ rust-version.workspace = true
 default-run = "kohdalab-trkr"
 build = "build.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 trkr-core.workspace = true
 trkr-transport.workspace = true
