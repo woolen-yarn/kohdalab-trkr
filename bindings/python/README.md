@@ -25,7 +25,9 @@ WindowsではTRKRのSetupを実行して`C:\\Program Files\\Kohdalab\\KohdaLab T
 python -m pip install .
 ```
 
-同梱の6つのNotebookは、同じフォルダー内のクライアント、隣接する `notebook-client/` またはソースの `bindings/python/` を自動で読み込みます。古いpip版があっても同梱版を優先します。
+同梱の6つの従来Notebookは、同じフォルダー内のクライアント、隣接する `notebook-client/` またはソースの `bindings/python/` を自動で読み込みます。古いpip版があっても同梱版を優先します。これらは独自のRustコントローラーを起動するヘッドレス方式で、開いているGUIは操作しません。
+
+開いているGUIをDemoのまま操作する例は `gui_simulation_notebook.ipynb` です。事前にGUIでDemoを選択してください（Notebookはソースを読み取るだけで切り替えません）。共通SDK（`kohdalab_control`）を使い、接続先の明示（`ENDPOINT`）、明示的な開始要求UUID（応答が失われても再送せず受領記録で照合）、開始レシートのジョブID、各タイムアウト、中断時の停止確認と解放を示します。GUIの上部バナーには **External control**・状態・**Stop**・**Take control** が表示されます。
 
 ## パス指定なしで試す
 
@@ -271,7 +273,9 @@ From 0.3.6, available fixed-axis readings are saved and commanded U/V is separat
 
 On Windows, run TRKR Setup to install at `C:\\Program Files\\Kohdalab\\KohdaLab TRKR`. On macOS, place **KohdaLab TRKR.app** in `/Applications`. Extract the complete portable folder. To use the source client, install it into the Notebook's Python environment using `python -m pip install .`.
 
-The six bundled notebooks load their adjacent client, `notebook-client/`, or the source `bindings/python/` automatically, preferring the bundled client over an older pip installation.
+The six bundled legacy notebooks load their adjacent client, `notebook-client/`, or the source `bindings/python/` automatically, preferring the bundled client over an older pip installation. They are headless: each starts its own Rust controller and does not control an open GUI.
+
+To drive the open GUI on its Demo source, use `gui_simulation_notebook.ipynb`. Select Demo in the GUI first; the notebook only reads the source and never switches it. It uses the common SDK (`kohdalab_control`) with an explicit `ENDPOINT`, starts with an explicit request UUID (a lost reply is reconciled from that request's receipt, never resent), bounds every request/wait/stop/release, and on interrupt or timeout stops exactly that job and confirms cleanup before releasing. The GUI's top banner shows **External control**, the status, **Stop**, then **Take control**.
 
 ### Try without specifying paths
 

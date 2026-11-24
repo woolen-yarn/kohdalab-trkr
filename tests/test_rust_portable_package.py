@@ -217,7 +217,9 @@ import json, sys, types
 from pathlib import Path
 sys.modules["kohdalab_trkr"] = types.ModuleType("kohdalab_trkr")
 for path in Path.cwd().glob("*.ipynb"):
-    setup = next(c for c in json.loads(path.read_text(encoding="utf-8"))["cells"] if c.get("id") == "setup")
+    if path.name == "gui_simulation_notebook.ipynb":
+        continue  # Uses the common SDK and an open GUI, not the headless client.
+    setup =next(c for c in json.loads(path.read_text(encoding="utf-8"))["cells"] if c.get("id") == "setup")
     bootstrap = "".join(setup["source"]).split("binary = find_binary()", 1)[0]
     namespace = {}
     exec(compile(bootstrap, str(path), "exec"), namespace)

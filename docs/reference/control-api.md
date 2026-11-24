@@ -16,6 +16,30 @@ unknown; inspect `control.result` before considering a retry. `control.stop`
 requests the existing TRKR stop path and does not claim cleanup until the
 native status confirms it.
 
+## Release and continuing jobs / 解放と継続中のジョブ
+
+TRKR's advertised `on_release` policy is `continue`: releasing control does not
+stop an active measurement unless the client chose `stop_on_disconnect` (or
+`stop_on_error` with `reason: "python_error"`). Alignment Jog always stops on
+release. `control.release` reports which case applied:
+
+| Case | `cleanup` | `continuing` | Extra fields |
+| --- | --- | --- | --- |
+| No active job | `verified` | `false` | — |
+| Job intentionally continues | `not_required` (no release cleanup) | `true` | `job_id`, `job` (receipt, its `cleanup` stays `pending`) |
+| Release requested Stop | `pending` | `false` | `stop_requested: true`, `job_id`, `job` |
+
+The GUI stays locked with the **External control** banner until the job's own
+receipt is terminal. A released client can still read `control.result` but can
+no longer stop the job; call `stop_and_wait(job_id)` before releasing, or use the
+GUI's **Stop** (recorded as `stop_reason: "gui_stop"`). Native `release` keeps its
+original response. Shared SDK 1.0.4+ returns immediately for `continuing`; for a
+release-requested Stop it waits and then checks that job's receipt.
+
+既定では解放しても測定は継続します（`continuing: true`、解放自体の後処理は不要、
+ジョブの`cleanup`は`pending`のまま）。停止条件で停止を要求した場合は`cleanup: "pending"`です。
+解放後はPythonから停止できないため、解放前に`stop_and_wait(job_id)`を使うか、GUIのStopを使ってください。
+
 
 ## LI5640 mode selection (0.4.8) / LI5640取得モード（0.4.8）
 

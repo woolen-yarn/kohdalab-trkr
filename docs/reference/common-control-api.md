@@ -54,6 +54,14 @@ For TRKR, pass the job ID to `stop_and_wait(job["job_id"])` (Python SDK 1.0.2+).
 confirmed release and cleanup; a timeout is reported rather than hidden. Finish
 or explicitly stop work before releasing when required by the app policy.
 
+When an app's policy lets a job continue after release, its release result has
+`continuing: true` and the job's `job_id`/receipt. SDK 1.0.4+ returns that result
+unchanged without waiting for the job, so the job's `pending` cleanup is not
+mistaken for a stuck release. If release itself requested a stop, the SDK keeps
+waiting and then requires that job's terminal receipt with verified cleanup. See
+the TRKR release table in [control-api.md](control-api.md).
+The GUI-only example is `notebook/gui_simulation_notebook.ipynb`.
+
 ## Application boundaries / アプリ別の動作
 
 | App | Public scope | Safety policy retained |
