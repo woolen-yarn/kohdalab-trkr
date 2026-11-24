@@ -3,7 +3,7 @@
 # KohdaLab TRKR
 
 [![CI](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml/badge.svg)](https://github.com/woolen-yarn/kohdalab-trkr/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/woolen-yarn/kohdalab-trkr)](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.6)
+[![Release](https://img.shields.io/github/v/release/woolen-yarn/kohdalab-trkr)](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.7)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 Rust desktop application for time-resolved Kerr rotation measurements, live lock-in monitoring, and stage/scanner control.
@@ -20,15 +20,15 @@ Rust desktop application for time-resolved Kerr rotation measurements, live lock
 
 ## Downloads / ダウンロード
 
-[Stable release / 安定版](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.6) · [v1.0.6 release notes / リリースノート](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.6)
+[Stable release / 安定版](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.7) · [v1.0.7 release notes / リリースノート](https://github.com/woolen-yarn/kohdalab-trkr/releases/tag/v1.0.7)
 
 | OS / 対応環境 | Installer / インストーラー | Portable / ポータブル |
 | --- | --- | --- |
-| Windows x64 | [Setup (.exe)](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/KohdaLab-TRKR-1.0.6-Setup.exe) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/kohdalab-trkr-1.0.6-windows-x64.zip) |
-| macOS Apple Silicon | [DMG](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/KohdaLab-TRKR-1.0.6-macos-arm64.dmg) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/kohdalab-trkr-1.0.6-macos-arm64.zip) |
-| Ubuntu 24.04 x64 | [DEB](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/kohdalab-trkr_1.0.6_amd64.deb) | [tar.gz](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/kohdalab-trkr-1.0.6-linux-x86_64.tar.gz) |
+| Windows x64 | [Setup (.exe)](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/KohdaLab-TRKR-1.0.7-Setup.exe) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/kohdalab-trkr-1.0.7-windows-x64.zip) |
+| macOS Apple Silicon | [DMG](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/KohdaLab-TRKR-1.0.7-macos-arm64.dmg) | [ZIP](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/kohdalab-trkr-1.0.7-macos-arm64.zip) |
+| Ubuntu 24.04 x64 | [DEB](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/kohdalab-trkr_1.0.7_amd64.deb) | [tar.gz](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/kohdalab-trkr-1.0.7-linux-x86_64.tar.gz) |
 
-[SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/SHA256SUMS.txt) · [Linux SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.6/SHA256SUMS-linux.txt)
+[SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/SHA256SUMS.txt) · [Linux SHA-256](https://github.com/woolen-yarn/kohdalab-trkr/releases/download/v1.0.7/SHA256SUMS-linux.txt)
 
 Windows Setup is unsigned. macOS uses ad hoc signing and is not notarized. / Windows Setupは未署名です。macOS版はアドホック署名で、Appleの公証を受けていません。
 
